@@ -6,6 +6,8 @@
 
 All fixtures have CK=1,250 ps, full x16, maximum two identical ranks, MR8=0x10 (8 Gb x16), MR27=0x45 and paired-bank MR57=0. MR27 admits mandatory RFM; no exemption is assumed. Read and write data mask is enabled, MR13=0x20. MR28=0 selects background ZQ calibration. NZQ is at most four. ODT, training mode, enhanced NT-ODT, data copy and DVFSC are off.
 
+The RTL preserves these exact timing/MR fixtures while allowing the canonical discovered paired-bank RFM capability variants: MR27 must have a nonzero threshold when its mandatory-RFM bit is set, and MR57 bits7:4 must be zero with bits3:2 limited to zero/one. MR57 bits1:0 select the existing maintenance decrement factors. The integration supplies these discovered facts, independent of the programmed MR image. Unsupported geometry, timing changes and single-bank extensions still reject admission. Owning tests enumerate all 256 MR57 bytes; the connected wrapper uses nonzero MR57 values three and two across destructive recovery so a zero-filled readback cannot pass. This does not qualify a new PHY timing point.
+
 | Rate / mode | Ratio | RL / WL CK | Read/write/fast WCK enable CK | Static / half-rate CK | MR1 / MR2 / base MR3 / base MR18 |
 | --- | --- | --- | --- | --- | --- |
 | 6400 BG, read link off | 4 | 17 / 9 | 7 / 4 / 2 | 4 / 1 | B0 / BB / 06 / 08 |

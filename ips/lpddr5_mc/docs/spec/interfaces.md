@@ -14,7 +14,7 @@ The explicit source list is [rtl/contracts/files.f](../../rtl/contracts/files.f)
 | Write data | ECC/data owner → PHY | Four 32-bit words, each two x16 pin beats, four byte mask/DBI bits, two slice enables and rank selection; raw parity extension four bits per word |
 | Read request / return | Engine ↔ PHY | Per-word/slice enables and chip selects; four 32-bit returned words, per-slice valid, four DNV bits and raw parity per word |
 | WCK control | CK engine → PHY | Four WCK phases × two byte slices, one WCK instance per slice; per-phase enable, two rank bits, two-bit toggle encoding |
-| Word identity / error | Completion/ECC owner → response/status | Word index4, slice, split half, profile epoch32 and tag/generation; errors preserve full ID/address/tag and correlated/trust flags |
+| Word identity / error | Completion/ECC owner → response/status | Word index4, slice, split half, profile epoch32 and tag/generation; errors preserve full ID/address/tag, rank, operation and correlated/trust flags |
 | Management / publication | Lifecycle/configuration owner ↔ PHY/channels | Sampled handshake signals, stable rank states, epochs, request CRC, destination mask and prepare/commit/abort request |
 
 At ratio two only words/phases zero and one are active; upper lanes, valid/enables and unused CS bits are zero. WCK toggle encodings are 00 static-low, 01 static-high, 10 half-rate toggle, 11 fast toggle (DFI Table 38). Internal literal WCK ratio is 2 or 4. DFI `dfi_freq_ratio` encoding is 01 for 1:2 and 10 for 1:4; `lpddr5_mc_dfi_ratio` converts it and returns reserved 11 for invalid input. Frequency codes are system/PHY defined; the integration maps code zero to the 3200 fixture and one to 6400 and declares its supported range. FSP is 0/1/2; three is reserved.

@@ -1,6 +1,6 @@
 # LPDDR5 controller contracts
 
-This contribution defines the proposed implementation contract and qualifies its digital reference models. It supplies numeric generic-PHY fixtures, canonical types/registers and executable protocol, integrity, lifecycle and performance checks. Production controller RTL, multi-clock CDC implementation and vendor-PHY qualification remain subsequent work. The three agreement topics—protocol basis, frozen interfaces and performance evidence—require lead review and owner acceptance of a corrected Definition before dependent RTL starts.
+These reviewed contracts define the implementation basis and its qualified digital reference models. The source also contains host/control, channel and ECC RTL with owning simulation evidence. Combined controller wiring and verification remain in progress: reference-model and isolated-unit results do not establish complete controller, clock/reset or vendor-PHY qualification. See the [host/control implementation](../architecture/host-control.md), [channel implementation](../architecture/channel.md) and [independent system checks](../verification/system.md) for the current owners and evidence limits.
 
 Use this document and its linked pages for the corrected design. The preserved [v0.1](lpddr5_mc_microarch_spec.md), [v0.2](lpddr5_mc_microarch_addendum_v0.2.md) and [targeted review](review.md) are historical inputs. Their bytes and SHA-256 identities remain checked. Their former unresolved items are addressed below; preserving their text does not make their old status statements current.
 
@@ -9,10 +9,10 @@ Use this document and its linked pages for the corrected design. The preserved [
 | Boundary | Canonical source and contract | Executable qualification | Limit |
 | --- | --- | --- | --- |
 | Supported integration | [Numeric profiles](profiles.md), `config/contracts/profiles.json` and `example.json` | Strict schema/MR/capability admission, independent half-WCK waveforms, invalid profiles and timing fault injection | Restricted digital fixtures; no electrical training margins |
-| Commands and data | [Interfaces](interfaces.md), `rtl/contracts/`, `dv/contracts/commands.py` | Literal CA vectors, operand reconstruction, pair constraints, split beats, returned word rotation/skew/gaps/DNV | Types and reference behavior; no serializer RTL |
-| Host and integrity | [AXI and ECC](host-ecc.md), `host.py`, `integrity.py` | Ordering/errors/fatal settlement, independent link matrices, SECDED faults, RMW/scrub/epochs | Transaction models; no production bus/ECC implementation |
-| Configuration and lifecycle | [Control and recovery](control.md), `registers.json`, `configuration.py`, `lifecycle.py` | APB errors/locks/strobes, mailbox atomicity, boot/refresh/RFM/thermal/PM/FSP/ownership faults | CDC protocol modeled; synchronizers and real clocks untested |
-| Clock/service policy | [Clocking](../architecture/clocking.md), `scheduling.py` | Saturating ages, generation/replay, live issue gates, byte caps and conditional fairness | Pipeline and storage implementation pending |
+| Commands and data | [Interfaces](interfaces.md), `rtl/contracts/`, `dv/contracts/commands.py` | Literal CA vectors, operand reconstruction, pair constraints, split beats, returned word rotation/skew/gaps/DNV; channel RTL owning checks | Complete combined pin/WCK binding remains to be qualified |
+| Host and integrity | [AXI and ECC](host-ecc.md), `host.py`, `integrity.py` | Ordering/errors/fatal settlement, independent link matrices, SECDED faults, RMW/scrub/epochs; host and channel RTL owning checks | Full combined ECC and fault/recovery coverage remains pending |
+| Configuration and lifecycle | [Control and recovery](control.md), `registers.json`, `configuration.py`, `lifecycle.py` | APB errors/locks/strobes, mailbox atomicity, boot/refresh/RFM/thermal/PM/FSP/ownership faults; real asynchronous transport simulations | Representative full-wrapper destructive recovery to fresh service passes on an iteration source; broad recovery and physical CDC qualification remain pending |
+| Clock/service policy | [Clocking](../architecture/clocking.md), `scheduling.py` | Saturating ages, generation/replay, live issue gates, byte caps and conditional fairness; owning RTL scheduler checks | Final combined issue-gap and fairness evidence remains pending |
 | Payload feasibility | [Performance criteria](performance.md), `performance.py` | Independent periodic bank/CA/pin/host ledger, maintenance and checker faults | Feasible schedule; no measured RTL performance |
 | Reproduction | [Owning checks](../verification/contracts.md), `tools/`, explicit `files.f` | Generation consistency, Python tests, C header compilation, SV assertions, source hashes/links | CI execution and clean-host portability separately reported |
 
@@ -20,7 +20,7 @@ The source preserves initial commit `b46072841f1a8e89bb110ee2ed578af6fc80dd0a`, 
 
 ## Supported configuration
 
-The proposed matrix permits one/two AXI4 ports, one/two independent full-x16 channels, one/two identical 8 Gb ranks per channel, 64/128/256-bit AXI data, 4–16 ID bits, 32–40 address bits, 16/32/64 queue entries and 32/64-byte DRAM granules. Outstanding credits cannot exceed allocated queue capacity. A 64-byte granule is the default. Higher widths are interface options; sustained bandwidth is qualified only for the declared default benchmark.
+The contract requires one/two AXI4 ports, one/two independent full-x16 channels, one/two identical 8 Gb ranks per channel, 64/128/256-bit AXI data, 4–16 ID bits, 32–40 address bits, 16/32/64 queue entries and 32/64-byte DRAM granules. Outstanding credits cannot exceed allocated queue capacity. A 64-byte granule is the default. Higher widths are interface options; the same-rate sustained-bandwidth requirement applies only to the declared default benchmark. Owning parameter samples do not close the complete combined matrix.
 
 The digital operating points keep CK/DFI at 800 MHz: WCK:CK=4 at 6400 Mb/s in BG mode, or WCK:CK=2 at 3200 Mb/s in 16B mode. There are three staging FSP banks. Other densities, byte/8B modes, data copy, enhanced/non-target ODT, DVFSC and arbitrary CK rates require new traced profiles before admission. This bounds the delivered fixtures rather than waiving later controller requirements.
 
@@ -36,12 +36,12 @@ Use controller-owned link encoding/decoding, strict drained write epochs by defa
 
 The selected early controller-update acknowledgement policy remains an integration restriction supported by DFI Table 17 and Figure 33. Table 39's question marks remain source uncertainty: numeric values qualify the supplied model PHY only. No publisher erratum or universal timing limit is asserted.
 
-## Proposed corrected agreement wording
+## Adopted contract basis
 
-For protocol basis, accept JESD209-5C and the supplied DFI 5.0 copy with the explicit early-update policy, bounded supported matrix, numeric model-PHY profiles, parity extension and independent digital checks linked above. A new PHY must supply timing/capability evidence and pass the same pin/data checks before enabling traffic.
+The protocol basis uses JESD209-5C and the supplied DFI 5.0 copy with the explicit early-update policy, bounded supported matrix, numeric model-PHY profiles, parity extension and independent digital checks linked above. A new PHY must supply timing/capability evidence and pass the same pin/data checks before enabling traffic.
 
-For frozen contracts, accept the CK-rate engine, enabled selection, canonical payload/register schema, host ordering, complete word/slice identity, strict/posted ECC responses and the lifecycle/ownership recovery rules on these pages. Later contributors implement and test these contracts; reference-model success does not establish multi-clock RTL behavior.
+The implementation contracts use the CK-rate engine, enabled selection, canonical payload/register schema, host ordering, complete word/slice identity, strict/posted ECC responses and the lifecycle/ownership recovery rules on these pages. RTL must implement and test these contracts; reference-model success does not establish multi-clock RTL behavior.
 
-For performance evidence, accept the exact full/reduced benchmark, periodic reference schedule, queue/feedback assumptions, completed-payload windows and conditional fairness criteria in [performance.md](performance.md). Preserve 12.8 GB/s combined default same-direction AXI payload. Final acceptance compares combined RTL with this reference and the separate integrity/management matrix.
+Performance evidence uses the exact full/reduced benchmark, periodic reference schedule, queue/feedback assumptions, completed-payload windows and conditional fairness criteria in [performance.md](performance.md). Preserve 12.8 GB/s combined default same-direction AXI payload. Final acceptance compares combined RTL with this reference and the separate integrity/management matrix.
 
-These are proposals for the lead's corrected Definition. This contribution does not itself confirm agreements, release dependent work or pass final controller requirements.
+The reviewed foundation establishes the reference basis. Final controller requirements remain open until the combined RTL and its independent evidence meet these checks.

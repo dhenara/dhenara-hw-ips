@@ -1,10 +1,11 @@
-name: LPDDR5 reference contracts
+name: LPDDR5 controller checks
 on:
   push:
   pull_request:
 jobs:
-  contracts:
+  controller:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     env:
       DHENARA_AGENT_TOOL_STORAGE_ROOT: ${{ runner.temp }}/lpddr5-tools
     steps:
@@ -15,4 +16,11 @@ jobs:
         with:
           python-version: '3.13.18'
       - run: make -f ips/lpddr5_mc/Makefile prepare
-      - run: make -f ips/lpddr5_mc/Makefile check REPORT="$RUNNER_TEMP/contract-report.json"
+      - run: make -f ips/lpddr5_mc/Makefile check-controller EVIDENCE="$GITHUB_WORKSPACE/ips/lpddr5_mc/evidence/ci" BUILD_SUBDIR=ci CHECK_ARGS=--require-clean
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lpddr5-controller-evidence
+          path: |
+            ips/lpddr5_mc/evidence/ci/
+            ips/lpddr5_mc/dv/host/out/ci/

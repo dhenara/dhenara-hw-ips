@@ -427,7 +427,10 @@ class SchedulerTests(unittest.TestCase):
             self.assertTrue(c.admit(0, 0, True))
             self.assertFalse(c.admit(1, 0, True))
             self.assertEqual(c.admit(2, 0, False), mode == "work_conserving")
+            self.assertFalse(c.admit(3, 0, False))
+            self.assertEqual(c.admit(4, 1, True), mode == "strict")
             self.assertTrue(c.admit(16, 0, True))
+        self.assertFalse(Cap(16, (0, 64), "work_conserving").admit(0, 0, False, 32))
         check_fairness([(4, 0), (8, 1), (12, 0), (16, 1)], {0: 0, 1: 0}, 8, observed_until=16)
         with self.assertRaises(ValueError):
             check_fairness([(4, 0), (20, 1)], {0: 0, 1: 0}, 8, observed_until=16)
@@ -849,6 +852,7 @@ class InterfaceSeamTests(unittest.TestCase):
         self.assertEqual([arbiter.choose((True, True)) for _ in range(6)], [0, 0, 1, 0, 0, 1])
         self.assertEqual(arbiter.choose((False, True)), 1)
         self.assertIsNone(WeightedArbiter((0, 0)).choose((True, True)))
+        self.assertEqual(WeightedArbiter((65535, 256)).choose((True, True)), 0)
         q = Queue()
         q.admit(0, 0, False, 0, 0)
         q.admit(1, 1, False, 1, 3)

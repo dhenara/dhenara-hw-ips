@@ -1,0 +1,656 @@
+{
+  "version": 1,
+  "kind": "environment_coverage_map",
+  "controller_qualified": false,
+  "entries": [
+    {
+      "key": "axi_bursts",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "INCR/WRAP/FIXED",
+        "narrow/unaligned",
+        "64/128/256-bit lanes",
+        "strobes",
+        "4KB/overflow/decode",
+        "unsupported exclusive OKAY"
+      ],
+      "environment_tests": [
+        "test_system.HostTests.test_random_bursts_strobes_and_widths",
+        "test_system.HostTests.test_partial_strobe_and_wrong_physical_byte",
+        "test_system.HostTests.test_decerr_read_count_and_no_effect"
+      ],
+      "foundation_tests": [
+        "test_foundation.HostTests.test_burst_address_rules",
+        "test_foundation.HostTests.test_aw_hazard_before_w_and_exclusive_side_effect"
+      ],
+      "combined_status": "pending",
+      "pending": "Drive full one/two-port/channel/rank and min/max address/ID/queue matrix on controller RTL, including malformed requests."
+    },
+    {
+      "key": "write_validation",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "AW-before-W full-range hazard",
+        "complete W validation before memory effects",
+        "WLAST/count failure settlement"
+      ],
+      "environment_tests": [
+        "test_system.HostTests.test_aw_before_w_hazard",
+        "test_system.HostTests.test_no_effect_before_full_validation",
+        "test_system.HostTests.test_malformed_w_full_error_settlement"
+      ],
+      "foundation_tests": [
+        "test_foundation.HostTests.test_fatal_settles_original_counts_and_waits_for_w"
+      ],
+      "combined_status": "pending",
+      "pending": "Bind actual source handshakes and pin-model effects; no completion-flag substitute."
+    },
+    {
+      "key": "global_order",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "source-edge order across asynchronous clocks",
+        "reversed crossing arrival",
+        "port-zero/AW ties",
+        "same-ID response order"
+      ],
+      "environment_tests": [
+        "test_system.HostTests.test_source_acceptance_survives_reversed_cdc_import",
+        "test_system.HostTests.test_source_ties_port_then_aw",
+        "test_system.HostTests.test_same_id_order_and_full_ids",
+        "test_system.AdapterTests.test_source_trace_sorts_true_ties_not_cdc_arrivals"
+      ],
+      "foundation_tests": [
+        "test_foundation.HostTests.test_same_edge_ties_same_id_and_w_order"
+      ],
+      "combined_status": "pending",
+      "pending": "Vary actual AXI phases, CDC delays and direction pairs; reject reordered implementation, measure disjoint concurrency."
+    },
+    {
+      "key": "preacceptance",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "grant ownership",
+        "disjoint concurrency",
+        "revocation versus acceptance race",
+        "source reset fencing",
+        "response-credit exhaustion"
+      ],
+      "environment_tests": [
+        "test_system.AdapterTests.test_grant_revoke_race_reset_and_credit_pressure",
+        "test_system.HostTests.test_response_credit_and_tail"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach grant/revoke witnesses to real implementation and exercise independent endpoint resets under credit pressure."
+    },
+    {
+      "key": "forward_merge",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "forward every contributing byte",
+        "failed dependency blocks success",
+        "compatible merge without intervening read"
+      ],
+      "environment_tests": [
+        "test_system.AdapterTests.test_forwarding_waits_for_all_write_integrity_dependencies"
+      ],
+      "foundation_tests": [
+        "test_foundation.FinalBoundaryTests.test_multiple_partial_forward_dependencies_match_serial_memory"
+      ],
+      "combined_status": "pending",
+      "pending": "Add actual merged-physical-write observer with region/rank/ECC/profile compatibility and original response dependencies; replay controller forwarding and merges."
+    },
+    {
+      "key": "response_lifetime",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "stable B/R",
+        "exactly one B",
+        "full R count",
+        "longer-than-queue-depth bursts",
+        "B/R stalls",
+        "complete fatal W/R settlement"
+      ],
+      "environment_tests": [
+        "test_system.HostTests.test_write_read_pin_effects_and_backpressure",
+        "test_system.AdapterTests.test_long_burst_exceeds_channel_depth_and_response_stalls",
+        "test_system.HostTests.test_fault_settlement_reset_epoch"
+      ],
+      "foundation_tests": [
+        "test_foundation.HostTests.test_fatal_settles_original_counts_and_waits_for_w"
+      ],
+      "combined_status": "pending",
+      "pending": "Long burst currently exercises model capacity, not channel recycling RTL. Bind stable-payload assertions on all real interfaces."
+    },
+    {
+      "key": "ca_pairs",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "literal 14-bit CA",
+        "ACT/MRW/CAS pair reservation",
+        "bank/row/timing origins",
+        "MWR16 restrictions",
+        "auto-precharge"
+      ],
+      "environment_tests": [
+        "test_system.ProtocolTests.test_literal_ca_and_seeded_operands",
+        "test_system.ProtocolTests.test_pairs_deadline_rank_and_timing",
+        "test_system.AdapterTests.test_hot_timing_and_intervening_bank_do_not_erase_constraints"
+      ],
+      "foundation_tests": [
+        "test_foundation.CommandTests.test_ca_literal_vectors_and_operand_round_trip",
+        "test_foundation.MaskedCommandTests.test_masked_bl16_only_and_spacing"
+      ],
+      "combined_status": "pending",
+      "pending": "Connect emitted CA. Extend partial DramModel with remaining MR/MPC/ZQ/power timings and full turnarounds before claiming protocol closure."
+    },
+    {
+      "key": "wck_paths",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "ratio2/4",
+        "half-WCK paths",
+        "preamble/sync/postamble/disable",
+        "reuse/expiry/rank/direction/owner restart",
+        "early/late/missing edges"
+      ],
+      "environment_tests": [
+        "test_system.ProtocolTests.test_wave_capture_matrix",
+        "test_system.ProtocolTests.test_wave_sensitivity_and_rank_switch"
+      ],
+      "foundation_tests": [
+        "test_foundation.ProfileTests.test_all_numeric_modes_data_paths_ranks_bursts_sync_forms",
+        "test_foundation.ProfileTests.test_reuse_expiry_restart_rank_and_ownership"
+      ],
+      "combined_status": "pending",
+      "pending": "Capture real WCK and CS waveforms. Isolated fixtures do not qualify continuous reused-WCK traffic."
+    },
+    {
+      "key": "split_cs",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "BL32 split words/slices",
+        "continuous zero-gap CS",
+        "wrong rank",
+        "split holes",
+        "full CS release before rank switch"
+      ],
+      "environment_tests": [
+        "test_system.ProtocolTests.test_missing_split_word_and_ca_collision",
+        "test_system.ProtocolTests.test_wave_sensitivity_and_rank_switch"
+      ],
+      "foundation_tests": [
+        "test_corrections.DataChipSelectTests.test_cs_continuous_through_split_and_explicit_deassertion",
+        "test_corrections.DataChipSelectTests.test_rank_changes_wait_for_both_cs_deassertion_and_full_wck_disable"
+      ],
+      "combined_status": "pending",
+      "pending": "Connect complete emitted data/CS including disabled split slots."
+    },
+    {
+      "key": "read_return",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "independent slice rotation",
+        "valid skew/gaps",
+        "DNV",
+        "missing/duplicate/deadline",
+        "reset pointer",
+        "canonical field interleaving"
+      ],
+      "environment_tests": [
+        "test_system.ProtocolTests.test_rotation_dnv_missing_duplicate_reset",
+        "test_system.ProtocolTests.test_pin_model_write_read_and_split",
+        "test_system.AdapterTests.test_canonical_dfi_field_interleaving_and_ratio_boundary"
+      ],
+      "foundation_tests": [
+        "test_contracts.ReadCompletionTests.test_actual_word_lanes_wrap_gaps_skew_and_dnv"
+      ],
+      "combined_status": "pending",
+      "pending": "Bind canonical returns to independent enable timeline and memory contents; do not infer identity from completion tag alone."
+    },
+    {
+      "key": "live_scheduler",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "CK/CK2/CK4 new selection",
+        "unconditional pair/live legality",
+        "age saturation/QoS",
+        "replay/duplicates",
+        "empty escape",
+        "issue feedback"
+      ],
+      "environment_tests": [],
+      "foundation_tests": [
+        "test_foundation.SchedulerTests.test_age_replay_generation_empty_escape_and_pair_slots",
+        "test_foundation.InterfaceSeamTests.test_weighted_shares_empty_escape_zero_and_urgent_classes"
+      ],
+      "combined_status": "pending",
+      "pending": "Add actual scheduler issue/eligibility observations and deliberate stale/duplicate picks under backpressure."
+    },
+    {
+      "key": "maintenance",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "periodic REF",
+        "thermal derating/debt/credits",
+        "paired mandatory RFM",
+        "ZQ",
+        "long SR",
+        "extra refresh before SR reentry"
+      ],
+      "environment_tests": [
+        "test_system.AdapterTests.test_hot_timing_and_intervening_bank_do_not_erase_constraints"
+      ],
+      "foundation_tests": [
+        "test_foundation.LifecycleTests.test_thermal_refresh_pairs_rfm_and_sr_extra",
+        "test_foundation.ClosureTests.test_periodic_maintenance_missing_or_late_is_detected",
+        "test_foundation.ClosureTests.test_long_self_refresh_and_extra_before_reentry"
+      ],
+      "combined_status": "pending",
+      "pending": "Observe actual MR4/ZQ/RFM/SR commands and timers; generic model currently supports selected CA/maintenance subset."
+    },
+    {
+      "key": "profile_admission",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "missing/overflow/inconsistent timing",
+        "unsupported mode/capability",
+        "nonzero CS gap",
+        "no traffic before qualification"
+      ],
+      "environment_tests": [
+        "test_system.ProtocolTests.test_wave_sensitivity_and_rank_switch"
+      ],
+      "foundation_tests": [
+        "test_foundation.ProfileTests.test_profile_rejects_missing_overflow_capability_mr_units",
+        "test_corrections.DataChipSelectTests.test_nonzero_gaps_rejected_at_all_profile_and_programming_boundaries"
+      ],
+      "combined_status": "pending",
+      "pending": "Run actual validation/admission at every supported configuration boundary."
+    },
+    {
+      "key": "inline_ecc",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "all SECDED single/double faults",
+        "RMW locks",
+        "physical data/check outcomes",
+        "poison",
+        "reserved check capacity",
+        "dirty cache pressure",
+        "versioned correction scrub"
+      ],
+      "environment_tests": [
+        "test_system.ProtocolTests.test_all_inline_single_and_double_faults",
+        "test_system.ProtocolTests.test_inline_physical_pair_poison_and_stale_scrub"
+      ],
+      "foundation_tests": [
+        "test_foundation.IntegrityTests.test_partial_rmw_scrub_version_cache_and_physical_failure"
+      ],
+      "combined_status": "pending",
+      "pending": "Connect independent physical data/check address mapping and cache eviction witnesses. Synthetic faults do not prove controller ECC."
+    },
+    {
+      "key": "link_ecc",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "JEDEC single/double matrix faults",
+        "per-byte 16-beat groups",
+        "split BL32",
+        "raw parity/DMI",
+        "mask/DBI order",
+        "read-link DBI exclusion"
+      ],
+      "environment_tests": [
+        "test_system.ProtocolTests.test_link_faults_mask_dbi_and_split_identity",
+        "test_system.AdapterTests.test_phy_raw_read_link_parity_and_read_dbi"
+      ],
+      "foundation_tests": [
+        "test_contracts.LinkEccTests.test_all_single_and_double_error_locations",
+        "test_foundation.IntegrityTests.test_dbi_mask_transform_all_bytes",
+        "test_foundation.IntegrityTests.test_full_x16_split_link_transport_faults"
+      ],
+      "combined_status": "pending",
+      "pending": "Capture emitted write raw parity and loop corrected physical writes back to memory. DigitalPhy read parity is connected; write_word alone does not qualify link correction."
+    },
+    {
+      "key": "posted_strict",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "before/at/after pins",
+        "strict MR43 gate",
+        "posted physical prerequisite",
+        "stable exposed response",
+        "late errors",
+        "per-rank sixteen-write epochs"
+      ],
+      "environment_tests": [
+        "test_system.HostTests.test_physical_and_integrity_prerequisites",
+        "test_system.LifetimeTests.test_two_rank_epochs_and_posted_history_after_reuse",
+        "test_system.LifetimeTests.test_reserved_transfer_and_failure_before_after_exposure",
+        "test_system.LifetimeTests.test_settled_success_has_no_remaining_late_error_obligation"
+      ],
+      "foundation_tests": [
+        "test_corrections.WriteCompletionTests.test_pin_completion_edges_and_independent_finish_order",
+        "test_corrections.WriteCompletionTests.test_mr43_failure_and_clear_preserve_response_backpressure"
+      ],
+      "combined_status": "pending",
+      "pending": "Connect actual per-rank polls, clear outcomes and exposure feedback, including pressure and MR43 deadlines."
+    },
+    {
+      "key": "transfer_recovery",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "reserved ownership transfer",
+        "storage reuse",
+        "stale generation/boot/config feedback",
+        "ownership loss",
+        "error before physical",
+        "host settlement before reset",
+        "queued OKAY is not source BVALID exposure",
+        "conservative async posted mode may wait for integrity",
+        "post-integrity global-fatal/exposure race"
+      ],
+      "environment_tests": [
+        "test_system.AdapterTests.test_error_before_physical_and_destructive_lifetime_reset",
+        "test_system.LifetimeTests.test_reserved_transfer_and_failure_before_after_exposure",
+        "test_system.LifetimeTests.test_fault_queue_insertion_is_not_source_exposure"
+      ],
+      "foundation_tests": [
+        "test_foundation.ClosureTests.test_write_epoch_ownership_loss_strict_and_posted"
+      ],
+      "combined_status": "pending",
+      "pending": "Stress all live rank epochs and failures during dirty management on combined RTL; every remaining obligation needs a reserved owner."
+    },
+    {
+      "key": "apb_schema",
+      "requirement": "control_lifecycle",
+      "behaviors": [
+        "setup/access/waits",
+        "stable request",
+        "strobes",
+        "RO/W1C/W1S/locks/broadcast",
+        "status/counter coherence",
+        "first-error",
+        "sequence exhaustion"
+      ],
+      "environment_tests": [
+        "test_system.AdapterTests.test_apb_sampled_setup_wait_payload_and_schema"
+      ],
+      "foundation_tests": [
+        "test_foundation.ConfigurationTests.test_apb_strobes_w1s_locks_broadcast_and_no_side_effect_error",
+        "test_foundation.ClosureTests.test_mailbox_overflow_is_atomic_and_status_is_hardware_owned"
+      ],
+      "combined_status": "pending",
+      "pending": "Fixture APB uses a toy register. Connect canonical APB decoder and owner-to-APB hardware snapshots to schema monitor."
+    },
+    {
+      "key": "atomic_config",
+      "requirement": "control_lifecycle",
+      "behaviors": [
+        "all-channel prepare/commit",
+        "stale/partial ACK",
+        "abort/timeout",
+        "quiesce/drain",
+        "boot/profile epochs"
+      ],
+      "environment_tests": [
+        "test_system.ControlTests.test_atomic_publication_and_abort"
+      ],
+      "foundation_tests": [
+        "test_foundation.ConfigurationTests.test_atomic_snapshot_stale_partial_timeout_reset",
+        "test_foundation.InterfaceSeamTests.test_live_status_survives_configuration_publication"
+      ],
+      "combined_status": "pending",
+      "pending": "Bind actual configuration payload digest, sequence, phase ACKs and all drain owners across asynchronous mailboxes."
+    },
+    {
+      "key": "boot_recovery",
+      "requirement": "control_lifecycle",
+      "behaviors": [
+        "fresh boot/training",
+        "unknown owner/retention loss",
+        "confirmed destructive reset",
+        "volatile reset",
+        "diagnostics retained",
+        "no IRQ-clear resume"
+      ],
+      "environment_tests": [
+        "test_system.ControlTests.test_recovery_first_diagnostic_and_stale_epochs",
+        "test_system.AdapterTests.test_error_before_physical_and_destructive_lifetime_reset"
+      ],
+      "foundation_tests": [
+        "test_corrections.DestructiveRecoveryTests.test_refresh_fault_reset_fresh_boot_enable_and_new_refresh",
+        "test_corrections.DestructiveRecoveryTests.test_reset_all_volatile_state_keep_independent_diagnostics"
+      ],
+      "combined_status": "pending",
+      "pending": "Inject real maintenance/ownership/retention failures and prove fresh service with actual source resets and all AXI settlement."
+    },
+    {
+      "key": "update",
+      "requirement": "control_lifecycle",
+      "behaviors": [
+        "declined optional request",
+        "ACK before/at/after minimum",
+        "registered release",
+        "late/stuck/reasserted/unsolicited ACK",
+        "competing PHY request"
+      ],
+      "environment_tests": [
+        "test_system.ControlTests.test_scripted_update_boundaries_faults_decline"
+      ],
+      "foundation_tests": [
+        "test_contracts.UpdateTests.test_boundaries_and_stuck_ack_hold_traffic",
+        "test_foundation.OwnershipTests.test_phy_update_competing_response_and_write_drain"
+      ],
+      "combined_status": "pending",
+      "pending": "Connect ResponseScript to real PHY control pins and check real refresh-budget admission and true pin/ECC drain."
+    },
+    {
+      "key": "pm_fsp_master",
+      "requirement": "control_lifecycle",
+      "behaviors": [
+        "normal PD/SR",
+        "decline/wakeup",
+        "low-then-high FSP acceptance/completion",
+        "failed DVFS",
+        "PHY-master refresh/retention"
+      ],
+      "environment_tests": [],
+      "foundation_tests": [
+        "test_foundation.LifecycleTests.test_pm_dvfs_phy_master_and_retention",
+        "test_foundation.LifecycleTests.test_low_power_decline_wakeup_and_competing_update",
+        "test_dvfs.DvfsTests.test_stale_high_never_activates_target",
+        "test_foundation.FinalBoundaryTests.test_master_request_state_and_return_attestation"
+      ],
+      "combined_status": "pending",
+      "pending": "Implement live management responder binding and combined transition/fault tests; scripts/reference checks are current evidence only."
+    },
+    {
+      "key": "benchmark",
+      "requirement": "host_bandwidth",
+      "behaviors": [
+        "100x3000 CK",
+        "ten warmup/90 measured",
+        "CK/CK2/CK4",
+        "separate read/write",
+        "99 percent",
+        "no tail credit",
+        "bounded backlog",
+        "credits/stalls/missing bytes"
+      ],
+      "environment_tests": [
+        "test_system.MeasurementTests.test_exact_windows_all_service_modes",
+        "test_system.MeasurementTests.test_tolerance_missing_bytes_and_no_tail_credit",
+        "test_system.MeasurementTests.test_backlog_overflow_duplicate_missing_stall"
+      ],
+      "foundation_tests": [
+        "test_foundation.PerformanceTests.test_periodic_read_write_full_and_reduced"
+      ],
+      "combined_status": "pending",
+      "pending": "Run actual two-port AXI128/400 two-channel CK800/WCK3200 controller; establish finite-row REF/MR4/ZQ command legality plus measured host bytes. No actual RTL throughput is established."
+    },
+    {
+      "key": "caps_fairness",
+      "requirement": "host_bandwidth",
+      "behaviors": [
+        "actual issued bytes",
+        "strict/work-conserving windows",
+        "zero disables",
+        "opposite eligibility",
+        "all QoS age escape",
+        "conditional bound",
+        "actual G",
+        "final tail"
+      ],
+      "environment_tests": [
+        "test_system.MeasurementTests.test_caps_bytes_window_edge_and_borrow",
+        "test_system.MeasurementTests.test_fairness_g_and_final_starved_tail"
+      ],
+      "foundation_tests": [
+        "test_foundation.ClosureTests.test_fairness_end_of_window_and_byte_caps",
+        "test_foundation.InterfaceSeamTests.test_weighted_shares_empty_escape_zero_and_urgent_classes"
+      ],
+      "combined_status": "pending",
+      "pending": "Bind actual eligibility/issue/cap counters; record suspended intervals and prove G on every tested stream."
+    },
+    {
+      "key": "nonbenchmark",
+      "requirement": "host_bandwidth",
+      "behaviors": [
+        "mixed/random",
+        "partial/narrow",
+        "ECC",
+        "hot thermal",
+        "rank switch",
+        "backpressure",
+        "maintenance stress"
+      ],
+      "environment_tests": [],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Run correctness and separate throughput reports on combined RTL; no same-rate promise applies."
+    },
+    {
+      "key": "reproduction",
+      "requirement": "reusable_delivery",
+      "behaviors": [
+        "pinned simulator/multiclock constructs",
+        "warning-fatal assertions",
+        "manifests/seeds/commands",
+        "fault sensitivity",
+        "clean clone",
+        "document hashes/links/generated products"
+      ],
+      "environment_tests": [
+        "test_system.TraceTests.test_fail_closed_header_fields_and_tail"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Runner executes Python, RTL fixture, negative B, trace replay and foundation. Reproduce exact clean commit; fresh-host setup, remote CI, formal/synthesis/physical and final combined coverage remain separate."
+    },
+    {
+      "key": "admitted_timing_recovery",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "admitted timing recovery",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.TimingCorrections.test_review_self_refresh_and_exit_boundary",
+        "test_corrections.TimingCorrections.test_review_pb_refresh_and_other_bank_act_boundaries",
+        "test_corrections.TimingCorrections.test_review_mrw_to_mrr_boundary",
+        "test_corrections.TimingCorrections.test_mrw_to_mrw_and_mrr_to_mrr_boundaries",
+        "test_corrections.TimingCorrections.test_precharge_refresh_and_act_origins",
+        "test_corrections.TimingCorrections.test_zq_boundary_and_unsupported_mpc",
+        "test_corrections.TimingCorrections.test_power_down_sampled_cs_exit",
+        "test_corrections.TimingCorrections.test_turnaround_uses_latency_and_full_effective_split",
+        "test_corrections.TimingCorrections.test_split_column_and_write_to_masked_boundaries",
+        "test_corrections.TimingCorrections.test_pdx_blocks_mr_and_mrr_needs_extra_recovery",
+        "test_corrections.TimingCorrections.test_mrr_data_period_and_power_entry_spacing"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "continuous_wck_cs",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "continuous wck cs",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.StreamCorrections.test_continuous_reused_wck_and_cs",
+        "test_corrections.StreamCorrections.test_continuous_holes_edges_and_rank_sensitivity",
+        "test_corrections.StreamCorrections.test_fresh_epoch_after_disable_and_reuse_expiry",
+        "test_corrections.StreamCorrections.test_continuous_profile_direction_matrix"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "physical_write_link",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "physical write link",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.IntegrityCorrections.test_write_link_correction_mask_dbi_into_physical_memory"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "merged_original_dependencies",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "merged original dependencies",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.IntegrityCorrections.test_merge_originals_and_response_dependencies",
+        "test_corrections.IntegrityCorrections.test_merge_rejects_context_read_hazard_and_wrong_data"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "mr43_observed_phases",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "mr43 observed phases",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.IntegrityCorrections.test_mr43_poll_result_guard_and_rank_independence",
+        "test_corrections.IntegrityCorrections.test_missing_unsolicited_and_early_mr43",
+        "test_corrections.IntegrityCorrections.test_mr43_return_and_clear_timing_boundaries"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "live_management_ports",
+      "requirement": "control_lifecycle",
+      "behaviors": [
+        "live management ports",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.ManagementCorrections.test_live_update_decline_early_ack_registered_release",
+        "test_corrections.ManagementCorrections.test_live_update_late_stuck_reasserted_and_traffic",
+        "test_corrections.ManagementCorrections.test_live_fsp_training_pm_master_and_stale_completion"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    }
+  ]
+}

@@ -45,7 +45,7 @@ module lpddr5_mc_axi_bridge_tb #(
   initial begin #0.375; forever #1.25 if(axi_clock_run1)axi_clk1=~axi_clk1; end
 
   lpddr5_mc_axi_bridge #(.DATA_BITS(DATA_BITS),.ID_BITS(ID_BITS),.ADDRESS_BITS(ADDRESS_BITS),.DEPTH(DEPTH)) dut (
-    .core_clk_i(core_clk),.core_rst_ni(core_rst_n),.enable_i(enable),.fatal_i(fatal),.core_settled_i(core_settled),
+    .core_clk_i(core_clk),.core_rst_ni(core_rst_n),.cold_rst_ni(core_rst_n || (|axi_rst_n)),.enable_i(enable),.fatal_i(fatal),.core_settled_i(core_settled),
     .rearm_i(rearm),.rearm_ready_o(rearm_ready),.initialized_o(initialized),.fault_o(fault),.host_settled_o(settled),
     .admission_busy_o(admission_busy),
     .abort_settled_o(abort_settled),

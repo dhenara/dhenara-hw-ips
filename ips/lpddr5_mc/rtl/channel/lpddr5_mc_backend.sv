@@ -19,7 +19,7 @@ module lpddr5_mc_backend #(
   input logic [2:0] maintenance_pair_i,
   output logic maintenance_ready_o,
   input logic [1:0][7:0] activate_allowed_i,
-  input logic register_valid_i,register_rank_i,register_zq_i,
+  input logic register_pending_i,register_valid_i,register_rank_i,register_zq_i,
   input logic [6:0] register_address_i,
   output logic register_ready_o,register_result_valid_o,register_result_rank_o,register_result_zq_o,register_result_failed_o,
   output logic [6:0] register_result_address_o,
@@ -63,7 +63,10 @@ module lpddr5_mc_backend #(
   // that reserved interval. Already accepted pairs still finish every CK.
   assign link_reserve_hold=config_i.profile.write_link
     && refresh_budget_i<=maintenance_admission_budget(config_i.profile,maintenance_per_bank_i)+epoch_reserve+8;
-  assign block_issue=link_reserve_hold || fault_i || fault_o || register_owner_q || epoch_drain || register_valid_i || maintenance_valid_i || close_i;
+  // Keep the drain through rank/sweep handoffs and a refresh preemption.
+  // Admission can temporarily lose its reserve while the register obligation
+  // remains pending; that must not reopen rows before the next transaction.
+  assign block_issue=link_reserve_hold || fault_i || fault_o || register_owner_q || epoch_drain || register_pending_i || maintenance_valid_i || close_i;
   // One accepted pair, the longest live data path and write recovery, PREab
   // for each rank, then every rank's serialized MRR/read-clear/WCK handback.
   assign epoch_reserve=32'(config_i.profile.management_ck_tctrl_delay)
@@ -75,7 +78,12 @@ module lpddr5_mc_backend #(
       +32'(config_i.profile.dram_ck_tmrr)+32'(config_i.profile.dram_ck_tmrw)+16);
   assign pin_drained_o=data_drained && !pair_pending && !register_owner_q;
   assign integrity_drained_o=epoch_drained && adapter_drained;
-  assign drained_o=adapter_drained && scheduler_drained && pin_drained_o && epoch_drained;
+  // Ownership entry consumes this witness on the same edge as register
+  // admission. Fence pending visits and that edge's acceptance, not only the
+  // old registered owner. Keep pin_drained/exclusive_ready independent: the
+  // register visit and urgent maintenance must still progress in DRAIN.
+  assign drained_o=adapter_drained && scheduler_drained && pin_drained_o && epoch_drained
+    && !register_pending_i && !register_accept;
   assign exclusive_ready=service_i && !fault_i && !fault_o && data_drained && pages_closed_o && wck_disabled_o && !pair_pending && !register_owner_q && !maintenance_valid_i;
   assign register_accept=(epoch_poll || register_valid_i) && reg_ready;
   assign epoch_poll_ready=reg_ready && epoch_poll;
@@ -107,7 +115,7 @@ module lpddr5_mc_backend #(
     .drained_o(scheduler_drained),.pair_pending_o(pair_pending),.fault_o(scheduler_fault),
     .maintenance_valid_i(maintenance_valid_i && service_i && data_drained && !register_owner_q && !fault_i && !fault_o),
     .maintenance_rank_i(maintenance_valid_i ? maintenance_rank_i : close_rank_q),.maintenance_rfm_i(maintenance_rfm_i),.maintenance_all_i(maintenance_all_i),.maintenance_pair_i(maintenance_pair_i),
-    .activate_allowed_i(activate_allowed_i),.close_i(service_i && !fault_i && !fault_o && !register_owner_q && !maintenance_valid_i && (close_i || epoch_drain || register_valid_i)),
+    .activate_allowed_i(activate_allowed_i),.close_i(service_i && !fault_i && !fault_o && !register_owner_q && !maintenance_valid_i && (close_i || epoch_drain || register_pending_i)),
     .stop_requested_o(scheduler_stop),.maintenance_ready_o(maintenance_ready_o),.pages_closed_o(pages_closed_o),.rows_closed_o(rows_closed_o),
     .accepted_o(accepted_o),.issued_o(issued_o),.replayed_o(replayed_o),.max_wait_o(max_wait_o));
   always_comb begin
@@ -120,7 +128,7 @@ module lpddr5_mc_backend #(
     data_result_ready=(config_i.profile.write_link && data_result.is_write) || (result_ready && !epoch_valid);
     // WS_OFF owns an otherwise empty CA cycle. Accepted command pairs cannot
     // be displaced after the scheduler has updated its timing/credit state.
-    emit_stop=(scheduler_stop || stop_i || epoch_drain || register_valid_i || maintenance_valid_i)
+    emit_stop=(scheduler_stop || stop_i || epoch_drain || register_pending_i || maintenance_valid_i)
       && wck_stop_ready && data_drained && scheduler_ca.cs==0 && !register_owner_q && !pair_pending;
     ca_o=register_owner_q ? register_ca : scheduler_ca;
     if(emit_stop) begin ca_o.cs=2'b1<<wck_rank;ca_o.address=ca_cas(3'd7); end

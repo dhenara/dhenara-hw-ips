@@ -13,8 +13,12 @@ from collections import deque
 from pathlib import Path
 
 from contracts.integrity import WireBeat, check_transport
+from contracts.link_ecc import decode as decode_link
+from contracts.link_ecc import encode as encode_link
+from system.dram import decode as decode_ca
 from system.ecc import InlineWitness
 from system.host import Violation, require
+from system.return_timing import ReturnTiming
 
 IP = Path(__file__).resolve().parents[2]
 
@@ -235,6 +239,158 @@ def link_blocks(events, profile, writes):
     }
 
 
+def read_link_blocks(events, profile, payload):
+    """Associate every raw returned slice with CA, including MRR rotation.
+
+    This focused serial workload has one physical RD per accepted AR. Fault
+    positions are derived from the published test sequence, never DUT status.
+    Exact raw codewords and independently decoded results must both agree.
+    """
+    rows = json.loads((IP / "config/reference/link_ecc_matrix.json").read_text())["data_rows"]
+    ratio = profile["ratio"]
+    require(ratio == 4 and profile["read_link"], "read-link profile")
+    identities = [event["id"] for event in events if event["kind"] == "ar"]
+    require(identities == list(range(71, 629)), "read-link AR sequence")
+    pending, pointers, blocks, finished = [deque(), deque()], [0, 0], [], {}
+    details = []
+    timing = ReturnTiming(profile)
+    for event in events:
+        if event["kind"] == "r":
+            require(event["id"] in finished and event["ps"] > finished[event["id"]], "AXI before raw read tail")
+        if event["kind"] != "phy":
+            continue
+        require(event["channel"] == 0, "read-link channel identity")
+        operation = decode_ca(event["ca"]) if event["cs"] else None
+        if operation is not None and operation.kind in ("RD", "MRR"):
+            require(event["cs"] == 1, "read-link rank identity")
+            block = None
+            words = 8
+            if operation.kind == "RD":
+                require(operation.beats == 32 and len(blocks) < len(identities), "read-link BL32 count")
+                block = {"id": identities[len(blocks)], "wire": {}, "ps": event["ps"]}
+                blocks.append(block)
+                words = 16
+            for word in range(words):
+                enable = event["ck"] * ratio + profile["dfi_wck"]["trddata_en"] + word
+                if block is not None and word >= 8:
+                    enable += 8
+                for byte_slice in range(2):
+                    pending[byte_slice].append((block, word, enable))
+        raw = number(event["return"])
+        timing.sample(event["ck"], event["cs"], event["ca"], (raw >> 32) & 255)
+        for byte_slice in range(2):
+            count = 0
+            for ordinal in range(ratio):
+                lane = (pointers[byte_slice] + ordinal) % ratio
+                if not (raw >> (32 + lane * 2 + byte_slice) & 1):
+                    continue
+                require(count == ordinal and bool(pending[byte_slice]), "raw return hole/unsolicited slice")
+                count += 1
+                block, word, enable = pending[byte_slice].popleft()
+                require(event["ck"] * ratio >= enable, "raw return before read enable")
+                for half in range(2):
+                    shift = lane * 4 + half * 2 + byte_slice
+                    require(raw >> (16 + shift) & 1 == 0, "read-link unavailable byte")
+                    if block is None:
+                        continue
+                    key = word * 2 + half, byte_slice
+                    require(key not in block["wire"], "duplicate read-link beat")
+                    block["wire"][key] = (raw >> (40 + shift * 8) & 255, raw >> shift & 1)
+                if block is not None and len(block["wire"]) == 64:
+                    finished[block["id"]] = event["ps"]
+            pointers[byte_slice] = (pointers[byte_slice] + count) % ratio
+    require(len(blocks) == 558 and not any(pending) and len(finished) == 558, "read-link raw tail/count")
+    timing.finish()
+    counts = {"clean": 0, "corrected": 0, "uncorrectable": 0}
+    for ordinal, block in enumerate(blocks):
+        fault_group = fault_slice = None
+        fault_mask = 0
+        if 1 <= ordinal <= 556:
+            target, case = divmod(ordinal - 1, 139)
+            fault_group, fault_slice = divmod(target, 2)
+            fault_mask = 1 << case if case < 137 else 1 | (1 << (127 if case == 137 else 136))
+        expected_status = (
+            "clean" if fault_mask == 0 else "corrected" if fault_mask.bit_count() == 1 else "uncorrectable"
+        )
+        observed = []
+        for group in range(2):
+            for byte_slice in range(2):
+                data = checks = 0
+                for beat in range(16):
+                    value, parity = block["wire"][group * 16 + beat, byte_slice]
+                    data |= value << (8 * beat)
+                    if beat < 7:
+                        require(parity == 0, "reserved read parity")
+                    else:
+                        checks |= parity << (beat - 7)
+                expected = int.from_bytes(payload[group * 32 + byte_slice : (group + 1) * 32 : 2], "little")
+                mask = fault_mask if (group, byte_slice) == (fault_group, fault_slice) else 0
+                codeword = data | checks << 128
+                require(
+                    codeword == (expected | encode_link(rows, expected) << 128) ^ mask,
+                    "raw read codeword/fault position",
+                )
+                decoded = decode_link(rows, codeword)
+                status = expected_status if mask else "clean"
+                require(decoded.status == status, "read-link syndrome classification")
+                if status != "uncorrectable":
+                    require(decoded.payload == expected, "read-link correction payload")
+                observed.append(decoded.status)
+        require(
+            observed.count(expected_status) == (4 if expected_status == "clean" else 1), "read-link group isolation"
+        )
+        counts[expected_status] += 1
+        details.append(
+            {
+                "id": block["id"],
+                "group": fault_group,
+                "slice": fault_slice,
+                "mask": hex(fault_mask),
+                "status": expected_status,
+            }
+        )
+    require(counts == {"clean": 2, "corrected": 548, "uncorrectable": 8}, "read-link fault coverage")
+    return {
+        "read_bursts": len(blocks),
+        "codewords": 4 * len(blocks),
+        "counts": counts,
+        "faults": details,
+        "physical_return_timing": timing.finish(),
+    }
+
+
+def read_link_sensitivity(events, profile, payload):
+    """Corrupt the first clean returned payload, parity, identity and tail."""
+    read_link_blocks(events, profile, payload)
+    # Find the first returned word belonging to a normal read, beyond boot MRR.
+    command = next(e for e in events if e["kind"] == "phy" and e["cs"] and decode_ca(e["ca"]).kind == "RD")
+    first = next(
+        i
+        for i, e in enumerate(events)
+        if e["kind"] == "phy" and e["ck"] > command["ck"] and number(e["return"]) >> 32 & 255
+    )
+    raw = number(events[first]["return"])
+    valid = raw >> 32 & 255
+    bit = (valid & -valid).bit_length() - 1
+    lane, byte_slice = divmod(bit, 2)
+    rejected = []
+    for name in ("raw_data", "raw_parity", "slice_identity", "lost_return"):
+        mutant = list(events)
+        mask = {
+            "raw_data": 1 << (40 + lane * 32 + byte_slice * 8),
+            "raw_parity": 1 << (lane * 4 + byte_slice),
+            "slice_identity": 1 << (32 + bit),
+            "lost_return": valid << 32,
+        }[name]
+        mutant[first] = {**events[first], "return": hex(raw ^ mask)}
+        try:
+            read_link_blocks(mutant, profile, payload)
+        except Violation:
+            rejected.append(name)
+    require(len(rejected) == 4, "raw read-link oracle sensitivity")
+    return rejected
+
+
 def check(trace: Path, log: Path, profile: dict, mode: int) -> dict:
     events = [json.loads(line) for line in trace.read_text().splitlines()]
     require(
@@ -247,6 +403,20 @@ def check(trace: Path, log: Path, profile: dict, mode: int) -> dict:
     )
     bus_bytes = events[0]["bus_bytes"]
     writes = source_writes(events, bus_bytes)
+    if mode == 4:
+        require(writes.keys() == {70} and all(writes[70]["mask"]), "read-link source write")
+        payload = writes[70]["data"]
+        result = read_link_blocks(events, profile, payload)
+        reads = {
+            item["id"]: (
+                bytes(64) if item["status"] == "uncorrectable" else payload,
+                2 if item["status"] == "uncorrectable" else 0,
+            )
+            for item in result["faults"]
+        }
+        result["rejected_response_mutations"] = response_sensitivity(events, bus_bytes, reads, {70: 0})
+        result["rejected_raw_mutations"] = read_link_sensitivity(events, profile, payload)
+        return result
     if mode == 1:
         require(writes.keys() == {40, 43, 44, 46}, "inline source writes")
         initial, rewritten = writes[40]["data"], writes[44]["data"]

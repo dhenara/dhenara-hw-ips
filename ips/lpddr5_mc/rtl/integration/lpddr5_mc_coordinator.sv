@@ -5,6 +5,7 @@ module lpddr5_mc_coordinator #(
   parameter int COMMAND_TIMEOUT=65536
 ) (
   input logic clk_i,rst_ni,
+  input logic cold_rst_ni,
   input logic command_valid_i,
   output logic command_ready_o,
   input lpddr5_mc_apb_pkg::lpddr5_mc_control_command_t command_i,
@@ -43,7 +44,8 @@ module lpddr5_mc_coordinator #(
   state_t state_q;
   lpddr5_mc_channel_command_t operation_q;
   logic [CHANNELS-1:0] pending_q,reset_low_q,reset_confirmed_q;
-  logic requested_enable_q,fault_q,rearm_sent_q,recover_sent_q,host_monitored_q;
+  logic requested_enable_q,fault_q,rearm_sent_q,rearm_low_seen_q,recover_sent_q,host_monitored_q;
+  logic host_epoch_initialized;
   logic [31:0] sequence_q,recovery_boot_q,timer_q;
   logic [31:0] installed_boot_q,installed_epoch_q,idle_q;
   logic [CHANNELS-1:0] quiet_mask,power_down_due,self_refresh_due,sleep_mask_q,sleeping_mask;
@@ -98,7 +100,8 @@ module lpddr5_mc_coordinator #(
     all_quiet ? 4'd1 : all_reset ? 4'd0 : 4'd3;
   // Close source admission before channel drain starts, including unsolicited
   // PHY management. The channel keeps accepted CDC work live through DRAIN.
-  assign host_enable_o=requested_enable_q && all_run && profile_valid_o && trained_o && trusted_o
+  assign host_epoch_initialized=rearm_sent_q && rearm_low_seen_q && host_initialized_i && !host_rearm_o;
+  assign host_enable_o=requested_enable_q && host_epoch_initialized && all_run && profile_valid_o && trained_o && trusted_o
     && !(|management_request_i) && !publication_busy_i && !external_fault_i && !fault_q
     && !(state_q inside {SEND,WAIT_SLEEP,SLEEP,SEND_WAKE,WAIT_WAKE});
   assign host_fatal_o=(fault_q || external_fault_i || channel_fault)
@@ -116,16 +119,23 @@ module lpddr5_mc_coordinator #(
     assign command_o[c]=state_q==SEND_RECOVER ? CH_CMD_RECOVER : state_q==SEND_WAKE ? CH_CMD_WAKE : operation_q;
     assign channel_reset_confirmed_o[c]=state_q==SEND_RECOVER && pending_q[c] && reset_confirmed_q[c];
   end
+  // Preserve fault observation across core reset until explicit recovery.
+  always_ff @(posedge clk_i or negedge cold_rst_ni) begin
+    if(!cold_rst_ni) host_monitored_q<=0;
+    else begin
+      if(host_initialized_i || host_rearm_o) host_monitored_q<=1;
+      if(state_q==RECOVER_HOST && recover_sent_q && !host_fault_i) host_monitored_q<=0;
+    end
+  end
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if(!rst_ni) begin
       state_q<=IDLE;operation_q<=CH_CMD_NONE;pending_q<=0;reset_low_q<=0;reset_confirmed_q<=0;
-      requested_enable_q<=0;fault_q<=0;control_fault_seen_q<=0;rearm_sent_q<=0;recover_sent_q<=0;host_monitored_q<=0;
+      requested_enable_q<=0;fault_q<=0;control_fault_seen_q<=0;rearm_sent_q<=0;rearm_low_seen_q<=0;recover_sent_q<=0;
       sequence_q<=0;recovery_boot_q<=0;timer_q<=0;installed_boot_q<=0;installed_epoch_q<=0;idle_q<=0;sleep_mask_q<=0;
       host_recover_o<=0;host_rearm_o<=0;train_ack_o<=0;train_token_o<=0;
       rejected_o<=0;recovery_complete_o<=0;
     end else begin
       control_fault_seen_q<=control_fault_i;
-      if(host_initialized_i) host_monitored_q<=1;
       host_recover_o<=0;host_rearm_o<=0;train_ack_o<=0;
       rejected_o<=0;recovery_complete_o<=0;
       if(state_q==IDLE || state_q==SLEEP) timer_q<=0;else timer_q<=timer_q+1;
@@ -133,10 +143,14 @@ module lpddr5_mc_coordinator #(
       else if(idle_q!='1) idle_q<=idle_q+1;
       if(host_config_valid_o && host_config_ready_i) begin
         installed_boot_q<=configuration_i.boot_epoch;installed_epoch_q<=configuration_i.config_epoch;
-        rearm_sent_q<=0;
-      end
-      if(state_q==IDLE && profile_valid_o && host_settled_i && host_rearm_ready_i
-          && !host_initialized_i && !rearm_sent_q) begin
+        rearm_sent_q<=0;rearm_low_seen_q<=0;
+      end else if(rearm_sent_q && !host_initialized_i) rearm_low_seen_q<=1;
+      // An initialized source can still hold the previous configuration. Send
+      // one rearm for every installed image while disabled and fully settled.
+      // The registered pulse is consumed on the next edge; the old high level
+      // must fall and then return before ENABLE can use the new source epoch.
+      if(state_q==IDLE && !requested_enable_q && !configuration_valid_i
+          && profile_valid_o && host_settled_i && host_rearm_ready_i && !rearm_sent_q) begin
         host_rearm_o<=1;rearm_sent_q<=1;
       end
       case(state_q)
@@ -148,7 +162,7 @@ module lpddr5_mc_coordinator #(
               if(command_i.register_index==10'(INDEX_CONTROL)) begin
                 case(command_i.command_mask)
                   32'd1: begin
-                    if(!profile_valid_o || !trained_o || !trusted_o || !host_initialized_i || fault_o) rejected_o<=1;
+                    if(!profile_valid_o || !trained_o || !trusted_o || !host_epoch_initialized || fault_o) rejected_o<=1;
                     else begin operation_q<=CH_CMD_ENABLE;pending_q<='1;state_q<=SEND;end
                   end
                   32'd2: begin
@@ -219,7 +233,7 @@ module lpddr5_mc_coordinator #(
         end
         WAIT_BOOT: if(all_boot && host_settled_i) begin host_recover_o<=1;recover_sent_q<=1;state_q<=RECOVER_HOST;end
         RECOVER_HOST: if(recover_sent_q && !host_fault_i) begin
-          fault_q<=0;rearm_sent_q<=0;recover_sent_q<=0;host_monitored_q<=0;
+          fault_q<=0;rearm_sent_q<=0;rearm_low_seen_q<=0;recover_sent_q<=0;
           installed_epoch_q<=0;installed_boot_q<=boot_epoch_o;
           recovery_complete_o<=1;state_q<=IDLE;
         end

@@ -52,6 +52,38 @@ def capture(wave):
 
 
 class HostTests(unittest.TestCase):
+    def test_configured_id_and_address_bounds_settle_every_beat(self):
+        for id_bits, address_bits in ((4, 32), (8, 36), (16, 40)):
+            with self.subTest(id_bits=id_bits, address_bits=address_bits):
+                h = HostScoreboard(id_bits=id_bits, address_bits=address_bits, mapped_end=1 << address_bits)
+                # The highest admitted ID and final aligned bus beat are valid.
+                a = Address(0, (1 << id_bits) - 1, (1 << address_bits) - 16, size=4)
+                tag = h.admit(a, False)
+                self.assertEqual(h.transactions[tag].error, 0)
+                h.physical_done(tag)
+                h.integrity_done(tag)
+                h.offer(tag, 0, 0, True)
+                h.handshake(tag)
+                invalid = [Address(0, 1, 1 << address_bits, length=3, size=4)]
+                if id_bits < 16:
+                    invalid.append(Address(0, 1 << id_bits, 0, length=3, size=4))
+                for descriptor in invalid:
+                    for write_access in (False, True):
+                        tag = h.admit(descriptor, write_access)
+                        self.assertEqual(h.transactions[tag].error, 3)
+                        if write_access:
+                            for beat in range(4):
+                                h.w(0, 1, 65535, beat == 3)
+                            with self.assertRaisesRegex(Violation, "response code"):
+                                h.offer(tag, 0, 0, True)
+                            h.offer(tag, 0, 3, True)
+                            h.handshake(tag)
+                        else:
+                            for beat in range(4):
+                                h.offer(tag, 0, 3, beat == 3)
+                                h.handshake(tag)
+                h.finish()
+
     def test_write_read_pin_effects_and_backpressure(self):
         h = HostScoreboard()
         t = write(h, length=3)
@@ -239,6 +271,29 @@ class HostTests(unittest.TestCase):
         h.integrity_done(t)
         h.offer(t, 0, 0, True)
         h.handshake(t)
+        h.finish()
+
+    def test_fixed_write_effects_follow_every_validated_beat(self):
+        h = HostScoreboard()
+        tag = h.admit(Address(0, 1, 0, length=1, size=0, burst=0), True)
+        h.w(0, 0x12, 1, False)
+        with self.assertRaisesRegex(Violation, "before full validation"):
+            h.pin_write(tag, 0, b"\x12", 1, 0)
+        h.w(0, 0x34, 1, True)
+        with self.assertRaisesRegex(Violation, "unexpected physical write byte"):
+            h.pin_write(tag, 0, b"\x34", 1, 0)
+        h.pin_write(tag, 0, b"\x12", 1, 0)
+        with self.assertRaisesRegex(Violation, "before repeated write bytes"):
+            h.physical_done(tag)
+        h.pin_write(tag, 0, b"\x34", 1, 0)
+        with self.assertRaisesRegex(Violation, "duplicate physical byte"):
+            h.pin_write(tag, 0, b"\x34", 1, 0)
+        h.physical_done(tag)
+        h.integrity_done(tag)
+        h.offer(tag, 0, 0, True)
+        h.handshake(tag)
+        self.assertEqual(h.memory[0], 0x34)
+        self.assertEqual(h.serial[0], 0x34)
         h.finish()
 
 
@@ -603,6 +658,22 @@ class MeasurementTests(unittest.TestCase):
             f.step({1, 2}, 2 if n % 2 else None)
         with self.assertRaisesRegex(Violation, "starvation"):
             f.step({1, 2}, 2)
+
+    def test_borrowed_capacity_is_not_recreated_by_delayed_opposite_arrival(self):
+        for direction in (0, 1):
+            with self.subTest(direction=direction):
+                c = Caps(8, (64, 64), True)
+                c.issue(0, direction, 64, False)
+                c.issue(1, direction, 32, False)
+                with self.assertRaisesRegex(Violation, "combined byte cap"):
+                    c.issue(2, 1 - direction, 64, True)
+                c.issue(3, 1 - direction, 32, True)
+                self.assertEqual(sum(c.used), 128)
+                with self.assertRaisesRegex(Violation, "combined byte cap"):
+                    c.issue(4, direction, 32, False)
+                c.issue(8, direction, 64, True)
+                c.issue(9, 1 - direction, 64, True)
+                self.assertEqual(c.used, [64, 64])
 
 
 class LifetimeTests(unittest.TestCase):

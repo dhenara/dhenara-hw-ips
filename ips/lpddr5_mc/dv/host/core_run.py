@@ -23,6 +23,11 @@ def main() -> None:
     parser.add_argument("--queue-depth", type=int, choices=(16, 32, 64), default=16)
     parser.add_argument("--early-posted", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--compose-only",
+        action="store_true",
+        help="run focused cross-transaction forwarding/merge cases",
+    )
     args = parser.parse_args()
     if args.report.exists():
         parser.error("report exists; preserve evidence and choose a new path")
@@ -43,7 +48,16 @@ def main() -> None:
     ]
     captured = {}
     captured_paths = []
-    for name in [*sources, "ips/lpddr5_mc/dv/host/core_run.py"]:
+    oracle_sources = (
+        [
+            "ips/lpddr5_mc/dv/host/compose_oracle.py",
+            "ips/lpddr5_mc/dv/system/host.py",
+            "ips/lpddr5_mc/dv/system/merge.py",
+        ]
+        if args.compose_only
+        else []
+    )
+    for name in [*sources, "ips/lpddr5_mc/dv/host/core_run.py", *oracle_sources]:
         target = build / "captured-source" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(REPO / name, target)
@@ -75,6 +89,7 @@ def main() -> None:
             f"-GDATA_BITS={args.data_bits}",
             f"-GQUEUE_DEPTH={args.queue_depth}",
             f"-GEARLY_POSTED=1'b{int(args.early_posted)}",
+            f"-GCOMPOSE_ONLY=1'b{int(args.compose_only)}",
             "--Mdir",
             str(build),
             "-j",
@@ -84,9 +99,39 @@ def main() -> None:
         [str(build / "Vlpddr5_mc_host_core_tb"), *(["+debug"] if args.debug else [])],
     ]
     elaboration_cases = [
-        {"PORTS": 1, "CHANNELS": 1, "RANKS": 1, "DATA_BITS": 64, "ID_BITS": 4, "ADDRESS_BITS": 32, "DEPTH": 16},
-        {"PORTS": 2, "CHANNELS": 2, "RANKS": 2, "DATA_BITS": 256, "ID_BITS": 16, "ADDRESS_BITS": 40, "DEPTH": 64},
+        {
+            "PORTS": 1,
+            "CHANNELS": 1,
+            "RANKS": 1,
+            "DATA_BITS": 64,
+            "ID_BITS": 4,
+            "ADDRESS_BITS": 32,
+            "DEPTH": 16,
+        },
+        {
+            "PORTS": 2,
+            "CHANNELS": 2,
+            "RANKS": 2,
+            "DATA_BITS": 256,
+            "ID_BITS": 16,
+            "ADDRESS_BITS": 40,
+            "DEPTH": 64,
+        },
     ]
+    if args.compose_only:
+        commands.append(
+            [
+                os.sys.executable,
+                str(build / "captured-source" / oracle_sources[0]),
+                "--log",
+                str(args.report.with_name(args.report.stem + "-1.log")),
+                "--report",
+                str(args.report.with_name(args.report.stem + "-oracle.json")),
+                "--bus-bytes",
+                str(args.data_bits // 8),
+            ]
+        )
+    elaboration_offset = len(commands)
     for index, parameters in enumerate(elaboration_cases):
         commands.append(
             [
@@ -121,9 +166,9 @@ def main() -> None:
             }
         )
         if index == 1:
-            match = re.search(r"CORE_RESULT tests=(\d+)", result.stdout)
+            match = re.search(r"(?:COMPOSE_RESULT|CORE_RESULT) tests=(\d+)", result.stdout)
             test_count = int(match.group(1)) if match else 0
-            if test_count < 24:
+            if test_count < (10 if args.compose_only else 24):
                 passed = False
         if result.returncode:
             passed = False
@@ -142,18 +187,28 @@ def main() -> None:
         ).strip(),
         "commands": records,
         "seed": 2095,
-        "parameters": {"data_bits": args.data_bits, "queue_depth": args.queue_depth, "early_posted": args.early_posted},
+        "parameters": {
+            "data_bits": args.data_bits,
+            "queue_depth": args.queue_depth,
+            "early_posted": args.early_posted,
+            "compose_only": args.compose_only,
+        },
         "test_families": test_count,
         "elaboration_cases": [
             {
                 "parameters": parameters,
-                "exit_code": records[index + 2]["exit_code"] if len(records) > index + 2 else None,
+                "exit_code": records[index + elaboration_offset]["exit_code"]
+                if len(records) > index + elaboration_offset
+                else None,
             }
             for index, parameters in enumerate(elaboration_cases)
         ],
         "result": "passed" if passed else "failed",
         "scope": "common-domain host core with independent byte memory responder",
-        "limitations": ["No asynchronous admission-order claim", "No DFI/protocol/ECC or throughput qualification"],
+        "limitations": [
+            "No asynchronous admission-order claim",
+            "No DFI/protocol/ECC or throughput qualification",
+        ],
     }
     args.report.write_text(json.dumps(report, indent=2) + "\n")
     if not passed:

@@ -1,12 +1,14 @@
 """Check combined RTL boundaries with retained commands and source manifests."""
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
 import platform
 import re
 import resource
+import shutil
 import subprocess
 import sys
 import time
@@ -14,6 +16,43 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[4]
 IP = REPO / "ips/lpddr5_mc"
+
+
+def reserve_observations(
+    report: Path,
+    family: str,
+    benchmark: bool,
+    caps: bool,
+    fairness: bool = False,
+    composition: bool = False,
+    ecc_boundary: bool = False,
+) -> list[Path]:
+    """Reserve shared trace names before compilation or another writer can start.
+
+    Different report filenames do not isolate observations in one directory.
+    Exclusive creation also fences concurrent runs; stale files require a new
+    evidence directory, never deletion or an overwrite of the earlier run.
+    """
+    paths = []
+    if family in ("datapath", "controller"):
+        paths.append(report.with_name("observations.jsonl.gz" if benchmark else "observations.jsonl"))
+    if family == "controller":
+        paths.append(report.with_name("recovery-observations.jsonl"))
+    if caps:
+        paths.append(report.with_name("cap-observations.jsonl"))
+    if fairness:
+        paths.append(report.with_name("fairness-observations.jsonl"))
+    if composition:
+        paths.append(report.with_name("composition-observations.jsonl"))
+    if ecc_boundary:
+        paths.append(report.with_name("boundary-observations.jsonl"))
+    for path in paths:
+        if path.exists():
+            raise FileExistsError(f"Refusing to overwrite retained observations: {path}; use a fresh report directory")
+    for path in paths:
+        with path.open("x"):
+            pass
+    return paths
 
 
 def main() -> None:
@@ -36,8 +75,57 @@ def main() -> None:
         default="notification",
     )
     parser.add_argument("--scenario", type=int, choices=range(4))
+    parser.add_argument("--runtime-reset", action="store_true")
+    parser.add_argument("--runtime-reset-matrix", action="store_true")
+    parser.add_argument("--runtime-reset-case", type=int, choices=range(10))
     parser.add_argument("--power-policy", type=int, choices=(1, 2))
-    parser.add_argument("--integrity-mode", type=int, choices=range(4), default=0)
+    parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
+    parser.add_argument("--cap-mode", type=int, choices=(1, 2))
+    parser.add_argument("--cap-granule-bytes", type=int, choices=(32, 64), default=64)
+    parser.add_argument("--cap-traffic", choices=("phase", "mixed", "concurrent"), default="phase")
+    parser.add_argument("--zero-cap-direction", choices=("read", "write"))
+    parser.add_argument("--fairness-mode", type=int, choices=(0, 1, 2))
+    parser.add_argument("--fairness-traffic", choices=("balanced", "row-churn"), default="balanced")
+    parser.add_argument("--benchmark-direction", choices=("read", "write"))
+    parser.add_argument("--benchmark-smoke", action="store_true")
+    parser.add_argument("--axi-stress-seed", type=int)
+    parser.add_argument("--axi-overlap", action="store_true")
+    parser.add_argument("--axi-extended", action="store_true")
+    parser.add_argument("--ecc-composition", action="store_true")
+    parser.add_argument(
+        "--ecc-boundary-case",
+        type=int,
+        choices=range(12),
+        help="pin/MR43 boundary, before/at/after, strict/posted (case = kind*6 + (delta+1)*2 + posted)",
+    )
+    parser.add_argument("--inline-lifecycle", action="store_true")
+    parser.add_argument("--wrapper-management", action="store_true")
+    parser.add_argument(
+        "--wrapper-power-policy", type=int, choices=(1, 2), help="fixed-profile automatic power deferral/wake"
+    )
+    parser.add_argument(
+        "--wrapper-power-case",
+        choices=("entry_wake", "decline"),
+        help="decline suppresses both PHY ACKs; requires --wrapper-power-policy 1",
+    )
+    parser.add_argument(
+        "--wrapper-fsp-case",
+        type=int,
+        choices=(0, 1, 2),
+        help="unanimous decline, constant-CK roundtrip, stuck-return recovery",
+    )
+    parser.add_argument(
+        "--wrapper-case", type=int, choices=(4, 5), help="source-prepared RFM fatal or active PHY REF case"
+    )
+    parser.add_argument(
+        "--prepare-wrapper-management",
+        action="store_true",
+        help="owning units and warning-fatal TB lint; no hardware simulation",
+    )
+    parser.add_argument("--continuous-observer", action="store_true")
+    parser.add_argument("--id-bits", type=int, choices=range(4, 17))
+    parser.add_argument("--address-bits", type=int, choices=range(32, 41), default=40)
+    parser.add_argument("--granule-bytes", type=int, choices=(32, 64), default=64)
     for flag, values, default in (
         ("ports", (1, 2), 2),
         ("channels", (1, 2), 2),
@@ -49,6 +137,166 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.ecc_boundary_case is not None:
+        if (
+            args.family != "controller"
+            or (
+                args.ports,
+                args.channels,
+                args.ranks,
+                args.data_bits,
+                args.depth,
+                args.profile_number,
+                args.service_div,
+            )
+            != (2, 2, 1, 128, 16, 8, 2)
+            or args.wrapper_management
+            or args.prepare_wrapper_management
+            or args.wrapper_case is not None
+            or args.wrapper_power_policy is not None
+            or args.wrapper_fsp_case is not None
+            or args.runtime_reset
+            or args.runtime_reset_matrix
+            or args.runtime_reset_case is not None
+            or args.power_policy is not None
+            or args.benchmark_direction is not None
+            or args.axi_stress_seed is not None
+            or args.axi_overlap
+            or args.axi_extended
+            or args.ecc_composition
+            or args.cap_mode is not None
+            or args.fairness_mode is not None
+            or args.integrity_mode
+        ):
+            parser.error("ECC boundary requires the isolated controller P2/C2/R1 AXI128/depth16/profile8/CK2")
+        args.inline_lifecycle = args.continuous_observer = True
+    if args.axi_extended and (
+        args.family != "datapath"
+        or (
+            args.ports,
+            args.channels,
+            args.ranks,
+            args.data_bits,
+            args.depth,
+            args.profile_number,
+            args.service_div,
+            args.integrity_mode,
+            args.id_bits if args.id_bits is not None else 8,
+            args.address_bits,
+            args.granule_bytes,
+        )
+        != (2, 2, 1, 128, 16, 0, 2, 0, 8, 40, 64)
+        or args.axi_overlap
+        or args.axi_stress_seed is not None
+        or args.ecc_composition
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.inline_lifecycle
+        or args.wrapper_management
+        or args.wrapper_power_policy is not None
+        or args.wrapper_fsp_case is not None
+        or args.prepare_wrapper_management
+        or args.wrapper_case is not None
+        or args.continuous_observer
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy is not None
+        or args.benchmark_direction
+    ):
+        parser.error("Extended AXI requires the isolated plain P2/C2/R1 AXI128/depth16/profile0/CK2 datapath")
+    if args.ecc_composition and (
+        args.family != "datapath"
+        or (args.ports, args.channels, args.ranks, args.data_bits, args.profile_number, args.integrity_mode)
+        != (1, 1, 1, 128, 0, 1)
+        or args.axi_overlap
+        or args.axi_stress_seed is not None
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.inline_lifecycle
+        or args.wrapper_management
+        or args.prepare_wrapper_management
+        or args.continuous_observer
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy is not None
+        or args.benchmark_direction
+    ):
+        parser.error("ECC composition requires the isolated one-port/channel/rank AXI128 inline datapath/profile0")
+    if args.wrapper_fsp_case is not None and (
+        args.ports,
+        args.channels,
+        args.ranks,
+        args.data_bits,
+        args.depth,
+        args.profile_number,
+        args.service_div,
+    ) != (2, 2, 1, 128, 16, 0, 2):
+        parser.error("FSP requires P2/C2/R1 AXI128/depth16/profile0/CK2")
+    if args.wrapper_power_case is not None and (
+        args.wrapper_power_policy is None or args.wrapper_power_case == "decline" and args.wrapper_power_policy != 1
+    ):
+        parser.error("power case requires a matching wrapper power policy; decline requires policy1")
+    if args.prepare_wrapper_management or args.wrapper_power_policy is not None or args.wrapper_fsp_case is not None:
+        args.wrapper_management = True
+    if sum(x is not None for x in (args.wrapper_power_policy, args.wrapper_case, args.wrapper_fsp_case)) > 1:
+        parser.error("power, FSP and unsolicited management are separate selections")
+    if args.wrapper_power_policy is not None and args.wrapper_case is not None:
+        parser.error("automatic power and unsolicited management are separate selections")
+    if args.wrapper_case is not None and not args.wrapper_management:
+        parser.error("--wrapper-case requires wrapper management/preparation")
+    if args.wrapper_management and (
+        args.family != "controller"
+        or args.inline_lifecycle
+        or args.continuous_observer
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy
+        or args.benchmark_direction
+        or args.integrity_mode
+        or args.cap_mode
+        or args.fairness_mode is not None
+    ):
+        parser.error("wrapper management requires the default controller fixture alone")
+    if args.continuous_observer and not args.inline_lifecycle:
+        parser.error(
+            "continuous observation binds the inline lifecycle fixture; other boot/profile bindings remain pending"
+        )
+    if args.inline_lifecycle and (
+        args.family != "controller"
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy
+        or args.benchmark_direction
+        or args.integrity_mode
+    ):
+        parser.error("inline lifecycle requires the default controller fixture")
+    if args.axi_overlap and (
+        args.family != "datapath"
+        or args.ports != 2
+        or args.integrity_mode
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.benchmark_direction
+        or args.axi_stress_seed is not None
+    ):
+        parser.error("AXI overlap requires the plain two-port datapath fixture")
+    if args.axi_stress_seed is not None and (
+        not 0 < args.axi_stress_seed < (1 << 31)
+        or args.family != "datapath"
+        or args.integrity_mode
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.benchmark_direction
+    ):
+        parser.error("AXI stress requires a positive 31-bit seed and the plain datapath fixture")
+    if args.runtime_reset_case is not None:
+        args.runtime_reset_matrix = True
+    if args.runtime_reset_matrix:
+        args.runtime_reset = True
     configuration = {
         "PORTS": args.ports,
         "CHANNELS": args.channels,
@@ -59,16 +307,103 @@ def main() -> None:
         "SERVICE_DIV": args.service_div,
         "INTEGRITY_MODE": args.integrity_mode,
     }
-    if args.family not in ("datapath", "lint") and list(configuration.values()) != [
-        2,
-        2,
-        1,
-        128,
-        16,
-        0,
-        2,
-        0,
-    ]:
+    if args.axi_stress_seed is not None:
+        configuration["AXI_STRESS"] = 1
+    if args.axi_overlap:
+        configuration["AXI_OVERLAP"] = 1
+    if args.axi_extended:
+        configuration["AXI_EXTENDED"] = 1
+    if args.ecc_composition:
+        configuration["ECC_COMPOSITION"] = 1
+    if args.family in ("datapath", "lint"):
+        configuration.update(
+            ID_BITS=args.id_bits if args.id_bits is not None else 16 if args.integrity_mode == 4 else 8,
+            ADDRESS_BITS=args.address_bits,
+            GRANULE_BYTES=args.granule_bytes,
+        )
+    elif args.id_bits is not None or args.address_bits != 40 or args.granule_bytes != 64:
+        parser.error("ID/address/granule selection applies only to datapath and wrapper lint")
+    if args.family == "lint" and args.granule_bytes != 64:
+        parser.error("granule size is a runtime configuration; use datapath for its behavior check")
+    if args.cap_mode is not None and args.granule_bytes != 64:
+        parser.error("cap workloads select their granule with --cap-granule-bytes")
+    if args.integrity_mode and (args.id_bits is not None or args.address_bits != 40 or args.granule_bytes != 64):
+        parser.error("focused integrity workloads use their fixed ID/address/granule configuration")
+    if args.runtime_reset and (args.family != "controller" or args.power_policy or args.benchmark_direction):
+        parser.error("runtime reset requires the normal controller fixture")
+    if args.cap_mode is not None and (
+        args.family != "datapath" or (args.ports, args.channels, args.integrity_mode) != (2, 2, 0)
+    ):
+        parser.error("cap modes require the plain two-port/two-channel datapath")
+    if args.cap_traffic == "mixed" and args.cap_mode != 1:
+        parser.error("mixed cap traffic requires strict caps; use concurrent for timing-checked borrowing")
+    if args.cap_traffic == "concurrent" and (args.cap_mode is None or args.ranks != 1):
+        parser.error("concurrent cap traffic requires one rank and --cap-mode")
+    if args.cap_mode is None and (args.cap_granule_bytes != 64 or args.cap_traffic != "phase"):
+        parser.error("cap workload selections require --cap-mode")
+    if args.zero_cap_direction is not None and (
+        args.cap_mode is None or args.cap_traffic != "phase" or args.cap_granule_bytes != 64
+    ):
+        parser.error("zero-cap checks require --cap-mode and the default phase/64-byte selections")
+    if args.fairness_mode is not None and (
+        args.family != "datapath"
+        or args.cap_mode is not None
+        or (
+            args.ports,
+            args.channels,
+            args.ranks,
+            args.data_bits,
+            args.depth,
+            args.profile_number,
+            args.integrity_mode,
+        )
+        != (2, 2, 1, 128, 64, 4, 0)
+        or args.granule_bytes != 64
+    ):
+        parser.error("fairness requires two plain AXI128 ports/channels, one rank, depth64/profile4/64-byte granules")
+    if args.fairness_traffic != "balanced" and args.fairness_mode is None:
+        parser.error("fairness traffic selection requires --fairness-mode")
+    if args.benchmark_smoke and not args.benchmark_direction:
+        parser.error("benchmark smoke requires an explicit benchmark direction")
+    if args.benchmark_direction and (
+        args.family != "controller"
+        or (
+            args.ports,
+            args.channels,
+            args.ranks,
+            args.data_bits,
+            args.depth,
+            args.profile_number,
+            args.integrity_mode,
+        )
+        != (2, 2, 1, 128, 64, 4, 0)
+    ):
+        parser.error("benchmark requires controller, two AXI128 ports/channels, one rank, depth 64 and profile 4")
+    # The ordinary power fixture selects rank-matched images/profiles and its
+    # physical replay already checks both ranks. Other controller families
+    # retain their fixed configurations and incompatible-selection checks.
+    two_rank_power = (
+        args.family == "controller"
+        and args.power_policy in (1, 2)
+        and list(configuration.values()) == [2, 2, 2, 128, 16, 0, 2, 0]
+    )
+    if (
+        args.family not in ("datapath", "lint")
+        and not args.benchmark_direction
+        and args.ecc_boundary_case is None
+        and not two_rank_power
+        and list(configuration.values())
+        != [
+            2,
+            2,
+            1,
+            128,
+            16,
+            0,
+            2,
+            0,
+        ]
+    ):
         parser.error("parameter selection applies only to datapath and wrapper lint")
     if args.scenario is not None and args.family != "apb_publication":
         parser.error("scenario selection applies only to APB publication")
@@ -79,10 +414,10 @@ def main() -> None:
     if args.integrity_mode and (
         args.family != "datapath"
         or (args.ports, args.channels, args.ranks) != (1, 1, 1)
-        or args.profile_number != (8 if args.integrity_mode == 2 else 0)
+        or args.profile_number != ({2: 8, 4: 16}.get(args.integrity_mode, 0))
     ):
         parser.error(
-            "focused integrity/management modes require datapath, one port/channel/rank and profile 0 (8 for link)"
+            "focused modes require datapath, one port/channel/rank and profile 0 (8 for write link, 16 for read link)"
         )
     report = args.report.resolve()
     if report.exists():
@@ -94,6 +429,25 @@ def main() -> None:
     build = storage / "lpddr5-integration" / args.build_name
     build.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
+    reserved = reserve_observations(
+        report,
+        args.family,
+        bool(args.benchmark_direction),
+        args.cap_mode is not None,
+        args.fairness_mode is not None,
+        args.ecc_composition,
+        args.ecc_boundary_case is not None,
+    )
+    if args.wrapper_management:
+        wrapper_path = report.with_name("wrapper-management.jsonl")
+        with wrapper_path.open("x"):
+            pass
+        reserved.append(wrapper_path)
+    if args.continuous_observer:
+        continuous_path = report.with_name("continuous-observations.jsonl")
+        with continuous_path.open("x"):
+            pass
+        reserved.append(continuous_path)
     sys.pycache_prefix = str(storage / "lpddr5-integration/pycache")
     from vectors import generate
 
@@ -104,6 +458,7 @@ def main() -> None:
         **os.environ,
         "VERILATOR_ROOT": str(tool / "share/verilator"),
         "VERILATOR_BIN": "../../bin/verilator_bin",
+        "PYTHONPATH": os.pathsep.join(filter(None, (str(IP / "dv"), os.environ.get("PYTHONPATH")))),
     }
     sources = [REPO / line for line in (IP / "rtl/files.f").read_text().splitlines() if line]
     if args.family in ("datapath", "publication", "apb_publication", "controller"):
@@ -114,9 +469,12 @@ def main() -> None:
         sources += [IP / "dv/integration" / (top + ".sv")]
     dependencies = [
         *sorted((IP / "dv/integration").glob("*.py")),
+        *sorted((IP / "dv/integration").glob("*.svh")),
+        *sorted((IP / "dv/channel").glob("*.py")),
         *sorted((IP / "dv/system").rglob("*.py")),
         *sorted((IP / "dv/contracts").rglob("*.py")),
         *sorted((IP / "config/contracts").glob("*.json")),
+        *sorted((IP / "config/reference").glob("*.json")),
     ]
     manifest = {
         str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -124,18 +482,48 @@ def main() -> None:
     }
     result = {
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
-        "seed": 2095,
+        "seed": args.axi_stress_seed if args.axi_stress_seed is not None else 2095,
         "python": platform.python_version(),
         "family": args.family,
         "configuration": configuration,
         "power_policy": args.power_policy,
+        "benchmark_direction": args.benchmark_direction,
+        "benchmark_smoke": args.benchmark_smoke,
+        "runtime_reset": args.runtime_reset,
+        "runtime_reset_matrix": args.runtime_reset_matrix,
+        "runtime_reset_case": args.runtime_reset_case,
+        "inline_lifecycle": args.inline_lifecycle,
+        "axi_extended": args.axi_extended,
+        "ecc_composition": args.ecc_composition,
+        "ecc_boundary_case": args.ecc_boundary_case,
+        "wrapper_management": args.wrapper_management,
+        "wrapper_case": args.wrapper_case,
+        "wrapper_power_policy": args.wrapper_power_policy,
+        "wrapper_power_case": args.wrapper_power_case or "entry_wake",
+        "wrapper_fsp_case": args.wrapper_fsp_case,
+        "preparation_only": args.prepare_wrapper_management,
+        "continuous_observer": args.continuous_observer,
+        "cap_mode": args.cap_mode,
+        "cap_granule_bytes": args.cap_granule_bytes,
+        "cap_traffic": args.cap_traffic,
+        "zero_cap_direction": args.zero_cap_direction,
+        "fairness_mode": args.fairness_mode,
+        "fairness_traffic": args.fairness_traffic,
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "source_sha256": manifest,
         "commands": [],
         "legacy_counterexample": args.expect_legacy_loss,
         "status": "running",
+        "reserved_observations": [str(path) for path in reserved],
         "limitations": ["Boundary regression only; complete controller and final qualification remain pending."],
     }
+    if args.wrapper_management or args.ecc_boundary_case is not None:
+        generated = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(build.iterdir()) if p.is_file()}
+        result["generated_inputs"] = generated
+        retained = report.parent / "generated-inputs"
+        retained.mkdir()
+        for name in generated:
+            shutil.copyfile(build / name, retained / name)
     if args.expect_legacy_loss:
         old = build / "lpddr5_mc_apb.sv"
         old.write_bytes(
@@ -151,39 +539,67 @@ def main() -> None:
         sources = [old if p.name == old.name else p for p in sources]
         result["legacy_apb_sha256"] = hashlib.sha256(old.read_bytes()).hexdigest()
     binary = build / (args.family + "-obj") / ("V" + top)
+    trace_path = (
+        build / "benchmark-observations.jsonl" if args.benchmark_direction else report.with_name("observations.jsonl")
+    )
     commands = [
         [str(tool / "bin/verilator"), "--version"],
         [
             str(tool / "bin/verilator"),
-            "--lint-only" if args.family == "lint" else "--binary",
+            "--lint-only" if args.family == "lint" or args.prepare_wrapper_management else "--binary",
             "--timing",
             "--timescale-override",
-            "1ns/1ps",
+            "1ns/1fs" if args.ecc_boundary_case is not None else "1ns/1ps",
             "--assert",
-            "--public-flat-rw",
+            *([] if args.benchmark_direction else ["--public-flat-rw"]),
             "-Wall",
             "--output-split",
             "10000",
             "--output-split-cfuncs",
             "500",
             "-MAKEFLAGS",
-            "OPT_FAST=-O0 OPT_SLOW=-O0",
+            "OPT_FAST=-O2 OPT_SLOW=-O1"
+            if args.benchmark_direction
+            or args.runtime_reset
+            or args.axi_stress_seed is not None
+            or args.axi_overlap
+            or args.axi_extended
+            or args.inline_lifecycle
+            or args.wrapper_management
+            else "OPT_FAST=-O0 OPT_SLOW=-O0",
             "--top-module",
             top,
             "--Mdir",
             str(build / (args.family + "-obj")),
             "-I" + str(build),
+            "-I" + str(IP / "dv/integration"),
             *(
                 [
                     f"-G{key}={value}"
                     for key, value in configuration.items()
-                    if key not in ("PROFILE_NUMBER", "SERVICE_DIV", "INTEGRITY_MODE")
+                    if key
+                    not in (
+                        "PROFILE_NUMBER",
+                        "SERVICE_DIV",
+                        "INTEGRITY_MODE",
+                        "GRANULE_BYTES",
+                    )
                 ]
                 if args.family == "lint"
                 else [f"-G{key}={value}" for key, value in configuration.items()]
                 if args.family == "datapath"
+                else [f"-G{key}={value}" for key, value in configuration.items() if key != "INTEGRITY_MODE"]
+                + ["-GBENCHMARK=1'b1"]
+                if args.benchmark_direction
+                else [f"-G{key}={value}" for key, value in configuration.items() if key != "INTEGRITY_MODE"]
+                if args.family == "controller" and args.power_policy is not None
                 else []
             ),
+            *(["-GRUNTIME_RESET=1'b1"] if args.runtime_reset else []),
+            *(["-GRESET_MATRIX=1'b1"] if args.runtime_reset_matrix else []),
+            *(["-GINLINE_LIFECYCLE=1'b1"] if args.inline_lifecycle else []),
+            *(["-GECC_BOUNDARY=1'b1", "-GPROFILE_NUMBER=8"] if args.ecc_boundary_case is not None else []),
+            *(["-GWRAPPER_MANAGEMENT=1'b1"] if args.wrapper_management else []),
             *map(str, sources),
             "-j",
             "2",
@@ -195,25 +611,159 @@ def main() -> None:
                 if args.family in ("decoder", "publication", "apb_publication", "controller")
                 else []
             ),
-            *(
-                ["+observations=" + str(report.with_name("observations.jsonl"))]
-                if args.family in ("datapath", "controller")
-                else []
-            ),
+            *(["+observations=" + str(trace_path)] if args.family in ("datapath", "controller") else []),
         ],
     ]
     if args.family == "lint":
         commands.pop()
+    if args.ecc_composition:
+        commands[-1].append("+composition_observations=" + str(report.with_name("composition-observations.jsonl")))
+    if args.axi_stress_seed is not None:
+        commands[-1].append(f"+axi_stress_seed={args.axi_stress_seed}")
+    if args.ecc_boundary_case is not None:
+        kind, remainder = divmod(args.ecc_boundary_case, 6)
+        delta, posted = divmod(remainder, 2)
+        commands[-1].extend(
+            [
+                f"+ecc_boundary_kind={kind}",
+                f"+ecc_boundary_delta={delta - 1}",
+                f"+ecc_boundary_posted={posted}",
+                "+ecc_boundary_observations=" + str(report.with_name("boundary-observations.jsonl")),
+            ]
+        )
+    if args.wrapper_management:
+        from maintenance_window import window_budget
+        from wrapper_management import digest, profile_binding, remaining_budget
+
+        if args.wrapper_case is not None:
+            commands[-1].append(f"+wrapper_case={args.wrapper_case}")
+
+        if args.wrapper_power_policy is not None:
+            commands[-1].append(f"+wrapper_power_policy={args.wrapper_power_policy}")
+            commands[-1].append(f"+wrapper_power_case={args.wrapper_power_case or 'entry_wake'}")
+        if args.wrapper_fsp_case is not None:
+            from wrapper_fsp import target_profile
+
+            commands[-1].extend(
+                [
+                    f"+wrapper_fsp_case={args.wrapper_fsp_case}",
+                    "+wrapper_fsp_target_sha256=" + digest(target_profile()),
+                ]
+            )
+        result["wrapper_profile"] = profile_binding()
+        result["wrapper_schedule"] = remaining_budget(result["wrapper_profile"])
+        result["wrapper_maintenance_window"] = window_budget(result["wrapper_profile"])
+        commands[-1].extend(
+            [
+                "+wrapper_observations=" + str(wrapper_path),
+                "+wrapper_profile_sha256=" + digest(result["wrapper_profile"]),
+            ]
+        )
     if args.family == "controller":
         commands[-1].append("+recovery_observations=" + str(report.with_name("recovery-observations.jsonl")))
+        if args.continuous_observer:
+            commands[-1].append("+continuous_observations=" + str(continuous_path))
+            if args.inline_lifecycle:
+                from continuous_physical import binding_digest
+
+                continuous_profile = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"][
+                    args.profile_number
+                ]
+                continuous_profile["device"]["mr57"] = 3
+                continuous_profile["ranks"] = args.ranks
+                commands[-1].append("+continuous_profile_sha256=" + binding_digest(continuous_profile))
         if args.power_policy is not None:
             commands[-1].append(f"+power_policy={args.power_policy}")
+        if args.runtime_reset_case is not None:
+            commands[-1].append(f"+runtime_reset_case={args.runtime_reset_case}")
+        if args.benchmark_direction:
+            commands[-1].extend(
+                [
+                    f"+benchmark_direction={int(args.benchmark_direction == 'write')}",
+                    f"+benchmark_smoke={int(args.benchmark_smoke)}",
+                    f"+benchmark_service={args.service_div}",
+                ]
+            )
+    if args.cap_mode is not None:
+        commands[-1].extend(
+            [
+                f"+cap_mode={args.cap_mode}",
+                f"+cap_granule_bytes={args.cap_granule_bytes}",
+                f"+cap_mixed={('phase', 'mixed', 'concurrent').index(args.cap_traffic)}",
+                "+cap_observations=" + str(report.with_name("cap-observations.jsonl")),
+            ]
+        )
+        if args.zero_cap_direction is not None:
+            commands[-1].append(f"+zero_cap_direction={int(args.zero_cap_direction == 'write')}")
+    if args.fairness_mode is not None:
+        commands[-1].extend(
+            [
+                f"+fairness_mode={args.fairness_mode}",
+                f"+fairness_rows={int(args.fairness_traffic == 'row-churn')}",
+                "+fairness_observations=" + str(report.with_name("fairness-observations.jsonl")),
+            ]
+        )
     if args.family == "apb_publication":
         simulation = commands.pop()
         scenarios = range(4) if args.scenario is None else [args.scenario]
         commands.extend([*simulation, f"+scenario={scenario}"] for scenario in scenarios)
+    if args.prepare_wrapper_management:
+        commands.pop()  # lint elaboration only, never execute a simulator
+    result["planned_commands"] = commands
     report.write_text(json.dumps(result, indent=2) + "\n")
     try:
+        if (
+            (args.wrapper_management or args.ecc_boundary_case is not None)
+            and not args.prepare_wrapper_management
+            and result["dirty"]
+        ):
+            raise RuntimeError("Wrapper hardware requires a clean committed source")
+        if args.axi_extended and result["dirty"]:
+            raise RuntimeError("Extended AXI hardware requires a clean committed source")
+        command = [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            str(IP / "dv/integration"),
+            "-p",
+            "*_test.py",
+            "-v",
+        ]
+        if args.wrapper_management:
+            command = [
+                sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                str(IP / "dv/integration"),
+                "-p",
+                "wrapper*_test.py"
+                if args.wrapper_power_policy is not None or args.wrapper_fsp_case is not None
+                else "wrapper_management*_test.py",
+                "-v",
+            ]
+        log = report.with_name(report.stem + "-tooling.log")
+        start = time.monotonic()
+        with log.open("w") as stream:
+            run = subprocess.run(
+                command,
+                cwd=REPO,
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        result["tooling_check"] = {
+            "argv": command,
+            "exit_code": run.returncode,
+            "seconds": time.monotonic() - start,
+            "log": str(log),
+        }
+        if run.returncode:
+            raise RuntimeError(f"Integration tooling regression failed; see {log}")
         for index, command in enumerate(commands):
             start = time.monotonic()
             log = report.with_name(f"{report.stem}-{index}.log")
@@ -244,11 +794,79 @@ def main() -> None:
                 raise RuntimeError(f"Command failed; see {log}")
             elif index >= 2 and (args.family.upper() + "_INTEGRATION_PASS") not in output:
                 raise RuntimeError("Missing behavior completion marker")
+        if args.prepare_wrapper_management:
+            after = {
+                str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in [REPO / p for p in manifest]
+            }
+            if after != manifest:
+                raise RuntimeError("Source changed during preparation")
+            result["source_after"] = after
+            result["status"] = "passed"
+            return
         if args.family in ("datapath", "controller"):
             from connected import check
 
             profiles = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"]
-            if args.integrity_mode in (1, 2):
+            if args.benchmark_direction:
+                from benchmark import check as check_benchmark
+                from benchmark import require_full_performance
+
+                result["benchmark_observations"] = check_benchmark(
+                    trace_path,
+                    report.with_name(f"{report.stem}-2.log"),
+                    args.benchmark_direction,
+                    args.service_div,
+                    smoke=args.benchmark_smoke,
+                )
+                if not args.benchmark_smoke:
+                    require_full_performance(result["benchmark_observations"])
+            elif args.wrapper_management:
+                if args.wrapper_fsp_case is not None:
+                    from wrapper_fsp import check as check_wrapper_fsp
+
+                    result["wrapper_fsp_observations"] = check_wrapper_fsp(
+                        wrapper_path, trace_path, args.wrapper_fsp_case
+                    )
+                elif args.wrapper_power_policy is not None:
+                    from wrapper_power import check as check_wrapper_power
+
+                    result["wrapper_power_observations"] = check_wrapper_power(
+                        wrapper_path, trace_path, args.wrapper_power_policy, args.wrapper_power_case or "entry_wake"
+                    )
+                else:
+                    from wrapper_management import check as check_wrapper_management
+
+                    result["wrapper_management_observations"] = check_wrapper_management(wrapper_path, trace_path)
+            elif args.ecc_boundary_case is not None:
+                from ecc_boundary import check as check_ecc_boundary
+
+                result["ecc_boundary_observations"] = check_ecc_boundary(
+                    continuous_path,
+                    trace_path,
+                    report.with_name("boundary-observations.jsonl"),
+                    continuous_profile,
+                )
+            elif args.inline_lifecycle:
+                from inline_lifecycle import check as check_inline_lifecycle
+
+                result["inline_lifecycle_observations"] = check_inline_lifecycle(
+                    trace_path,
+                    report.with_name("recovery-observations.jsonl"),
+                    report.with_name(f"{report.stem}-2.log"),
+                    profiles[0],
+                    ranks=args.ranks,
+                )
+            elif args.ecc_composition:
+                from ecc_composition import check as check_ecc_composition
+
+                result["ecc_composition_observations"] = check_ecc_composition(
+                    trace_path,
+                    report.with_name("composition-observations.jsonl"),
+                    report.with_name(f"{report.stem}-2.log"),
+                    profiles[0],
+                )
+            elif args.integrity_mode in (1, 2, 4):
                 from integrity import check as check_integrity
 
                 result["integrity_observations"] = check_integrity(
@@ -264,6 +882,20 @@ def main() -> None:
                     ranks=args.ranks,
                     depth=args.depth,
                     mapped_end=(1 << 30) * args.channels * args.ranks if args.ranks == 2 else 1 << 20,
+                    id_bits=configuration.get("ID_BITS", 8),
+                    address_bits=args.address_bits,
+                    granule_bytes=args.cap_granule_bytes if args.cap_mode is not None else args.granule_bytes,
+                    observe_axi=args.axi_overlap,
+                    fault_ps=(
+                        int(
+                            re.search(
+                                r"ZERO_CAP_FAULT ps=(\d+)",
+                                report.with_name(f"{report.stem}-2.log").read_text(),
+                            )[1]
+                        )
+                        if args.zero_cap_direction is not None
+                        else None
+                    ),
                     mr4_change_ck=(
                         int(
                             re.search(
@@ -275,24 +907,143 @@ def main() -> None:
                         else None
                     ),
                 )
-            if args.family == "controller" and args.power_policy is None:
+            if (
+                args.family == "controller"
+                and args.power_policy is None
+                and not args.benchmark_direction
+                and not args.inline_lifecycle
+                and not args.wrapper_management
+            ):
                 result["recovered_external_observations"] = check(
                     report.with_name("recovery-observations.jsonl"),
                     profiles[0],
                     ranks=1,
                     depth=16,
                 )
+            if args.cap_mode is not None:
+                if args.zero_cap_direction is not None:
+                    from zero_caps import qualify as qualify_caps
+                else:
+                    from caps import qualify as qualify_caps
+
+                eligibility_inputs = (
+                    {
+                        "raw": report.with_name("observations.jsonl"),
+                        "profile": profiles[args.profile_number] | {"ranks": 1},
+                    }
+                    if args.cap_traffic == "concurrent"
+                    else {}
+                )
+                result["cap_observations"] = qualify_caps(
+                    report.with_name("cap-observations.jsonl"),
+                    build / "cap-mutant.jsonl",
+                    result["external_observations"],
+                    **eligibility_inputs,
+                )
+            if args.fairness_mode is not None:
+                from fairness import qualify as qualify_fairness
+
+                result["fairness_observations"] = qualify_fairness(
+                    report.with_name("fairness-observations.jsonl"),
+                    build / "fairness-mutant.jsonl",
+                    result["external_observations"],
+                )
+            if not args.benchmark_direction and not args.wrapper_management and args.ecc_boundary_case is None:
+                from workload_costs import measure
+
+                if args.axi_stress_seed is not None:
+                    from axi_stress import measure as measure_stress
+
+                    result["axi_stress_observations"] = measure_stress(
+                        report.with_name("observations.jsonl"),
+                        report.with_name(f"{report.stem}-2.log"),
+                        args.axi_stress_seed,
+                    )
+                if args.axi_extended:
+                    from axi_extended import measure as measure_extended
+
+                    result["axi_extended_observations"] = measure_extended(
+                        report.with_name("observations.jsonl"),
+                        report.with_name(f"{report.stem}-2.log"),
+                    )
+                if args.axi_overlap:
+                    from axi_overlap import measure as measure_overlap
+
+                    result["axi_overlap_observations"] = measure_overlap(
+                        report.with_name("observations.jsonl"),
+                        report.with_name(f"{report.stem}-2.log"),
+                        args.depth,
+                    )
+                # Reset fixtures close this idle prefix before admitting the
+                # obligations they intentionally destroy. Only the final clean
+                # recovery segment has a complete workload to measure below.
+                if not args.runtime_reset:
+                    result["workload_costs"] = measure(report.with_name("observations.jsonl"))
+                if args.integrity_mode == 3:
+                    text = report.with_name(f"{report.stem}-2.log").read_text()
+                    start = int(re.search(r"HOT_WORKLOAD_START ps=(\d+)", text)[1])
+                    end = int(re.search(r"HOT_WORKLOAD_END ps=(\d+)", text)[1])
+                    temperatures = result["external_observations"]["temperature_returns_by_channel"][0]
+                    before = [t for t in temperatures if t["completed_ps"] <= start]
+                    if (
+                        not before
+                        or before[-1]["mr4"] != 13
+                        or any(t["mr4"] != 13 for t in temperatures if start < t["completed_ps"] <= end)
+                    ):
+                        raise RuntimeError("Hot segment lacks independently completed temperature13")
+                    result["hot_workload_costs"] = measure(
+                        report.with_name("observations.jsonl"),
+                        start_ps=start,
+                        end_ps=end,
+                    )
+                    for direction in ("read", "write"):
+                        stats = result["hot_workload_costs"][direction]
+                        if stats["completed_transactions"] != 32 or stats["successful_payload_bytes"] != 2048:
+                            raise RuntimeError("Hot segment incomplete payload")
+                if "recovered_external_observations" in result:
+                    result["recovered_workload_costs"] = measure(report.with_name("recovery-observations.jsonl"))
+        if args.continuous_observer and args.ecc_boundary_case is None:
+            if args.inline_lifecycle:
+                from continuous_physical import check as check_continuous
+            else:
+                from continuous import check as check_continuous
+
+            continuous_profile = json.loads(json.dumps(profiles[args.profile_number]))
+            # This exact controller fixture supplies MR57=3 before boot; its
+            # inline lifecycle keeps that capability in the recovered epoch.
+            # Other rediscovery/profile transitions need explicit bindings.
+            continuous_profile["device"]["mr57"] = 3
+            result["continuous_observations"] = check_continuous(
+                [json.loads(line) for line in continuous_path.read_text().splitlines()],
+                continuous_profile,
+            )
         after = {
             str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [REPO / p for p in manifest]
         }
         if after != manifest:
             raise RuntimeError("Source changed during checks")
+        result["source_after"] = after
         result["status"] = "passed"
     except BaseException as error:
         result["status"] = "failed"
         result["error"] = str(error)
         raise
     finally:
+        if args.wrapper_management or args.ecc_boundary_case is not None:
+            result["generated_inputs_after"] = {
+                name: hashlib.sha256((build / name).read_bytes()).hexdigest() for name in generated
+            }
+            if result["generated_inputs_after"] != generated:
+                result["status"] = "failed"
+                result["error"] = "Generated inputs changed during checks"
+                report.write_text(json.dumps(result, indent=2) + "\n")
+                raise RuntimeError(result["error"])
+        if args.benchmark_direction and trace_path.exists():
+            with (
+                trace_path.open("rb") as source,
+                gzip.open(report.with_name("observations.jsonl.gz"), "wb") as destination,
+            ):
+                shutil.copyfileobj(source, destination)
         report.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Integration checks passed: {report}")
 

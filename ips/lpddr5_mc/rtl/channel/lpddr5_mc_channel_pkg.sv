@@ -202,13 +202,70 @@ package lpddr5_mc_channel_pkg;
       +(32'(p.dfi_wck_tphy_rdlat)+32'(p.wck_twck_dis)+7)/(p.ratio==2 ? 2 : 4)
       +32'(p.dram_ck_tmrr)+32'(p.dram_ck_tmrw)+16;
   endfunction
-  function automatic logic [31:0] fsp_admission_budget(input lpddr5_mc_profile_t p);
-    logic [31:0] spacing, guard_time;
+  function automatic logic [31:0] periodic_register_budget(input lpddr5_mc_profile_t p);
+    logic [31:0] ratio, return_ck, physical_ck, recovery_ck;
     logic unused_profile;
     unused_profile=^p;
-    spacing=p.dram_ck_tmrd>p.dram_ck_tmrw ? 32'(p.dram_ck_tmrd) : 32'(p.dram_ck_tmrw);
-    guard_time=p.dram_ck_tfc>201 ? 32'(p.dram_ck_tfc) : 32'd201;
-    return 19*(spacing+2)+guard_time+6+32'(p.management_ck_tinit_complete)+32'(p.management_ck_tinit_start)+8;
+    ratio=p.ratio==2 ? 2 : 4;
+    // MRR is BL16: its last DFI word is enable+7 WCK. Each slice must
+    // return by that word's tphy_rdlat deadline, including any valid gaps.
+    return_ck=(32'(p.dfi_wck_trddata_en)+7+32'(p.dfi_wck_tphy_rdlat)+ratio-1)/ratio;
+    physical_ck=(32'(p.phy_half_wck_command)+32'(p.rl_ck)*2*ratio
+      +32'(p.phy_half_wck_dq_output)+16+2*32'(p.wck_twck_toggle_post)+2*ratio-1)/(2*ratio);
+    if(physical_ck>return_ck) return_ck=physical_ck;
+    recovery_ck=32'(p.dram_ck_tmrr)+32'(p.dram_ck_tmrw);
+    // The command-origin guard overlaps return/physical drain. WCK disable
+    // follows the later prerequisite. Sixteen CK cover request/SYNC/MRR,
+    // sampled data completion, STOP/DISABLE/result, and caller rank handoff.
+    // This bound is for an already exclusive periodic transaction; retain
+    // the independent conservative admission reserve at other callers.
+    return (return_ck>recovery_ck ? return_ck : recovery_ck)
+      +(32'(p.wck_twck_dis)+ratio-1)/ratio+16;
+  endfunction
+  // All admitted profiles have CK=1.25ns. JESD209-5C Table 298.
+  localparam logic [31:0] VRCG_ENABLE_CK=120, VRCG_DISABLE_CK=80;
+  function automatic logic [31:0] fsp_mrw_spacing(input lpddr5_mc_profile_t p);
+    logic unused_profile;
+    unused_profile=^p;
+    return p.dram_ck_tmrd>p.dram_ck_tmrw ? 32'(p.dram_ck_tmrd) : 32'(p.dram_ck_tmrw);
+  endfunction
+  function automatic logic [31:0] fsp_switch_guard(input lpddr5_mc_profile_t current_p,target_p);
+    logic [31:0] guard_time, clock_guard;
+    logic unused_profile;
+    unused_profile=^{current_p,target_p};
+    guard_time=32'(current_p.dram_ck_tfc)>32'(target_p.dram_ck_tfc) ? 32'(current_p.dram_ck_tfc) : 32'(target_p.dram_ck_tfc);
+    clock_guard=32'(current_p.dram_ck_tckfspe)+32'(target_p.dram_ck_tckfspx);
+    // Figure 200 starts tFC and tCKFSPE at MRW2. With continuous constant
+    // CK, the entry and exit clock windows fit inside tFC. VRCG enable has
+    // that same origin (Figure 242); these intervals overlap. MRWAIT's
+    // following MRW1 is one edge after its terminal DES (Tc1 -> Tc2).
+    if(guard_time<201) guard_time=201;
+    if(guard_time<clock_guard) guard_time=clock_guard;
+    if(guard_time<VRCG_ENABLE_CK) guard_time=VRCG_ENABLE_CK;
+    if(guard_time<fsp_mrw_spacing(current_p)) guard_time=fsp_mrw_spacing(current_p);
+    if(guard_time<fsp_mrw_spacing(target_p)) guard_time=fsp_mrw_spacing(target_p);
+    return guard_time;
+  endfunction
+  function automatic logic [31:0] fsp_restore_guard(input lpddr5_mc_profile_t target_p);
+    return fsp_mrw_spacing(target_p)>VRCG_DISABLE_CK ? fsp_mrw_spacing(target_p) : VRCG_DISABLE_CK;
+  endfunction
+  function automatic logic [31:0] fsp_command_tail(input lpddr5_mc_profile_t current_p,target_p);
+    logic unused_profile;
+    unused_profile=^{current_p,target_p};
+    return 32'(current_p.management_ck_tctrl_delay)>32'(target_p.management_ck_tctrl_delay)
+      ? 32'(current_p.management_ck_tctrl_delay) : 32'(target_p.management_ck_tctrl_delay);
+  endfunction
+  function automatic logic [31:0] fsp_admission_budget(input lpddr5_mc_profile_t current_p,target_p);
+    logic unused_profile;
+    unused_profile=^{current_p,target_p};
+    // Twenty pairs: staging + 17 target MRs, OP/high-current, normal restore.
+    // MRWAIT adds its full guard after each MRW2; every pair costs two CK.
+    // The final pin-origin recovery also needs the command pipeline tail.
+    // All summands are widened before arithmetic (even maximum 16-bit
+    // fields fit in 32 bits). Eight CK cover registered caller/return edges.
+    return 18*(fsp_mrw_spacing(current_p)+2)+2+fsp_switch_guard(current_p,target_p)
+      +2+fsp_restore_guard(target_p)+fsp_command_tail(current_p,target_p)
+      +32'(current_p.management_ck_tinit_complete)+32'(current_p.management_ck_tinit_start)+8;
   endfunction
   function automatic logic [31:0] update_admission_budget(input lpddr5_mc_profile_t p,
       input logic phy_request, input logic [1:0] phy_type);

@@ -1,6 +1,9 @@
 // Bounded behavioral fixture, driven by decoded CA rather than internal DUT
 // launches/completions. Independent system qualification remains downstream.
-module lpddr5_mc_channel_memory (
+module lpddr5_mc_channel_memory #(
+  parameter bit INITIAL_PATTERN=0,
+  parameter int CHANNELS=1,CHANNEL_INDEX=0
+) (
   input lpddr5_mc_channel_pkg::lpddr5_mc_profile_t profile_i,
   input lpddr5_mc_contract_pkg::lpddr5_mc_ca_t ca_i,
   input lpddr5_mc_contract_pkg::lpddr5_mc_write_bus4_t write_i,
@@ -17,10 +20,11 @@ module lpddr5_mc_channel_memory (
     logic [6:0] mr_address;
     logic [63:0] address;
     int at_ck;
+    logic [15:0] returned;
   } command_t;
   command_t commands[1024];
   byte unsigned memory_bytes[longint unsigned];
-  int command_count,ck,raa[2][8],imt,raa_max,raa_decrement;
+  int command_count,ck,read_pointer,raa[2][8],imt,raa_max,raa_decrement;
   logic [17:0] rows[2][16],act_row;
   logic [3:0] act_bank;
   logic act_pending,act_rank;
@@ -34,19 +38,64 @@ module lpddr5_mc_channel_memory (
   longint unsigned byte_address;
   logic [7:0] raw_value,value;
   logic masked;
+  // Faults affect the external returned codeword, after parity generation.
+  // Bits0..127 are DQ, bits128..136 are the raw DMI parity positions.
+  logic [136:0] read_fault_mask=0;
+  int read_fault_group=0,read_fault_slice=0;
   logic unused_debug;
   assign unused_debug=^{profile_i,write_i.link_parity};
+  `include "read_link_encoder.svh"
+  function automatic byte unsigned stored_byte(input longint unsigned at);
+    longint unsigned logical_address;
+    if(memory_bytes.exists(at)!=0) return memory_bytes[at];
+    logical_address=CHANNELS==1 ? at : (at & 63) | (64'(CHANNEL_INDEX)<<6) | ((at & ~64'd63)<<1);
+    return INITIAL_PATTERN ? 8'(logical_address ^ (logical_address>>8) ^ 64'd90) : 8'd0;
+  endfunction
   task automatic reset;
-    command_count=0;ck=0;act_pending=0;act_rank=0;act_row=0;act_bank=0;open_banks=0;
+    command_count=0;ck=0;read_pointer=0;act_pending=0;act_rank=0;act_row=0;act_bank=0;open_banks=0;
     rfm_count_o=0;for(int r=0;r<2;r++) for(int p=0;p<8;p++) raa[r][p]=0;
     mr43_count_o=0;mr4_count_o=0;zq_count_o=0;refresh_count_o=0;return_o='0;
-    memory_bytes.delete();write_epoch_pending=0;
+    memory_bytes.delete();write_epoch_pending=0;read_fault_mask=0;read_fault_group=0;read_fault_slice=0;
     for(int r=0;r<2;r++) begin first_write_ck[r]=0;last_mr43_ck[r]=-1000;end
     for(int r=0;r<2;r++) for(int b=0;b<16;b++) rows[r][b]=0;
   endtask
-  // The bench calls this before the sampling edge; each return is delayed
-  // two CK from its independently calculated read enable slot.
+  // A PHY-owned physical REF bypasses the controller command pipeline.
+  // Consume the actual CA stimulus; this neither drives controller done nor
+  // changes its maintenance/settlement state. Memory and open rows survive.
+  task automatic sample_phy_refresh(input lpddr5_mc_ca_t physical);
+    int rank_index,decrement;
+    assert(physical.cs inside {1,2} && physical.address==14'h2038)
+      else $fatal(1,"external physical REF encoding");
+    rank_index=physical.cs==1 ? 0 : 1;
+    assert(rank_index<int'(profile_i.ranks) && !act_pending)
+      else $fatal(1,"external physical REF rank/pair");
+    decrement=int'(profile_i.mr27[5:1])*8;
+    for(int p=0;p<8;p++) begin
+      assert(!open_banks[rank_index*16+p] && !open_banks[rank_index*16+p+8])
+        else $fatal(1,"external physical REF with open banks");
+      raa[rank_index][p]=raa[rank_index][p]>decrement ? raa[rank_index][p]-decrement : 0;
+    end
+    refresh_count_o++;
+  endtask
+  // A word is available only after its second DRAM beat reaches the DFI
+  // deserializer. Times here are half-WCK, then rounded up to sampled CK.
+  function automatic int read_ready_ck(input int command_ck, input logic split32, input int word_index);
+    int half_ck,split_gap,physical;
+    half_ck=2*int'(profile_i.ratio);
+    split_gap=profile_i.ratio==4 && split32 && word_index>=8 ? 16 : 0;
+    physical=command_ck*half_ck+int'(profile_i.phy_half_wck_command)
+      +int'(profile_i.rl_ck)*half_ck+int'(profile_i.phy_half_wck_dq_output)
+      +2*word_index+split_gap+1+int'(profile_i.phy_half_wck_read);
+    return (physical+half_ck-1)/half_ck;
+  endfunction
+  // The bench calls this before the sampling edge. Returned words advance
+  // the persistent DFI rotation, including MRR and either split-BL32 group.
   task automatic prepare;
+    int emitted,return_lane,selected_command,selected_word,first_enable;
+    int candidate_enable;
+    logic [127:0] read_group_data;
+    logic [1:0][8:0] read_checks;
+    emitted=0;return_lane=0;
     ratio=int'(profile_i.ratio);return_o='0;expected_read=0;expected_write=0;
     expected_read_cs=0;expected_write_cs=0;
     words=0;offset_word=0;enable_at=0;word_at=0;byte_address=0;raw_value=0;value=0;masked=0;
@@ -80,24 +129,82 @@ module lpddr5_mc_channel_memory (
               if(!masked) memory_bytes[commands[c].address+64'(w)*4+64'(b)]=value;
             end
           end
-          if(!commands[c].write_access && word_at==enable_at+2*ratio) begin
-            assert(return_o.valid[lane]==0) else $fatal(1,"fixture return collision");return_o.valid[lane]=3;
-            for(int b=0;b<4;b++) begin
-              byte_address=commands[c].address+64'(w)*4+64'(b);value=0;
-              if(commands[c].mrr) begin
-                if(w<4 && b%2==0) value=commands[c].mr_address==43 ? mr43_i : {3'b0,mr4_i};
-                else value=8'hda;
-              end else if(memory_bytes.exists(byte_address)!=0) value=memory_bytes[byte_address];
-              return_o.data[lane][b*8+:8]=value;
+        end
+      end
+    end
+    // A rounded CK snapshot can straddle two interleaved split bursts.
+    // Select the oldest DFI word, rather than returning all words belonging
+    // to the first command before looking at the next command.
+    for(int ordinal=0;ordinal<ratio;ordinal++) begin
+      selected_command=-1;selected_word=0;first_enable=32'h7fffffff;
+      for(int c=0;c<command_count;c++) begin
+        if(!commands[c].write_access) begin
+          for(int w=0;w<(commands[c].bl32 ? 16 : 8);w++) begin
+            candidate_enable=commands[c].at_ck*ratio+int'(profile_i.dfi_wck_trddata_en)
+              +w+(ratio==4 && commands[c].bl32 && w>=8 ? 8 : 0);
+            if(!commands[c].returned[w] && candidate_enable<first_enable) begin
+              selected_command=c;selected_word=w;first_enable=candidate_enable;
             end
           end
         end
       end
+      if(selected_command<0) break;
+      if(ck<read_ready_ck(commands[selected_command].at_ck,commands[selected_command].bl32,selected_word)) break;
+      assert(ck*ratio<=first_enable+int'(profile_i.dfi_wck_tphy_rdlat))
+        else $fatal(1,"fixture missed read deadline");
+      return_lane=(read_pointer+emitted)%ratio;emitted++;
+      commands[selected_command].returned[selected_word]=1;
+      return_o.valid[return_lane]=3;
+      read_checks=0;read_group_data=0;
+      if(profile_i.read_link && !commands[selected_command].mrr) begin
+        for(int slice_index=0;slice_index<2;slice_index++) begin
+          for(int beat=0;beat<16;beat++)
+            read_group_data[beat*8+:8]=stored_byte(commands[selected_command].address
+              +(64'(selected_word)/64'd8)*32+64'(beat)*2+64'(slice_index));
+          read_checks[slice_index]=fixture_read_checks(read_group_data);
+        end
+      end
+      for(int b=0;b<4;b++) begin
+        byte_address=commands[selected_command].address+64'(selected_word)*4+64'(b);value=0;
+        if(commands[selected_command].mrr) begin
+          if(selected_word<4 && b%2==0) value=commands[selected_command].mr_address==43 ? mr43_i : {3'b0,mr4_i};
+          else value=8'hda;
+        end else value=stored_byte(byte_address);
+        if(profile_i.read_link && !commands[selected_command].mrr) begin
+          int beat_in_group,group_index,slice_index;
+          beat_in_group=(selected_word%8)*2+b/2;group_index=selected_word/8;slice_index=b%2;
+          if(beat_in_group>=7) return_o.link_parity[return_lane][b]=read_checks[slice_index][beat_in_group-7];
+          if(group_index==read_fault_group && slice_index==read_fault_slice) begin
+            value^=read_fault_mask[beat_in_group*8+:8];
+            if(beat_in_group>=7) return_o.link_parity[return_lane][b]^=read_fault_mask[128+beat_in_group-7];
+          end
+        end
+        return_o.data[return_lane][b*8+:8]=value;
+      end
     end
+    read_pointer=(read_pointer+emitted)%ratio;
     assert(write_i.enable==expected_write && read_i.enable==expected_read) else $fatal(1,"CA/DFI enable mismatch at CK%0d",ck);
     assert(write_i.cs==expected_write_cs && read_i.cs==expected_read_cs) else $fatal(1,"continuous CS mismatch at CK%0d",ck);
   endtask
   task automatic sample;
+    // Retire only after the last data and continuous-CS slot. Tracking live
+    // commands bounds long simulations without changing storage contents.
+    int retained,last_data,last_cs,span;
+    retained=0;
+    for(int c=0;c<command_count;c++) begin
+      span=(commands[c].bl32 ? 16 : 8)+(profile_i.ratio==4 && commands[c].bl32 ? 8 : 0);
+      last_data=commands[c].at_ck*int'(profile_i.ratio)+span+
+        (commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrlat)+int'(profile_i.dfi_wck_tphy_wrdata) : 0);
+      if(!commands[c].write_access)
+        last_data=read_ready_ck(commands[c].at_ck,commands[c].bl32,commands[c].bl32 ? 15 : 7)*int'(profile_i.ratio);
+      last_cs=commands[c].at_ck*int'(profile_i.ratio)+span+
+        (commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrcslat) : int'(profile_i.dfi_wck_tphy_rdcslat));
+      if(ck*int'(profile_i.ratio)<=last_data || ck*int'(profile_i.ratio)<=last_cs
+          || (!commands[c].write_access && commands[c].returned!=(commands[c].bl32 ? 16'hffff : 16'h00ff))) begin
+        commands[retained]=commands[c];retained++;
+      end
+    end
+    command_count=retained;
     if(ca_i.cs!=0) begin
       rank_value=ca_i.cs==2 ? 1 : 0;bank_value=int'(ca_i.address[10:7]);
       if(act_pending) begin

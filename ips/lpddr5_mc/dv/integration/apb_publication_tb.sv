@@ -60,7 +60,7 @@ module apb_publication_tb;
     if(inject_stale) observed_ack[0].sequence_number=prior_epoch;
   end
   lpddr5_mc_apb #(.PUBLICATION_TIMEOUT(PUBLICATION_TIMEOUT)) apb (
-    .pclk,.preset_n(rst_n),.psel_i(psel),.penable_i(penable),.request_i(apb_request),.pready_o(pready),.response_o(apb_response),
+    .pclk,.preset_n(rst_n),.cold_preset_n(rst_n),.psel_i(psel),.penable_i(penable),.request_i(apb_request),.pready_o(pready),.response_o(apb_response),
     .enabled_i(1'b0),.quiesced_i(1'b1),.host_settled_i(1'b1),.active_fsp_i(active_image[0][INDEX_DVFS][1:0]),
     .link_fault_i(1'b0),.recovery_confirmed_i(1'b0),.global_status_valid_i(1'b1),.global_status_i(global_status),.global_status_ready_o(global_ready),
     .status_valid_i(2'b0),.status_i(zero_status),.status_ready_o(unused_status_ready),
@@ -88,6 +88,7 @@ module apb_publication_tb;
     assign publication_payload[c].boot_epoch=config_boot;
     assign publication_payload[c].image=config_image[c];
     lpddr5_mc_control_link crossing (
+      .a_status_rst_ni(rst_n),.c_status_rst_ni(rst_n),
       .aclk_i(pclk),.arst_ni(rst_n),.a_enable_i(1'b1),.a_rearm_i(p_rearm),.a_fault_o(p_fault[c]),.a_rearm_ready_o(p_rearm_ready[c]),
       .cclk_i(clk),.crst_ni(rst_n),.c_enable_i(1'b1),.c_rearm_i(c_rearm),.c_fault_o(c_fault[c]),.c_rearm_ready_o(c_rearm_ready[c]),
       .a_config_valid_i(publication_valid[c]),.a_config_ready_o(publication_ready[c]),.a_config_i(publication_payload[c]),
@@ -104,7 +105,7 @@ module apb_publication_tb;
       .fsp_command_valid_o(fsp_command[c]),.command_ready_i(command_ready[c]),.command_rejected_i(rejected[c]),
       .target_fsp_o(target_fsp[c]),.target_frequency_o(frequency[c]),.fault_o(adapter_fault[c]));
     lpddr5_mc_channel #(.DEPTH(16),.CHANNEL_INDEX(c)) channel (
-      .clk_ck_i(clk),.rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(1'b0),.request_ready_o(request_ready),.request_i(lpddr5_mc_granule_t'('0)),
+      .clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(1'b0),.request_ready_o(request_ready),.request_i(lpddr5_mc_granule_t'('0)),
       .request_boot_epoch_i(32'd0),.request_config_epoch_i(32'd0),.completion_valid_o(completion_valid),.completion_ready_i(1'b1),.completion_o(completion),
       .feedback_valid_i(1'b0),.feedback_i(lpddr5_mc_channel_response_feedback_t'('0)),.host_settled_i(1'b1),.reset_confirmed_i(1'b0),
       .command_valid_i(fsp_command[c] || command_valid[c]),.command_i(fsp_command[c] ? CH_CMD_FSP : command[c]),.command_ready_o(command_ready[c]),.command_rejected_o(rejected[c]),

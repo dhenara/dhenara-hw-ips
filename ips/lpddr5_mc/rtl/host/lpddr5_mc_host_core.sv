@@ -57,7 +57,7 @@ module lpddr5_mc_host_core #(
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
   typedef struct packed {
-    logic valid, write_access, fully_buffered, validated, execution_done;
+    logic valid, write_access, fully_buffered, validated, execution_done, read_data_done, merged, merge_follower;
     logic pending, physical_done, chunk_integrity_done, integrity_done, response_sent, acknowledged;
     logic exposed, feedback_exposure, feedback_handshake;
     logic port_index, channel_index;
@@ -80,6 +80,23 @@ module lpddr5_mc_host_core #(
   // would prevent ordinary RAM inference and adds no correctness guarantee.
   logic [255:0] payload [SLOTS][256];
   logic [31:0] strobes [SLOTS][256];
+  // A dependent owns a bit until that original write has its final integrity
+  // result. Slots cannot be recycled ahead of this observation. Data overlays
+  // are snapshots, so later writes/slot generations cannot change a read.
+  logic [SLOTS-1:0][SLOTS-1:0] dependencies;
+  logic [SLOTS-1:0][511:0] forward_data;
+  logic [SLOTS-1:0][63:0] forward_mask;
+  // Only overlapping traffic uses the sequential byte composer. Unrelated
+  // granules retain the ordinary request path. Keep original slots reserved
+  // during composition; completions still drain, but retirement waits until
+  // the snapshot and its dependency set have been installed atomically.
+  logic compose_active_q, compose_write_q;
+  int compose_slot_q, compose_channel_q, compose_source_q;
+  logic [8:0] compose_beat_q;
+  logic [SLOTS-1:0] compose_remaining_q, compose_dependencies_q;
+  lpddr5_mc_granule_t compose_granule_q;
+  logic [63:0] compose_mask_q;
+  int compose_next;
   lpddr5_mc_host_config_t config_q;
   logic [63:0] next_order_q, next_tag_q;
   logic [PORTS-1:0][31:0] expected_sequence_q;
@@ -144,7 +161,64 @@ module lpddr5_mc_host_core #(
     return blocked;
   endfunction
 
+  function automatic logic forwarding_allowed(input int slot);
+    logic okay;
+    okay = !transactions[slot].write_access;
+    for (int j=0; j<SLOTS; j++)
+      if (transactions[j].valid && transactions[j].order_number < transactions[slot].order_number
+          && !transactions[j].integrity_done
+          && 41'(transactions[j].hazard_low) < transactions[slot].hazard_high
+          && 41'(transactions[slot].hazard_low) < transactions[j].hazard_high)
+        okay &= transactions[j].write_access && transactions[j].fully_buffered
+          && transactions[j].validated && transactions[j].response==0;
+    return okay;
+  endfunction
+
+  function automatic logic merge_context(input int leader, candidate);
+    logic [39:0] mask;
+    mask = config_q.granule64 ? ~40'd63 : ~40'd31;
+    // Config publication requires complete settlement. Equal logical granule
+    // and immutable configuration therefore imply equal region/rank/ECC and
+    // profile epochs. Do not combine exclusive or differently attributed/QoS
+    // traffic. FIXED/WRAP and multi-granule transactions retain serial issue.
+    return transactions[candidate].valid && transactions[candidate].write_access
+      && transactions[candidate].fully_buffered && transactions[candidate].validated
+      && transactions[candidate].response==0 && !transactions[candidate].pending
+      && !transactions[candidate].execution_done && transactions[candidate].cursor==0
+      && transactions[candidate].address.burst==1 && !transactions[candidate].address.lock
+      && (transactions[candidate].hazard_low & mask)==(transactions[leader].hazard_low & mask)
+      && transactions[candidate].hazard_high <= {1'b0,(transactions[leader].hazard_low & mask)}
+        +(config_q.granule64 ? 41'd64 : 41'd32)
+      && transactions[candidate].address.cache==transactions[leader].address.cache
+      && transactions[candidate].address.prot==transactions[leader].address.prot
+      && config_q.qos_map[transactions[candidate].address.qos]==config_q.qos_map[transactions[leader].address.qos];
+  endfunction
+
+  function automatic logic merge_allowed(input int leader, candidate);
+    logic okay;
+    logic [40:0] low_address, high_address;
+    low_address = {1'b0,(transactions[leader].hazard_low & (config_q.granule64 ? ~40'd63 : ~40'd31))};
+    high_address = low_address+(config_q.granule64 ? 41'd64 : 41'd32);
+    okay = merge_context(leader,leader) && merge_context(leader,candidate)
+      && transactions[candidate].order_number>transactions[leader].order_number;
+    for (int j=0; j<SLOTS; j++) if (transactions[j].valid && j!=leader && j!=candidate
+        && transactions[j].order_number<transactions[candidate].order_number) begin
+      // A read between originals is always a barrier, including a forwarded
+      // read whose data was sampled but whose integrity is still outstanding.
+      if (transactions[j].order_number>transactions[leader].order_number
+          && 41'(transactions[j].hazard_low)<high_address && low_address<transactions[j].hazard_high
+          && (!transactions[j].write_access || !merge_context(leader,j))) okay=0;
+      if (transactions[j].order_number<transactions[leader].order_number && !transactions[j].integrity_done
+          && 41'(transactions[j].hazard_low)<transactions[candidate].hazard_high
+          && 41'(transactions[candidate].hazard_low)<transactions[j].hazard_high) okay=0;
+    end
+    return okay;
+  endfunction
+
   always_comb begin
+    compose_next = -1;
+    for (int i=0; i<SLOTS; i++) if (compose_remaining_q[i]
+        && (compose_next<0 || transactions[i].order_number<transactions[compose_next].order_number)) compose_next=i;
     any_live = 0;
     for (int i=0; i<SLOTS; i++) any_live |= transactions[i].valid;
     aw_ready_o = 0; ar_ready_o = 0; w_ready_o = 0;
@@ -200,7 +274,7 @@ module lpddr5_mc_host_core #(
             && ($signed(validation_select[p]) < 0 || transactions[i].order_number < transactions[validation_select[p]].order_number))
           validation_select[p] = i;
       end
-      if ($signed(retire_select[p]) >= 0) begin
+      if ($signed(retire_select[p]) >= 0 && !compose_active_q) begin
         retire_valid_o[p] = 1;
         retire_o[p].slot = transactions[retire_select[p]].source_slot;
         retire_o[p].generation = transactions[retire_select[p]].generation;
@@ -212,7 +286,7 @@ module lpddr5_mc_host_core #(
       int pending_granules;
       pending_granules = 0;
       for (int i=0; i<SLOTS; i++)
-        if (transactions[i].valid && transactions[i].pending
+        if (transactions[i].valid && transactions[i].pending && !transactions[i].merge_follower
             && transactions[i].channel_index == 1'(c)) pending_granules++;
       request_select[c] = -1; feedback_select[c] = -1; completion_select[c] = -1;
       request_o[c] = request_q[c];
@@ -231,9 +305,10 @@ module lpddr5_mc_host_core #(
         if (transactions[i].channel_index == 1'(c) && transactions[i].pending
             && (transactions[i].feedback_exposure || transactions[i].feedback_handshake)
             && $signed(feedback_select[c]) < 0) feedback_select[c] = i;
-        if (!request_held_q[c] && pending_granules < DEPTH && !fault_o && !fatal_i && transactions[i].fully_buffered
+        if (!compose_active_q && !request_held_q[c] && pending_granules < DEPTH && !fault_o && !fatal_i && transactions[i].fully_buffered
             && transactions[i].validated && !transactions[i].pending && !transactions[i].execution_done
-            && transactions[i].response == 0 && !blocked_by_older(i)) begin
+            && !transactions[i].read_data_done && transactions[i].response == 0
+            && (!blocked_by_older(i) || forwarding_allowed(i))) begin
           if (decoded.valid && decoded.channel_index == 1'(c)
               && ($signed(request_select[c]) < 0 || transactions[i].order_number < transactions[request_select[c]].order_number))
             request_select[c] = i;
@@ -252,7 +327,12 @@ module lpddr5_mc_host_core #(
 
   always_ff @(posedge clk_i or negedge rst_ni) begin : state
     if (!rst_ni) begin
-      for (int i=0; i<SLOTS; i++) transactions[i] <= '0;
+      for (int i=0; i<SLOTS; i++) begin
+        transactions[i] <= '0; dependencies[i] <= '0; forward_data[i] <= '0; forward_mask[i] <= '0;
+      end
+      compose_active_q<=0; compose_write_q<=0; compose_slot_q<=0; compose_channel_q<=0;
+      compose_source_q<=-1; compose_beat_q<=0; compose_remaining_q<='0;
+      compose_dependencies_q<='0; compose_granule_q<='0; compose_mask_q<='0;
       for (int p=0; p<PORTS; p++) expected_sequence_q[p] <= 0;
       for (int c=0; c<CHANNELS; c++) begin request_q[c] <= '0; request_owner_q[c] <= 0; end
       config_q <= '0; config_valid_o <= 0; fault_o <= 0; late_error_o <= 0;
@@ -286,6 +366,7 @@ module lpddr5_mc_host_core #(
       end
       if (fatal_i || (fault_o && !(recover_i && host_settled_o && !enable_i))) begin
         fault_o <= 1; config_valid_o <= 0; request_held_q <= 0;
+        compose_active_q<=0;
         recovery_epoch_required_q <= 1;
       end
       // Never silently wrap an identity/order space. Fatal settlement remains
@@ -296,14 +377,23 @@ module lpddr5_mc_host_core #(
         fault_o <= 1; config_valid_o <= 0; recovery_epoch_required_q <= 1;
       end
       for (int i=0; i<SLOTS; i++) if (transactions[i].valid) begin
+        for (int j=0; j<SLOTS; j++) if (dependencies[i][j] && transactions[j].integrity_done) begin
+          dependencies[i][j]<=0;
+          if (transactions[j].response!=0 && transactions[i].response==0) transactions[i].response<=2'b10;
+        end
+        if (transactions[i].read_data_done && dependencies[i]=='0) begin
+          transactions[i].execution_done<=1; transactions[i].integrity_done<=1;
+        end
         if (fatal_i || fault_o) begin
+          dependencies[i]<='0;
           if (transactions[i].response == 0) transactions[i].response <= 2'b10;
           if (transactions[i].exposed && transactions[i].offered_response == 0) late_error_o <= 1;
           if (!transactions[i].write_access || transactions[i].fully_buffered) transactions[i].execution_done <= 1;
           transactions[i].integrity_done <= 1;
           transactions[i].pending <= 0;
         end
-        if (transactions[i].fully_buffered && transactions[i].validated && transactions[i].response != 0) begin
+        if (transactions[i].fully_buffered && transactions[i].validated && transactions[i].response != 0
+            && !transactions[i].pending && dependencies[i]=='0 && !compose_active_q) begin
           transactions[i].execution_done <= 1;
           transactions[i].integrity_done <= 1;
         end
@@ -327,6 +417,7 @@ module lpddr5_mc_host_core #(
               high_address = low_address + ((41'(a.len)+1)<<a.size);
             end
             transactions[slot] <= '0;
+            dependencies[slot]<='0; forward_mask[slot]<='0;
             transactions[slot].valid <= 1;
             transactions[slot].write_access <= aw_ready_o[p];
             transactions[slot].fully_buffered <= !aw_ready_o[p];
@@ -421,19 +512,22 @@ module lpddr5_mc_host_core #(
       end
       begin : requests
         logic [63:0] allocated;
-        allocated = 0;
+        logic composer_allocated;
+        allocated = 0; composer_allocated=0;
         for (int c=0; c<CHANNELS; c++) begin
           if (request_valid_o[c] && request_ready_i[c]) begin
             request_held_q[c] <= 0;
             transactions[request_owner_q[c]].pending <= 1;
           end
-          if ($signed(request_select[c]) >= 0) begin
+          if ($signed(request_select[c]) >= 0 && !composer_allocated) begin
             int slot, granule_bytes, chunk_beats;
             logic [40:0] at, limit;
             logic fast;
             lpddr5_mc_host_decode_t decoded;
             logic unused_decode;
             lpddr5_mc_granule_t granule;
+            logic [SLOTS-1:0] compose_sources;
+            logic needs_composition;
             slot = request_select[c]; granule_bytes = config_q.granule64 ? 64 : 32;
             at = beat_address(transactions[slot].address,transactions[slot].cursor);
             limit = beat_limit(transactions[slot].address,transactions[slot].cursor);
@@ -469,7 +563,28 @@ module lpddr5_mc_host_core #(
                 end
               end
             end
-            request_q[c] <= granule; request_owner_q[c] <= $clog2(SLOTS)'(slot); request_held_q[c] <= 1;
+            compose_sources='0;
+            for (int j=0; j<SLOTS; j++) begin
+              if (!transactions[slot].write_access && transactions[j].valid && transactions[j].write_access
+                  && !transactions[j].integrity_done && transactions[j].order_number<transactions[slot].order_number
+                  && 41'(transactions[j].hazard_low)<transactions[slot].hazard_high
+                  && 41'(transactions[slot].hazard_low)<transactions[j].hazard_high) compose_sources[j]=1;
+              if (transactions[slot].write_access && merge_allowed(slot,j)) compose_sources[j]=1;
+            end
+            needs_composition=compose_sources!='0;
+            forward_mask[slot]<='0;
+            request_owner_q[c] <= $clog2(SLOTS)'(slot);
+            if (needs_composition) begin
+              composer_allocated=1; compose_active_q<=1; compose_slot_q<=slot; compose_channel_q<=c;
+              compose_write_q<=transactions[slot].write_access; compose_source_q<=-1; compose_beat_q<=0;
+              if (transactions[slot].write_access) begin
+                compose_sources[slot]=1;
+                granule.data='0; granule.byte_enable='0;
+              end
+              compose_remaining_q<=compose_sources;
+              compose_dependencies_q<=transactions[slot].write_access ? compose_sources : '0;
+              compose_granule_q<=granule; compose_mask_q<='0;
+            end else begin request_q[c]<=granule; request_held_q[c]<=1; end
             transactions[slot].channel_index <= 1'(c);
             transactions[slot].identity.tag <= granule.tag;
             transactions[slot].identity.generation <= granule.generation;
@@ -494,6 +609,57 @@ module lpddr5_mc_host_core #(
         end
         if (allocated != 0) next_tag_q <= next_tag_q+allocated;
         if (allocated != 0 && next_tag_q > 64'hffffffffffffffff-allocated) fault_o <= 1;
+      end
+      if (compose_active_q && !fatal_i && !fault_o) begin : compose
+        if (compose_source_q>=0) begin
+          logic [40:0] at, limit;
+          logic contributed;
+          at=beat_address(transactions[compose_source_q].address,compose_beat_q);
+          limit=beat_limit(transactions[compose_source_q].address,compose_beat_q);
+          contributed=0;
+          for (int lane=0; lane<BUS_BYTES; lane++) begin
+            int source_lane, offset;
+            source_lane=int'((at+41'(lane))%41'(BUS_BYTES));
+            offset=int'(at+41'(lane)-41'(compose_granule_q.address));
+            if (at+41'(lane)<limit && offset>=0 && offset<(config_q.granule64 ? 64 : 32)
+                && strobes[compose_source_q][compose_beat_q[7:0]][source_lane]
+                && (compose_write_q || compose_granule_q.byte_enable[offset])) begin
+              compose_granule_q.data[offset*8+:8]<=payload[compose_source_q][compose_beat_q[7:0]][source_lane*8+:8];
+              compose_mask_q[offset]<=1;
+              if (compose_write_q) compose_granule_q.byte_enable[offset]<=1;
+              contributed=1;
+            end
+          end
+          if (contributed && !compose_write_q) compose_dependencies_q[compose_source_q]<=1;
+          if (compose_beat_q==9'(transactions[compose_source_q].address.len)) compose_source_q<=-1;
+          else compose_beat_q<=compose_beat_q+1;
+        end else if (compose_next>=0) begin
+          compose_source_q<=compose_next; compose_remaining_q[compose_next]<=0; compose_beat_q<=0;
+        end else begin
+          request_q[compose_channel_q]<=compose_granule_q;
+          request_held_q[compose_channel_q]<=1;
+          compose_active_q<=0;
+          if (!compose_write_q) begin
+            forward_data[compose_slot_q]<=compose_granule_q.data;
+            forward_mask[compose_slot_q]<=compose_mask_q;
+            for (int j=0; j<SLOTS; j++) if (compose_dependencies_q[j]) begin
+              dependencies[compose_slot_q][j]<=!transactions[j].integrity_done;
+              if (transactions[j].response!=0) transactions[compose_slot_q].response<=2'b10;
+            end
+          end else begin
+            for (int j=0; j<SLOTS; j++) if (compose_dependencies_q[j]) begin
+              transactions[j].pending<=1; transactions[j].merged<=1;
+              transactions[j].merge_follower<=j!=compose_slot_q;
+              transactions[j].channel_index<=1'(compose_channel_q);
+              transactions[j].identity.tag<=compose_granule_q.tag;
+              transactions[j].identity.generation<=compose_granule_q.generation;
+              transactions[j].identity.boot_epoch<=config_q.boot_epoch;
+              transactions[j].identity.config_epoch<=config_q.config_epoch;
+              transactions[j].chunk_first<=0; transactions[j].chunk_beats<=9'(transactions[j].address.len)+1;
+              transactions[j].physical_done<=0; transactions[j].chunk_integrity_done<=0;
+            end
+          end
+        end
       end
       for (int c=0; c<CHANNELS; c++) if (completion_valid_i[c]) begin
         logic found;
@@ -523,10 +689,22 @@ module lpddr5_mc_host_core #(
               transactions[i].feedback_handshake <= 0;
               transactions[i].cursor <= transactions[i].chunk_first+transactions[i].chunk_beats;
               if (last_chunk || completion_i[c].failed || completion_i[c].response != 0) begin
-                transactions[i].execution_done <= 1;
-                transactions[i].integrity_done <= 1;
+                if (transactions[i].write_access) begin
+                  transactions[i].execution_done <= 1;
+                  transactions[i].integrity_done <= 1;
+                end else begin
+                  transactions[i].read_data_done<=1;
+                  // Keep the ordinary read completion latency when there is
+                  // no remaining integrity dependency. A dependency cleared
+                  // on this edge is observed on the next edge, with its error.
+                  if (dependencies[i]=='0) begin
+                    transactions[i].execution_done<=1;
+                    transactions[i].integrity_done<=1;
+                  end
+                end
               end
-            end else if (POSTED_EARLY && config_q.posted && transactions[i].write_access && completion_i[c].physical_done
+            end else if (POSTED_EARLY && config_q.posted && !transactions[i].merged
+                && transactions[i].write_access && completion_i[c].physical_done
                 && transactions[i].chunk_first+transactions[i].chunk_beats == 9'(transactions[i].address.len)+1)
               transactions[i].execution_done <= 1;
           end
@@ -534,7 +712,8 @@ module lpddr5_mc_host_core #(
         if (!found && stale_completions_o != 32'hffffffff) stale_completions_o <= stale_completions_o+1;
       end
       if (EXTERNAL_ABORT_LEDGER && (fatal_i || fault_o)) begin
-        for (int i=0; i<SLOTS; i++) transactions[i] <= '0;
+        for (int i=0; i<SLOTS; i++) begin transactions[i] <= '0; dependencies[i]<='0; end
+        compose_active_q<=0;
         request_held_q <= 0; b_held_q <= 0; r_held_q <= 0;
       end
     end
@@ -561,7 +740,8 @@ module lpddr5_mc_host_core #(
           for (int lane=0; lane<BUS_BYTES; lane++) if (at+41'(lane)<limit) begin
             offset = transactions[completion_select[c]].chunk_fast ? b*BUS_BYTES+lane
               : int'(transactions[completion_select[c]].chunk_offset)+lane;
-            value[int'((at+41'(lane)) % 41'(BUS_BYTES))*8 +: 8] = completion_i[c].data[offset*8 +: 8];
+            value[int'((at+41'(lane)) % 41'(BUS_BYTES))*8 +: 8] = forward_mask[completion_select[c]][offset]
+              ? forward_data[completion_select[c]][offset*8+:8] : completion_i[c].data[offset*8 +: 8];
           end
         end
       end

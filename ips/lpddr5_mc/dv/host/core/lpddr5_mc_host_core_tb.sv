@@ -3,7 +3,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 // Common-clock behavioral checks. The memory responder uses byte-address
 // arithmetic independent of the production splitter and does not model DFI.
-module lpddr5_mc_host_core_tb #(parameter int DATA_BITS=128, parameter int QUEUE_DEPTH=16, parameter bit EARLY_POSTED=0);
+module lpddr5_mc_host_core_tb #(parameter int DATA_BITS=128, parameter int QUEUE_DEPTH=16, parameter bit EARLY_POSTED=0, parameter bit COMPOSE_ONLY=0);
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
   localparam int PORTS=2, CHANNELS=2, DEPTH=QUEUE_DEPTH, BUS_BYTES=DATA_BITS/8;
@@ -298,6 +298,7 @@ module lpddr5_mc_host_core_tb #(parameter int DATA_BITS=128, parameter int QUEUE
     tests++;$display("PASS core %s",name);
   endtask
   task automatic reset_core(input bit posted=0);
+    if(COMPOSE_ONLY)$display("HOST_EVENT {\"kind\":\"reset\"}");
     @(negedge clk);rst_n=0;enable=0;fatal=0;recover=0;cfg_valid=0;
     aw_valid=0;ar_valid=0;w_valid=0;b_ready=0;r_ready=0;event_valid=0;
     for(int p=0;p<PORTS;p++)begin
@@ -333,11 +334,158 @@ module lpddr5_mc_host_core_tb #(parameter int DATA_BITS=128, parameter int QUEUE
     tick();@(negedge clk);completion_valid[0]=0;
   endtask
 
+  // These tests deliberately return a read's old memory image before its
+  // writers settle. Serial-equivalent waiting cannot pass their request-count
+  // and no-early-R checks. Merges must emit one observable masked request for
+  // several independently admitted originals, then return exactly one B each.
+  task automatic compose_wait(input int count);
+    int timeout;
+    timeout=0;
+    while(manual_requests<count)begin tick();timeout++;if(timeout>4000)$fatal(1,"compose request timeout wanted%0d got%0d",count,manual_requests);end
+  endtask
+  task automatic compose_complete(input int index,input bit physical,integrity,failed=0);
+    @(negedge clk);completion[0]='0;
+    completion[0].identity.tag=manual_granules[index].tag;
+    completion[0].identity.generation=manual_granules[index].generation;
+    completion[0].identity.boot_epoch=cfg.boot_epoch;
+    completion[0].identity.config_epoch=cfg.config_epoch;
+    completion[0].is_write=manual_granules[index].is_write;
+    completion[0].physical_done=physical;completion[0].integrity_done=integrity;
+    completion[0].failed=failed;completion[0].response=failed ? 2'b10 : 0;
+    for(int j=0;j<64;j++)begin
+      int at;
+      at=int'(manual_granules[index].address)+j;
+      if(physical && manual_granules[index].is_write && manual_granules[index].byte_enable[j])
+        actual_memory[at]=manual_granules[index].data[j*8+:8];
+      completion[0].data[j*8+:8]=actual_memory[at];
+    end
+    completion_valid[0]=1;tick();@(negedge clk);completion_valid[0]=0;
+  endtask
+  task automatic compose_start(input string name);
+    $display("COMPOSE_CASE %s",name);
+    manual_channel=1;auto_channel=0;manual_requests=0;reset_core();
+  endtask
+  task automatic expect_write(input lpddr5_mc_axi_address_t a,input bit partial=0);
+    for(int beat=0;beat<=int'(a.len);beat++)begin
+      longint unsigned at,limit;
+      at=oracle_at(a,beat);limit=(at/(64'd1<<a.size)+1)*(64'd1<<a.size);
+      for(int lane=0;lane<BUS_BYTES;lane++)if(at+64'(lane)<limit
+          && (!partial || ((at+64'(lane))%64'(BUS_BYTES))%2==0))
+        expected_memory[16'(at+64'(lane))]=8'(beat*17+int'((at+64'(lane))%64'(BUS_BYTES))*11+int'(a.id));
+    end
+  endtask
+  task automatic compose_tests;
+    lpddr5_mc_axi_address_t a,bw,cw,rd;
+    for(int failure=0;failure<2;failure++)begin
+      compose_start(failure==0 ? "forward-overlay" : "forward-failed-contributor");
+      a=make_address('h4000+failure*128,1,$clog2(BUS_BYTES),1,31);
+      bw=a;bw.id=32;rd=a;rd.id=33;
+      admit(0,0,1,a);send_w(0,0,a,3);compose_wait(1);
+      admit(1,0,1,bw);send_w(1,0,bw,3);
+      admit(0,1,0,rd);compose_wait(2);
+      if(manual_granules[1].is_write)$fatal(1,"forwarding did not issue read ahead of writer integrity");
+      compose_complete(1,1,1);tick(8);if(r_valid[0])$fatal(1,"forwarded read retired before contributors");
+      compose_complete(0,1,0);tick(8);if(r_valid[0]||b_valid[0])$fatal(1,"physical-only writer released dependent");
+      compose_complete(0,0,1,1'(failure));compose_wait(3);
+      tick(8);if(r_valid[0])$fatal(1,"read lost second contributor dependency");
+      compose_complete(2,1,1);
+      receive_b(0,0, failure==0 ? 0 : 2,3);receive_b(1,0,0,2);
+      receive_r(0,1,rd,failure==0 ? 0 : 2,3);wait_settled();
+      if(manual_requests!=3)$fatal(1,"forwarding issued duplicate transaction");note("forward overlay contributors and delayed/failed integrity");
+    end
+    compose_start("aw-validation-barrier");
+    a=make_address('h4200,1,$clog2(BUS_BYTES),1,34);rd=a;rd.id=35;
+    admit(0,0,1,a);admit(1,0,0,rd);tick(20);
+    if(manual_requests!=0)$fatal(1,"forwarded unreceived W");
+    send_w(0,0,a,2,0);receive_b(0,0,2);compose_wait(1);
+    if(manual_granules[0].is_write)$fatal(1,"invalid write has memory effect");
+    compose_complete(0,1,1);receive_r(1,0,rd,0);wait_settled();note("AW and complete-validation barriers");
+    for(int failure=0;failure<2;failure++)begin
+      compose_start(failure==0 ? "merge-three" : "merge-failure");
+      a=make_address('h4400+failure*128,1,$clog2(BUS_BYTES),1,36);
+      bw=a;bw.id=37;cw=a;cw.id=38;
+      admit(0,0,1,a);admit(1,0,1,bw);admit(1,1,1,cw);
+      send_w(1,0,bw,3,0);send_w(1,1,cw,3,0);tick(5);
+      if(manual_requests!=0)$fatal(1,"merge bypassed AW-before-W");
+      send_w(0,0,a,-1,0);expect_write(a);expect_write(bw,1);expect_write(cw,1);
+      compose_wait(1);tick(10);
+      if(manual_requests!=1 || !manual_granules[0].is_write)$fatal(1,"no cross-transaction merge");
+      compose_complete(0,1,0);tick(8);if(b_valid!=0)$fatal(1,"merged originals exposed before integrity");
+      compose_complete(0,0,1,1'(failure));
+      receive_b(0,0,failure==0 ? 0 : 2,3);receive_b(1,0,failure==0 ? 0 : 2,4);
+      receive_b(1,1,failure==0 ? 0 : 2);wait_settled();
+      if(manual_requests!=1)$fatal(1,"merged originals reissued");
+      if(failure==0)begin
+        rd=a;rd.id=39;admit(0,0,0,rd);compose_wait(2);compose_complete(1,1,1);receive_r(0,0,rd,0);wait_settled();
+      end
+      note("one merged physical operation retains every original response");
+    end
+    compose_start("incompatible-attributes");
+    a=make_address('h4600,1,$clog2(BUS_BYTES),1,40);bw=a;bw.id=41;bw.cache=1;
+    admit(0,0,1,a);admit(1,0,1,bw);send_w(1,0,bw,-1,0);send_w(0,0,a,-1,0);
+    expect_write(a);expect_write(bw);compose_wait(1);compose_complete(0,1,1);
+    compose_wait(2);compose_complete(1,1,1);receive_b(0,0,0);receive_b(1,0,0);wait_settled();
+    if(manual_requests!=2)$fatal(1,"incompatible writes combined");note("attribute barrier");
+    compose_start("intervening-read");
+    a=make_address('h4800,1,$clog2(BUS_BYTES),1,42);rd=a;rd.id=43;bw=a;bw.id=44;
+    admit(0,0,1,a);admit(1,0,0,rd);admit(0,1,1,bw);
+    send_w(0,0,a);send_w(0,1,bw,-1,0);compose_wait(2);
+    if(!manual_granules[0].is_write || manual_granules[1].is_write)$fatal(1,"intervening read not preserved");
+    compose_complete(1,1,1);compose_complete(0,1,1);receive_b(0,0,0);receive_r(1,0,rd,0,3);
+    expect_write(bw);compose_wait(3);compose_complete(2,1,1);receive_b(0,1,0);wait_settled();note("intervening read prevents younger write merge");
+    compose_start("forward-narrow-multibeat-source");
+    a=make_address('h4900,64/BUS_BYTES,$clog2(BUS_BYTES),1,47);
+    rd=make_address('h4902,1,2,0,48);
+    admit(0,0,1,a);send_w(0,0,a,3);compose_wait(1);
+    admit(1,0,0,rd);compose_wait(2);compose_complete(1,1,1);tick(8);
+    if(r_valid[1])$fatal(1,"narrow forwarded read escaped multi-beat contributor");
+    compose_complete(0,1,1);receive_b(0,0,0);receive_r(1,0,rd,0,3);wait_settled();
+    note("unaligned narrow FIXED read overlays a fully buffered multi-beat writer");
+    compose_start("contributor-slot-reuse");
+    a=make_address('h4980,1,$clog2(BUS_BYTES),1,49);rd=a;rd.id=50;
+    admit(0,0,1,a);send_w(0,0,a,3);compose_wait(1);
+    admit(1,0,0,rd);compose_wait(2);
+    // Retire and reuse the contributor while the dependent's own read is
+    // outstanding. Its overlay must retain the original generation's bytes.
+    compose_complete(0,1,1);receive_b(0,0,0);tick(8);
+    bw=make_address('h4b00,1,$clog2(BUS_BYTES),1,51);
+    admit(0,0,1,bw);send_w(0,0,bw);compose_wait(3);compose_complete(2,1,1);
+    receive_b(0,0,0);compose_complete(1,1,1);receive_r(1,0,rd,0,3);wait_settled();
+    note("forwarded snapshot survives contributor response and slot generation reuse");
+    compose_start("fatal-and-slot-reuse");
+    a=make_address('h4a00,1,$clog2(BUS_BYTES),1,45);rd=a;rd.id=46;
+    admit(0,0,1,a);send_w(0,0,a,-1,0);compose_wait(1);
+    admit(1,0,0,rd);compose_wait(2);compose_complete(1,1,1);tick(4);
+    if(r_valid[1])$fatal(1,"read success before fatal contributor result");
+    @(negedge clk);$display("HOST_EVENT {\"kind\":\"fatal\"}");fatal=1;
+    receive_b(0,0,2);receive_r(1,0,rd,2);wait_settled();
+    reset_core();manual_requests=0;cfg.boot_epoch++;cfg.config_epoch++;configure_current();
+    @(negedge clk);enable=1;admit(0,0,0,rd);compose_wait(1);
+    manual_complete(0,1,1,1);tick(4);if(r_valid[0]||stale_count!=1)$fatal(1,"stale reused-slot completion accepted");
+    compose_complete(0,1,1);receive_r(0,0,rd,0);wait_settled();note("fatal settlement and reset/epoch slot reuse");
+    $display("COMPOSE_RESULT tests=%0d",tests);
+  endtask
+
+  always @(posedge clk)if(COMPOSE_ONLY && rst_n)begin
+    for(int p=0;p<PORTS;p++)begin
+      if(aw_valid[p]&&aw_ready[p])$display("HOST_EVENT {\"kind\":\"aw\",\"port\":%0d,\"slot\":%0d,\"generation\":%0d,\"address\":%0d,\"id\":%0d,\"len\":%0d,\"size\":%0d,\"burst\":%0d}",p,aw[p].slot,aw[p].generation,aw[p].axi.address,aw[p].axi.id,aw[p].axi.len,aw[p].axi.size,aw[p].axi.burst);
+      if(ar_valid[p]&&ar_ready[p])$display("HOST_EVENT {\"kind\":\"ar\",\"port\":%0d,\"slot\":%0d,\"generation\":%0d,\"address\":%0d,\"id\":%0d,\"len\":%0d,\"size\":%0d,\"burst\":%0d}",p,ar[p].slot,ar[p].generation,ar[p].axi.address,ar[p].axi.id,ar[p].axi.len,ar[p].axi.size,ar[p].axi.burst);
+      if(w_valid[p]&&w_ready[p])$display("HOST_EVENT {\"kind\":\"w\",\"port\":%0d,\"data\":\"%064h\",\"mask\":%0d,\"last\":%0d}",p,w[p].axi.data,w[p].axi.strobe,w[p].axi.last);
+      if(b_valid[p])$display("HOST_EVENT {\"kind\":\"b\",\"port\":%0d,\"slot\":%0d,\"generation\":%0d,\"response\":%0d,\"ready\":%0d}",p,b_slot[p],b_generation[p],b[p].response,b_ready[p]);
+      if(r_valid[p])$display("HOST_EVENT {\"kind\":\"r\",\"port\":%0d,\"slot\":%0d,\"generation\":%0d,\"response\":%0d,\"data\":\"%064h\",\"last\":%0d,\"ready\":%0d}",p,r_slot[p],r_generation[p],r[p].response,r[p].data,r[p].last,r_ready[p]);
+    end
+    for(int c=0;c<CHANNELS;c++)begin
+      if(request_valid[c]&&request_ready[c])$display("HOST_EVENT {\"kind\":\"request\",\"write\":%0d,\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"address\":%0d,\"data\":\"%0128h\",\"mask\":%0d}",request[c].is_write,request[c].tag,request[c].generation,request_boot[c],request_epoch[c],request[c].address,request[c].data,request[c].byte_enable);
+      if(completion_valid[c])$display("HOST_EVENT {\"kind\":\"completion\",\"write\":%0d,\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"physical\":%0d,\"integrity\":%0d,\"failed\":%0d}",completion[c].is_write,completion[c].identity.tag,completion[c].identity.generation,completion[c].identity.boot_epoch,completion[c].identity.config_epoch,completion[c].physical_done,completion[c].integrity_done,completion[c].failed);
+    end
+  end
+
   initial begin : test
     lpddr5_mc_axi_address_t a, overlap, invalid;
     int before_requests, before_integrity, before_physical;
     for(int i=0;i<65536;i++)begin actual_memory[i]=8'(i*29+7);expected_memory[i]=actual_memory[i];end
     for(int p=0;p<PORTS;p++)begin aw[p]='0;ar[p]='0;w[p]='0;response_event[p]='0;end
+    if(COMPOSE_ONLY) begin compose_tests(); $finish; end
     reset_core();
     a=make_address('h100,64/BUS_BYTES,$clog2(BUS_BYTES),1,3);
     admit(0,0,1,a);send_w(0,0,a);receive_b(0,0,0,4);

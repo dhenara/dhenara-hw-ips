@@ -59,6 +59,8 @@ class Transaction:
     error: int = 0
     w: list[tuple[int, int]] = field(default_factory=list)
     expected: dict[int, int] = field(default_factory=dict)
+    write_values: dict[int, list[int]] = field(default_factory=dict)
+    pin_counts: dict[int, int] = field(default_factory=dict)
     pin_seen: set[int] = field(default_factory=set)
     physical: bool = False
     integrity: bool = False
@@ -75,9 +77,20 @@ class Transaction:
 
 
 class HostScoreboard:
-    def __init__(self, bus_bytes: int = 16, ports: int = 2, capacity: int = 64, mapped_end: int = 1 << 30):
+    def __init__(
+        self,
+        bus_bytes: int = 16,
+        ports: int = 2,
+        capacity: int = 64,
+        mapped_end: int = 1 << 30,
+        *,
+        id_bits: int = 16,
+        address_bits: int = 40,
+    ):
         require(ports in (1, 2) and capacity > 0 and bus_bytes in (8, 16, 32), "host configuration")
+        require(4 <= id_bits <= 16 and 32 <= address_bits <= 40, "host ID/address widths")
         self.bus_bytes, self.ports, self.capacity, self.mapped_end = bus_bytes, ports, capacity, mapped_end
+        self.id_bits, self.address_bits = id_bits, address_bits
         self.transactions: dict[int, Transaction] = {}
         self.aw = [deque() for _ in range(ports)]
         self.memory: dict[int, int] = {}
@@ -93,7 +106,8 @@ class HostScoreboard:
         require(sum(not t.done for t in self.transactions.values()) < self.capacity, "response credit overflow")
         require(0 <= a.length <= 255, "AXI LEN representation")
         try:
-            ranges = byte_ranges(a, self.bus_bytes)
+            require(a.id < 1 << self.id_bits, "configured ID width")
+            ranges = byte_ranges(a, self.bus_bytes, self.address_bits)
             decoded = all(b < self.mapped_end for beat in ranges for b in beat)
         except Violation:
             # Invalid bursts still settle the full admitted AXI count.
@@ -127,6 +141,7 @@ class HostScoreboard:
                         lane = b % self.bus_bytes
                         if mask >> lane & 1:
                             t.expected[b] = data >> (lane * 8) & 255
+                            t.write_values.setdefault(b, []).append(t.expected[b])
         return tag
 
     def _older_overlap(self, tag: int) -> None:
@@ -151,8 +166,14 @@ class HostScoreboard:
         for i, value in enumerate(data):
             if enables >> i & 1:
                 b = address + i
-                require(b in t.expected and t.expected[b] == value, "unexpected physical write byte")
-                require(b not in t.pin_seen, "duplicate physical byte")
+                require(b in t.write_values, "unexpected physical write byte")
+                index = t.pin_counts.get(b, 0)
+                # FIXED beats can write one address repeatedly. Each actual
+                # effect must match the next fully validated W value; a third
+                # effect after two admitted values is still a duplicate.
+                require(index < len(t.write_values[b]), "duplicate physical byte")
+                require(t.write_values[b][index] == value, "unexpected physical write byte")
+                t.pin_counts[b] = index + 1
                 self.memory[b] = value
                 t.pin_seen.add(b)
 
@@ -162,6 +183,10 @@ class HostScoreboard:
         self._older_overlap(tag)
         if t.write:
             require(t.pin_seen == t.expected.keys(), "physical completion before all pin bytes")
+            require(
+                all(t.pin_counts[b] == len(values) for b, values in t.write_values.items()),
+                "physical completion before repeated write bytes",
+            )
             self.serial.update(t.expected)
         else:
             t.read_data = []

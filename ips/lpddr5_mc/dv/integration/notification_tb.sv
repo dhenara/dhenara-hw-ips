@@ -3,8 +3,9 @@ module notification_tb;
   import lpddr5_mc_channel_pkg::*;
   import lpddr5_mc_apb_metadata_pkg::*;
   import lpddr5_mc_apb_pkg::*;
-  logic pclk=0,cclk=0,preset_n=0,crst_n=0;
-  always #5 pclk<=~pclk;
+  logic pclk=0,cclk=0,preset_n=0,crst_n=0,cold_preset_n=0,cold_crst_n=0;
+  logic run_pclk=1;
+  always #5 if(run_pclk) pclk<=~pclk;
   always #3.5 cclk<=~cclk;
   logic psel=0,penable=0,pready;
   lpddr5_mc_apb_request_t request='0;
@@ -39,7 +40,7 @@ module notification_tb;
   assign unused_debug=^{ack_ready,unused_config_ready,unused_config_valid,unused_ack_ready,unused_ack_valid,unused_config,unused_ack,first_error,first_valid,first_version,publication_valid,config_payload,config_image,active_image,
     config_boot,global_ready,cmd_valid,cmd,protection,cfg_valid,fault,busy,cfg_epoch};
   lpddr5_mc_apb #(.CHANNELS(1),.PORTS(1)) apb (
-    .pclk,.preset_n,.psel_i(psel),.penable_i(penable),.request_i(request),.pready_o(pready),.response_o(response),
+    .pclk,.preset_n,.cold_preset_n(cold_preset_n),.psel_i(psel),.penable_i(penable),.request_i(request),.pready_o(pready),.response_o(response),
     .enabled_i(1'b0),.quiesced_i(1'b1),.host_settled_i(1'b1),.active_fsp_i(2'd0),.link_fault_i(1'b0),.recovery_confirmed_i(1'b0),
     .global_status_valid_i(1'b1),.global_status_i(global_status),.global_status_ready_o(global_ready),
     .status_valid_i(status_valid),.status_i(status_value),.status_ready_o(status_ready),
@@ -48,13 +49,14 @@ module notification_tb;
     .command_valid_o(cmd_valid),.command_ready_i(1'b1),.command_o(cmd),.last_protection_o(protection),
     .irq_o(irq),.configuration_valid_o(cfg_valid),.fault_o(fault),.publication_busy_o(busy),.configuration_epoch_o(cfg_epoch),.active_image_o(active_image));
   lpddr5_mc_notifications #(.DEPTH(2),.INPUTS(1)) queue (
-    .clk_ck_i(cclk),.rst_ni(crst_n),.destructive_reset_i(destructive),.occurrence_valid_i(occurrence_valid),.occurrence_i(occurrence),
+    .clk_ck_i(cclk),.rst_ni(cold_crst_n),.destructive_reset_i(destructive),.occurrence_valid_i(occurrence_valid),.occurrence_i(occurrence),
     .notification_valid_o(nvalid),.notification_ready_i(nready && allow_send),.notification_o(notification),.overflow_o(overflow),
     .first_error_clear_i(1'b0),.first_error_clear_version_i(64'd0),.first_error_valid_o(first_valid),.first_error_version_o(first_version),.first_error_o(first_error));
   lpddr5_mc_status_bridge bridge (
-    .clk_i(cclk),.rst_ni(crst_n),.snapshot_i(snapshot),.perf_capture_i(perf_capture),.perf_ready_o(perf_ready),.notification_valid_i(nvalid && allow_send),
+    .clk_i(cclk),.rst_ni(cold_crst_n),.snapshot_i(snapshot),.perf_capture_i(perf_capture),.perf_ready_o(perf_ready),.notification_valid_i(nvalid && allow_send),
     .notification_ready_o(nready),.notification_i(notification),.valid_o(bridge_valid),.ready_i(bridge_ready),.status_o(bridge_status));
   lpddr5_mc_control_link crossing (
+    .a_status_rst_ni(cold_preset_n),.c_status_rst_ni(cold_crst_n),
     .aclk_i(pclk),.arst_ni(preset_n),.a_enable_i(1'b1),.a_rearm_i(p_rearm),.a_fault_o(pfault),.a_rearm_ready_o(p_rearm_ready),
     .cclk_i(cclk),.crst_ni(crst_n),.c_enable_i(1'b1),.c_rearm_i(c_rearm),.c_fault_o(cfault),.c_rearm_ready_o(c_rearm_ready),
     .a_config_valid_i(1'b0),.a_config_ready_o(unused_config_ready),.a_config_i(zero_config),
@@ -87,7 +89,7 @@ module notification_tb;
     for(int r=0;r<REG_COUNT;r++) begin global_status[r]=0;snapshot[r]=0;zero_config.image[r]=0;end
     snapshot[INDEX_BOOT_EPOCH]=7;snapshot[INDEX_TEMP_MR4]=9;
     global_status[INDEX_BOOT_EPOCH]=7;global_status[INDEX_STATUS]=32'h104;
-    #20;preset_n=1;crst_n=1;
+    #20;preset_n=1;crst_n=1;cold_preset_n=1;cold_crst_n=1;
     wait(p_rearm_ready && c_rearm_ready);
     @(negedge pclk);p_rearm=1;@(negedge pclk);p_rearm=0;
     @(negedge cclk);c_rearm=1;@(negedge cclk);c_rearm=0;
@@ -99,6 +101,12 @@ module notification_tb;
     @(negedge cclk);destructive=1;@(negedge cclk);destructive=0;
     @(negedge pclk);global_status[INDEX_BOOT_EPOCH]=8;
     check(nvalid && notification==held,"destructive recovery lost occurrence");
+    // A queued record and first capture survive fractional operational reset.
+    preset_n=0;crst_n=0;#2.125;preset_n=1;crst_n=1;
+    repeat(20) @(negedge pclk);
+    check(nvalid && notification==held && first_valid && first_version==1,
+      "raw common reset lost queued occurrence or first error");
+    access(1,18'h1c,32'h20);
     allow_send=1;wait(delivered==1);repeat(10) @(negedge pclk);
     access(0,18'h10258,0);check(data==1 && irq,"retained CE not delivered once");
     access(0,18'h10240,0);check(data==32'h12345678,"retained error detail");
@@ -108,6 +116,11 @@ module notification_tb;
     access(0,18'h10000+18'(REG_OFFSET[INDEX_ERROR_INFO]),0);
     check(data[17:14]==4'(LPDDR5_MC_WRITE) && data[13] && data[9] && data[8:0]==9'h123
       && data[31:18]==0,"rank/operation/error metadata retained across recovery");
+    // A delivered diagnostic and count have their own retained APB owner.
+    preset_n=0;#2.125;preset_n=1;repeat(20) @(negedge pclk);
+    access(0,18'h10240,0);check(data==32'h12345678,"APB reset lost first error");
+    access(0,18'h10258,0);check(data==1,"APB reset lost CE count");
+    access(1,18'h1c,32'h20);check(irq,"APB reset lost pending event");
     access(0,18'h38,0);check(data==8,"live BOOT_EPOCH changed");
     // Observe the canonical owner directly as well as software reads.
     check(apb.staging_q[0][INDEX_BOOT_EPOCH]==8 && apb.staging_q[0][INDEX_CONFIG_EPOCH]==0,"old event overwrote live epochs");
@@ -143,6 +156,28 @@ module notification_tb;
     access(0,18'h10000+18'(REG_OFFSET[INDEX_PERF_PAYLOAD_RD_1]),0);check(data==32'h01234567,"captured read counter high");
     access(0,18'h10000+18'(REG_OFFSET[INDEX_PERF_CYCLES_0]),0);check(data==32'h76543210,"captured cycles low");
     access(0,18'h10000+18'(REG_OFFSET[INDEX_PERF_CYCLES_1]),0);check(data==32'hfedcba98,"captured cycles high");
+    // Stop the destination clock after a coherent event enters the transport.
+    // Reset both operational domains while its acknowledgement cannot advance.
+    access(1,18'h18,32'h20);
+    inject(32'h13579bdf,13'h20,8);
+    for(int n=0;n<100;n++) begin
+      @(posedge cclk);
+      if(bridge_valid && bridge_ready && bridge_status.events[5]) break;
+      check(n!=99,"in-flight event did not reach retained mailbox");
+    end
+    // Freeze after source acceptance: an earlier ordinary snapshot must first
+    // leave the single-entry mailbox. The event cannot cross two APB samples yet.
+    run_pclk=0;
+    @(negedge cclk);preset_n=0;crst_n=0;#2.125;preset_n=1;crst_n=1;
+    repeat(12) @(negedge cclk);
+    check(delivered==5,"stopped APB clock consumed an occurrence");
+    run_pclk=1;wait(delivered==6);repeat(40) @(negedge pclk);
+    access(0,18'h10240,0);check(data==32'h13579bdf,"raw reset lost in-flight first error");
+    access(0,18'h10258,0);check(data==3,"raw reset lost or replayed in-flight CE");
+    access(0,18'h1025c,0);check(data==2,"raw reset lost older UE count");
+    access(0,18'h10000+18'(REG_OFFSET[INDEX_PERF_PAYLOAD_RD_0]),0);
+    check(data==32'h89abcdef,"raw reset lost explicit performance capture");
+    repeat(30) @(negedge pclk);check(delivered==6,"raw reset duplicated occurrence");
     $display("NOTIFICATION_INTEGRATION_PASS checks=%0d delivered=%0d clocks=10ns/7ns",checks,delivered);$finish;
   end
   initial begin #100000;$fatal(1,"notification integration deadline");end

@@ -1,0 +1,235 @@
+{
+  "source_commit": "a70dadfb288472ff2adb3d67bea2163e3942c89a",
+  "raw_sha256": "bd59a949290838f0ce0b42638ba254da061cf439147ebd598b1539c28ee640f1",
+  "selection": "Case 2 FSP CA projection only; original ticks/cycles/raw CA retained. Not a complete channel replay.",
+  "samples": [
+    {
+      "tick": 656,
+      "cycles": 244,
+      "cs": 1,
+      "ca": 2136
+    },
+    {
+      "tick": 657,
+      "cycles": 245,
+      "cs": 1,
+      "ca": 136
+    },
+    {
+      "tick": 670,
+      "cycles": 258,
+      "cs": 1,
+      "ca": 216
+    },
+    {
+      "tick": 671,
+      "cycles": 259,
+      "cs": 1,
+      "ca": 10248
+    },
+    {
+      "tick": 684,
+      "cycles": 272,
+      "cs": 1,
+      "ca": 344
+    },
+    {
+      "tick": 685,
+      "cycles": 273,
+      "cs": 1,
+      "ca": 10888
+    },
+    {
+      "tick": 698,
+      "cycles": 286,
+      "cs": 1,
+      "ca": 472
+    },
+    {
+      "tick": 699,
+      "cycles": 287,
+      "cs": 1,
+      "ca": 2888
+    },
+    {
+      "tick": 712,
+      "cycles": 300,
+      "cs": 1,
+      "ca": 1368
+    },
+    {
+      "tick": 713,
+      "cycles": 301,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 726,
+      "cycles": 314,
+      "cs": 1,
+      "ca": 1496
+    },
+    {
+      "tick": 727,
+      "cycles": 315,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 740,
+      "cycles": 328,
+      "cs": 1,
+      "ca": 1624
+    },
+    {
+      "tick": 741,
+      "cycles": 329,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 754,
+      "cycles": 342,
+      "cs": 1,
+      "ca": 1880
+    },
+    {
+      "tick": 755,
+      "cycles": 343,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 768,
+      "cycles": 356,
+      "cs": 1,
+      "ca": 2008
+    },
+    {
+      "tick": 769,
+      "cycles": 357,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 782,
+      "cycles": 370,
+      "cs": 1,
+      "ca": 2264
+    },
+    {
+      "tick": 783,
+      "cycles": 371,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 796,
+      "cycles": 384,
+      "cs": 1,
+      "ca": 2392
+    },
+    {
+      "tick": 797,
+      "cycles": 385,
+      "cs": 1,
+      "ca": 2120
+    },
+    {
+      "tick": 810,
+      "cycles": 398,
+      "cs": 1,
+      "ca": 2520
+    },
+    {
+      "tick": 811,
+      "cycles": 399,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 824,
+      "cycles": 412,
+      "cs": 1,
+      "ca": 2648
+    },
+    {
+      "tick": 825,
+      "cycles": 413,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 838,
+      "cycles": 426,
+      "cs": 1,
+      "ca": 2904
+    },
+    {
+      "tick": 839,
+      "cycles": 427,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 852,
+      "cycles": 440,
+      "cs": 1,
+      "ca": 3160
+    },
+    {
+      "tick": 853,
+      "cycles": 441,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 866,
+      "cycles": 454,
+      "cs": 1,
+      "ca": 3928
+    },
+    {
+      "tick": 867,
+      "cycles": 455,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 880,
+      "cycles": 468,
+      "cs": 1,
+      "ca": 5336
+    },
+    {
+      "tick": 881,
+      "cycles": 469,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 894,
+      "cycles": 482,
+      "cs": 1,
+      "ca": 7512
+    },
+    {
+      "tick": 895,
+      "cycles": 483,
+      "cs": 1,
+      "ca": 8
+    },
+    {
+      "tick": 908,
+      "cycles": 496,
+      "cs": 1,
+      "ca": 2136
+    },
+    {
+      "tick": 909,
+      "cycles": 497,
+      "cs": 1,
+      "ca": 648
+    }
+  ]
+}

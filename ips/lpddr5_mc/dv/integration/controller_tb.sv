@@ -1,17 +1,25 @@
 module controller_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
-  parameter int PROFILE_NUMBER=0,SERVICE_DIV=2
+  parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,
+  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0,INLINE_LIFECYCLE=0,WRAPPER_MANAGEMENT=0,ECC_BOUNDARY=0
 );
+  timeunit 1ns; timeprecision 1fs;
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
   import lpddr5_mc_apb_metadata_pkg::*;
   import lpddr5_mc_channel_pkg::*;
   localparam int BYTES=DATA_BITS/8;
-  logic clk=0,rst_n=0,enable;
-  always #0.625 clk<=~clk;
+  logic clk=0,enable,run_ck=1,run_pclk=1;
+  // The continuous evidence stream deliberately samples the asynchronous
+  // reset input as data. This testbench observation is not a reset crossing.
+  /* verilator lint_off SYNCASYNCNET */
+  logic rst_n=0;
+  /* verilator lint_on SYNCASYNCNET */
+  logic [PORTS-1:0] run_axi='1;
+  always #0.625 if(run_ck) clk<=~clk;
   logic [PORTS-1:0] axi_clk=0,axi_rst_n=0,monitor_rst_n;
   for(genvar p=0;p<PORTS;p++) begin : clocks
-    always #(1.25+0.5*p) axi_clk[p]<=~axi_clk[p];
+    always #(BENCHMARK ? 1.25 : 1.25+0.5*p) if(run_axi[p]) axi_clk[p]<=~axi_clk[p];
     lpddr5_mc_reset_sync monitor_reset(.clk_i(axi_clk[p]),.arst_ni(axi_rst_n[p]),.rst_no(monitor_rst_n[p]));
   end
   logic settled,host_fault,irq,reset_request,external_fault=0;
@@ -24,7 +32,7 @@ module controller_tb #(
   lpddr5_mc_profile_t [2:0] qualified;
   lpddr5_mc_register_image_t staging_image;
   logic pclk=0,psel=0,penable=0,pready;
-  always #3.5 pclk<=~pclk;
+  always #3.5 if(run_pclk) pclk<=~pclk;
   lpddr5_mc_apb_request_t apb_request='0;
   lpddr5_mc_apb_response_t apb_response;
   logic [31:0] read_data;
@@ -33,6 +41,7 @@ module controller_tb #(
   lpddr5_mc_management_out_t [CHANNELS-1:0] management_out;
   logic [CHANNELS-1:0][1:0] report_valid,report_sr,phy_refresh_done;
   lpddr5_mc_ca_t [CHANNELS-1:0] ca;
+  lpddr5_mc_ca_t [CHANNELS-1:0] wm_pin_ca;
   lpddr5_mc_wck4_t [CHANNELS-1:0] wck;
   lpddr5_mc_write_bus4_t [CHANNELS-1:0] writes;
   lpddr5_mc_read_request4_t [CHANNELS-1:0] reads;
@@ -41,6 +50,7 @@ module controller_tb #(
   lpddr5_mc_profile_t profile;
   logic memory_reset=1,finish_observations=0;
   logic [CHANNELS-1:0][4:0] mr4_value;
+  logic [CHANNELS-1:0][7:0] eb_mr43='0;
   byte unsigned expected[65536];
   int b_count[PORTS],r_count[PORTS],checks=0,stage=0;
   int power_policy=0;
@@ -62,7 +72,7 @@ module controller_tb #(
       if(power_policy==1 && power_entered[c] && ca[c].cs!=0 && ca[c].address==0) power_exited[c]=1;
     end
   end
-  lpddr5_mc #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH)) dut (
+  lpddr5_mc #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH),.ID_BITS(BENCHMARK ? 16 : 8)) dut (
     .clk_ck_i(clk),.pclk_i(pclk),.rst_ni(rst_n),.psel_i(psel),.penable_i(penable),.apb_i(apb_request),.pready_o(pready),.apb_o(apb_response),.irq_o(irq),
     .qualified_profiles_i(qualified),.external_fault_i(external_fault),.destructive_reset_request_o(reset_request),.destructive_reset_confirmed_i(reset_confirmed),
     .axi_clk_i(axi_clk),.axi_rst_ni(axi_rst_n),.awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_o(awready),.arready_o(arready),.wready_o(wready),
@@ -70,8 +80,8 @@ module controller_tb #(
     .management_i(management),.rank_report_valid_i(report_valid),.rank_self_refresh_i(report_sr),.phy_refresh_done_i(phy_refresh_done),.management_o(management_out),
     .ca_o(ca),.wck_o(wck),.write_o(writes),.read_request_o(reads),.return_i(returns),.status_o(status_value),
     .enabled_o(enable),.fault_o(host_fault),.host_settled_o(settled));
-  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS)) observer (
-    .clk_ck_i(clk),.rst_ni(observe_traffic),.axi_clk_i(axi_clk),.axi_rst_ni(monitor_rst_n),
+  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(BENCHMARK || WRAPPER_MANAGEMENT || ECC_BOUNDARY)) observer (
+    .clk_ck_i(clk),.rst_ni(observe_traffic),.axi_clk_i(axi_clk),.axi_rst_ni(monitor_rst_n & {PORTS{!WRAPPER_MANAGEMENT || wm_axi_capture}}),
     .awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_i(awready),.arready_i(arready),.wready_i(wready),
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
     .ca_i(ca),.wck_i(wck),.write_i(writes),.read_i(reads),.return_i(returns),.finish_i(finish_observations));
@@ -81,17 +91,39 @@ module controller_tb #(
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
     .ca_i(ca),.wck_i(wck),.write_i(writes),.read_i(reads),.return_i(returns),.finish_i(finish_recovery));
   for(genvar c=0;c<CHANNELS;c++) begin : memories
+    lpddr5_mc_ca_t wm_controller_delay[2];
+    lpddr5_mc_ca_t wm_phy_sample;
     int mr43_count,mr4_count,zq_count,refresh_count,rfm_count;
     logic unused_counts;
     assign unused_counts=^{mr43_count,mr4_count,zq_count,refresh_count,rfm_count};
-    lpddr5_mc_channel_memory memory_model (
-      .profile_i(qualified[0]),.ca_i(ca[c]),.write_i(writes[c]),.read_i(reads[c]),.return_o(returns[c]),
-      .mr43_i(8'd0),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
+    lpddr5_mc_channel_memory #(.INITIAL_PATTERN(BENCHMARK),.CHANNELS(CHANNELS),.CHANNEL_INDEX(c)) memory_model (
+      .profile_i(wf_case>=0 ? wf_memory_profile[c] : qualified[0]),.ca_i(ca[c]),.write_i(writes[c]),.read_i(reads[c]),.return_o(returns[c]),
+      .mr43_i(eb_mr43[c]),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
     initial forever begin
       @(negedge clk);
-      if(memory_reset) begin
+      // C1 keeps the physical fixture alive during unconfirmed reset requests.
+      // Only the registered destructive pulse may discard a live epoch.
+      if((INLINE_LIFECYCLE ? !rst_n || dut.datapath.channels[c].channel.destructive_reset : memory_reset)
+          || (WRAPPER_MANAGEMENT && dut.datapath.channels[c].channel.destructive_reset)) begin
+        wm_controller_delay[0]='0;wm_controller_delay[1]='0;wm_pin_ca[c]='0;
         memories[c].memory_model.reset();report_valid[c]=2'b11>>(2-RANKS);report_sr[c]=0;
-      end else begin memories[c].memory_model.prepare();memories[c].memory_model.sample();end
+        wrapper_memory_sample(c,memories[c].memory_model.return_o);
+        continuous_memory_sample(c,memories[c].memory_model.return_o,1,dut.datapath.channels[c].channel.destructive_reset);
+      end else begin
+        if(WRAPPER_MANAGEMENT) begin
+          check(profile.management_ck_tctrl_delay==2,"physical wrapper CA delay binding");
+          wm_pin_ca[c]=management_out[c].phymstr_ack ? wm_phy_ca[c] : wm_controller_delay[1];
+          check(!management_out[c].phymstr_ack || wm_controller_delay[1].cs==0,"controller CA tail under PHY owner");
+          wm_controller_delay[1]=wm_controller_delay[0];wm_controller_delay[0]=ca[c];
+          if(wm_phy_ca[c].cs!=0) begin
+            check(management_out[c].phymstr_ack && ca[c].cs==0,"physical PHY REF without exclusive ownership");
+            wm_phy_sample=wm_pin_ca[c];
+            memories[c].memory_model.sample_phy_refresh(wm_phy_sample);
+          end
+        end
+        memories[c].memory_model.prepare();wrapper_memory_sample(c,memories[c].memory_model.return_o);
+        continuous_memory_sample(c,memories[c].memory_model.return_o,0,dut.datapath.channels[c].channel.destructive_reset);memories[c].memory_model.sample();
+      end
     end
   end
   for(genvar p=0;p<PORTS;p++) begin : monitors
@@ -102,15 +134,28 @@ module controller_tb #(
       if(rvalid[p] && rready[p]) r_count[p]=r_count[p]+1;
     end
     end
-    assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) bvalid[p]&&!bready[p] |=> bvalid[p]&&$stable(b[p]));
+    assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) bvalid[p]&&!bready[p] |=> bvalid[p]&&$stable(b[p]))
+      else $fatal(1,"B stability port=%0d stage=%0d valid=%b ready=%b payload=%h",p,stage,bvalid[p],bready[p],b[p]);
     assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) rvalid[p]&&!rready[p] |=> rvalid[p]&&$stable(r[p]));
   end
+  `include "continuous_observer.svh"
+  `include "wrapper_observer.svh"
   `include "expected_profiles.svh"
   task automatic check(input logic condition,input string message);
     assert(condition) else $fatal(1,"stage%0d: %s",stage,message);checks++;
   endtask
   task automatic source_negative(input int p);check(p>=0 && p<PORTS,"source port");if(p==0) @(negedge axi_clk[0]);else @(negedge axi_clk[PORTS-1]);endtask
   task automatic source_positive(input int p);check(p>=0 && p<PORTS,"source port");if(p==0) @(posedge axi_clk[0]);else @(posedge axi_clk[PORTS-1]);endtask
+  task automatic drive_bready(input logic ready_value);
+    // A stopped source clock changes its phase relative to the other port.
+    // Drive each READY on its own falling edge so endpoint and concurrent
+    // assertions sample the same value at the following rising edge.
+    for(int p=0;p<PORTS;p++) begin
+      source_negative(p);bready[p]=ready_value;
+      if(RUNTIME_RESET) $display("RUNTIME_RESET_BREADY ns=%0.3f port=%0d ready=%b clocks=%b valid=%b payload=%h",
+        $realtime,p,bready,axi_clk,bvalid,b);
+    end
+  endtask
   function automatic lpddr5_mc_axi_address_t address(input logic [15:0] id,input int at,beats);
     lpddr5_mc_axi_address_t value;
     value='0;value.id=16'(id);value.address=40'(at);value.len=8'(beats-1);value.size=3'($clog2(BYTES));value.burst=1;return value;
@@ -215,36 +260,79 @@ module controller_tb #(
     for(int n=0;n<3000;n++) begin @(negedge clk);if(settled) return;end
     $fatal(1,"stage%0d accepted work failed to drain",stage);
   endtask
+  `include "benchmark.svh"
+  `include "runtime_reset.svh"
+  `include "inline_lifecycle.svh"
+  `include "ecc_boundary.svh"
+  `include "wrapper_management.svh"
   initial begin
     int before_b;
     string path;
     int stream,count,number,ranks,target;
     logic [31:0] word_value;
+    if(ECC_BOUNDARY) eb_select();
     management='0;aw='0;ar='0;wd='0;phy_refresh_done=0;
+    if($value$plusargs("wrapper_power_policy=%d",wp_policy))
+      check(WRAPPER_MANAGEMENT && wp_policy inside {1,2},"wrapper power policy selector");
+    if($value$plusargs("wrapper_power_case=%s",wp_case))
+      check(WRAPPER_MANAGEMENT && wp_policy!=0 &&
+        (wp_case=="entry_wake" || (wp_case=="decline" && wp_policy==1)),"wrapper power case selector");
     for(int c=0;c<CHANNELS;c++) mr4_value[c]=9;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
     for(int i=0;i<65536;i++) expected[i]=0;
     expected_profile(PROFILE_NUMBER);profile.ranks=2'(RANKS);profile.mr57=3;
     check(profile_valid(profile),"nonzero paired-bank MR57 descriptor must be valid");
+    if(!$value$plusargs("wrapper_fsp_case=%d",wf_case)) wf_case=-1;
     for(int f=0;f<3;f++) qualified[f]=profile;
+    if(wf_case>=0) begin
+      check(WRAPPER_MANAGEMENT && wf_case inside {0,1,2},"FSP selection requires wrapper");
+      expected_profile(24);profile.ranks=1;profile.mr57=3;qualified[1]=profile;
+      expected_profile(PROFILE_NUMBER);profile.ranks=2'(RANKS);profile.mr57=3;
+    end
     check($value$plusargs("images=%s",path),"missing image vectors");stream=$fopen(path,"r");
     check(stream!=0 && $fscanf(stream,"%d",count)==1 && count==192,"image vector header");
-    // The default fixture consumes profile0/rank1 and all three FSP banks.
-    for(int f=0;f<3;f++) begin
-      check($fscanf(stream,"%d %d %d",number,ranks,target)==3 && number==0 && ranks==1 && target==f,"image identity");
+    // Select all three FSP banks for the exact requested profile/geometry.
+    for(int image_index=0;image_index<count;image_index++) begin
+      check($fscanf(stream,"%d %d %d",number,ranks,target)==3,"image identity");
       for(int regindex=0;regindex<REG_COUNT;regindex++) begin
         check($fscanf(stream,"%h",word_value)==1,"image word");
-        if(f==0 || REG_FSP[regindex]==f) staging_image[regindex]=word_value;
+        if(ranks==RANKS && ((number==PROFILE_NUMBER &&
+            ((target==0 && (wf_case<0 || REG_FSP[regindex]!=1)) ||
+            (REG_FSP[regindex]==target && (wf_case<0 || target!=1)))) ||
+            (wf_case>=0 && number==24 && target==1 && REG_FSP[regindex]==1)))
+          staging_image[regindex]=word_value;
       end
     end
     $fclose(stream);staging_image[INDEX_FSP_VALID]=7;
     staging_image[INDEX_MODE][10:8]=3'(SERVICE_DIV);
+    if(ECC_BOUNDARY) staging_image[INDEX_MODE][4]=1'(eb_posted);
+    if(INLINE_LIFECYCLE || WRAPPER_MANAGEMENT) begin
+      staging_image[INDEX_MODE][1]=1;
+      // Publication requires every enabled region to agree with MODE's ECC
+      // reservation. The default generated image has inline ECC disabled.
+      for(int region_index=0;region_index<8;region_index++)
+        if(staging_image[REGION_ATTR_INDEX[region_index]][0])
+          staging_image[REGION_ATTR_INDEX[region_index]][5]=1;
+    end
     staging_image[INDEX_PORT_LIMIT_0]=32'(DEPTH) | (32'(DEPTH)<<8);
     staging_image[INDEX_PORT_LIMIT_1]=staging_image[INDEX_PORT_LIMIT_0];
     staging_image[INDEX_WR_HIGH]=32'(DEPTH);staging_image[INDEX_WR_LOW]=32'(DEPTH/2);
+    if(BENCHMARK) begin
+      check($value$plusargs("benchmark_direction=%d",benchmark_direction),"missing benchmark direction");
+      check($value$plusargs("benchmark_service=%d",benchmark_service),"missing benchmark service");
+      staging_image[INDEX_MODE][10:8]=3'(benchmark_service);
+      // The default 24000-byte cap equals the host arrival rate. It cannot
+      // repay a maintenance pause within a later cap window. Give this rate
+      // benchmark catch-up headroom; focused cap workloads keep their limits.
+      staging_image[INDEX_RD_CAP]=48000;staging_image[INDEX_WR_CAP]=48000;
+    end
     if($value$plusargs("power_policy=%d",power_policy)) begin
       check(power_policy inside {1,2},"power policy scenario");
       staging_image[INDEX_PM_REQUEST]=32'(power_policy);staging_image[INDEX_PD_IDLE]=256;staging_image[INDEX_SR_IDLE]=256;
+    end
+    if(wp_policy!=0) begin
+      staging_image[INDEX_PM_REQUEST]=32'(wp_policy);
+      staging_image[INDEX_PD_IDLE]=WP_IDLE_CK;staging_image[INDEX_SR_IDLE]=WP_IDLE_CK;
     end
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;
     wait(dut.p_started_q && dut.c_started_q && settled);
@@ -263,6 +351,11 @@ module controller_tb #(
     // handover. PHY-owned initialization and fresh-epoch admission above are
     // checked by this fixture; no controller refresh clock runs before it.
     publish_and_boot(0);stage=1;observe_traffic=1;
+    if(BENCHMARK) benchmark_run();
+    if(RUNTIME_RESET) runtime_reset_run();
+    if(ECC_BOUNDARY) ecc_boundary_run();
+    if(INLINE_LIFECYCLE) inline_lifecycle_run();
+    if(WRAPPER_MANAGEMENT) wrapper_management_run();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);
     send_ar(PORTS-1,2,4096,128);read_result(PORTS-1,2,4096,128);wait_settled();stage=2;
     if(power_policy!=0) begin
@@ -303,14 +396,14 @@ module controller_tb #(
     // Both source obligations are accepted before ownership is lost. AW has
     // no W yet; AR is still crossing CDC. Neither may disappear during reset.
     // Different low-12-bit granules avoid the intentional 4-KiB lease hash alias.
-    bready=0;before_b=b_count[0];send_aw(0,10,16384,64/BYTES);send_ar(PORTS-1,11,20544,64/BYTES);
+    drive_bready(0);before_b=b_count[0];send_aw(0,10,16384,64/BYTES);send_ar(PORTS-1,11,20544,64/BYTES);
     @(negedge clk);external_fault=1;repeat(8) @(negedge clk);
     check(host_fault && !enable && !settled,"ownership loss must fence and retain accepted work");
     write_csr(INDEX_CONTROL,8);
     repeat(20) begin @(negedge clk);check(!reset_request,"destructive reset before complete host settlement");end
     send_w(0,16384,64/BYTES);
     read_result(PORTS-1,11,20544,64/BYTES,2);
-    bready='1;wait_b(0,10,before_b+1,2);wait_settled();
+    drive_bready(1);wait_b(0,10,before_b+1,2);wait_settled();
     for(int n=0;n<100;n++) begin @(negedge clk);if(reset_request) break;end
     check(reset_request,"settled ownership loss must request destructive reset");
     repeat(8) begin @(negedge clk);check(reset_request && status_value[0].boot_epoch==0,"stale high reset confirmation accepted");end
@@ -341,10 +434,10 @@ module controller_tb #(
   end
   // Retain useful owner state even if a process deadline interrupts simulation.
   initial forever begin
-    #5000;
+    #(64'd5000);
     $display("CONTROLLER_PROGRESS stage=%0d settled=%0d fault=%0d coordinator=%0d channels=%0d/%0d reset=%0d boot=%0d",
       stage,settled,host_fault,dut.coordinator.state_q,status_value[0].state,status_value[CHANNELS-1].state,reset_request,status_value[0].boot_epoch);
     $fflush();
   end
-  initial begin #65000;$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
+  initial begin #(BENCHMARK ? 64'd650000 : RESET_MATRIX ? 64'd600000 : RUNTIME_RESET || INLINE_LIFECYCLE || WRAPPER_MANAGEMENT ? 64'd200000 : 64'd65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
 endmodule

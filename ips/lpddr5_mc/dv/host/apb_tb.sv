@@ -4,6 +4,7 @@ module apb_tb;
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_apb_metadata_pkg::*;
   import lpddr5_mc_apb_pkg::*;
+  localparam int PUBLICATION_TIMEOUT = 900;
   logic pclk = 0;
   always #5 pclk <= ~pclk;
   logic preset_n = 0;
@@ -33,9 +34,13 @@ module apb_tb;
   logic [31:0] held_crc;
   lpddr5_mc_register_image_t held_image;
   int checks = 0;
+  int unsigned pclk_edges = 0;
+  int unsigned prepare_transfers[2] = '{default:0};
+  int unsigned abort_transfers[2] = '{default:0};
+  bit trace_abort = 0;
 
-  lpddr5_mc_apb #(.PUBLICATION_TIMEOUT(900)) dut (
-    .pclk, .preset_n, .psel_i(psel), .penable_i(penable), .request_i(req),
+  lpddr5_mc_apb #(.PUBLICATION_TIMEOUT(PUBLICATION_TIMEOUT)) dut (
+    .pclk, .preset_n, .cold_preset_n(preset_n), .psel_i(psel), .penable_i(penable), .request_i(req),
     .pready_o(pready), .response_o(rsp), .enabled_i(enabled), .quiesced_i(quiesced),
     .host_settled_i(settled), .active_fsp_i(active_fsp), .link_fault_i(link_fault),
     .recovery_confirmed_i(recovery), .global_status_valid_i(global_valid),
@@ -50,10 +55,156 @@ module apb_tb;
     .active_image_o(active_image)
   );
 
-  task automatic check(input logic condition, input string explanation);
+  // Avoid the pinned simulator's invalid free at timing-coroutine cleanup by
+  // keeping check messages in bounded packed values. Every message fits here.
+  task automatic check(input logic condition, input logic [2047:0] explanation);
     assert(condition) else $fatal(1, "%s", explanation);
     checks++;
   endtask
+
+  task automatic recover_publication_fault;
+    @(negedge pclk); recovery = 1;
+    @(negedge pclk); recovery = 0;
+    check(!fault && !cfg_good && !busy, "confirmed recovery must keep the failed image invalid");
+    publish(7);
+  endtask
+
+  task automatic check_skewed_negative(input int first_channel);
+    logic [1:0] first, second;
+    logic [31:0] previous_epoch;
+    lpddr5_mc_register_image_t [1:0] previous_image;
+    int prior_commands;
+    int unsigned before_prepare[2], before_abort[2];
+    first = 2'(1 << first_channel); second = ~first;
+    previous_epoch = epoch; previous_image = active_image;
+    prior_commands = command_count;
+    for(int c=0;c<2;c++) begin
+      before_prepare[c]=prepare_transfers[c];
+      before_abort[c]=abort_transfers[c];
+    end
+    write_reg(18'h1000c, previous_image[0][INDEX_AGE_TICK_DIV]+1);
+    write_reg(18'h20, 1);
+    wait(cfg[0].prepare);
+    repeat(2) @(negedge pclk);
+    held_sequence = cfg[0].epoch;
+    for(int c=0;c<2;c++) check(prepare_transfers[c]==before_prepare[c]+1, "PREPARE payload was not consumed exactly once");
+    check(cfg_image!=previous_image, "failed-publication fixture did not change the candidate image");
+    // Both PREPARE payloads were consumed. Stall the new ABORT payloads so
+    // the late old-phase return must not depend on current-phase sent bits.
+    cfg_ready = 0; trace_abort = 1;
+    send_ack(first, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+    check(busy && fault && !cfg_good && cfg[0].abort_request, "first rejection must start ABORT");
+    write_reg(18'h8, 8, 15, 1);
+    send_ack(second, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+    #1;
+    check(busy && fault && !cfg_good && cfg[0].abort_request,
+      "late negative PREPARE must not terminate pending ABORT");
+    check(epoch==previous_epoch && active_image==previous_image, "failed PREPARE changed active image/epoch");
+    write_reg(18'h8, 8, 15, 1);
+    check(command_count==prior_commands && !cmd_valid, "early RECOVER escaped publication ownership");
+    cfg_ready = first;
+    repeat(2) @(negedge pclk);
+    send_ack(first, LPDDR5_MC_CONFIG_ABORT, held_sequence);
+    check(busy && !cfg_good && fault, "partial ABORT acknowledgement released ownership");
+    write_reg(18'h8, 8, 15, 1);
+    cfg_ready = 3;
+    repeat(2) @(negedge pclk);
+    for(int c=0;c<2;c++) check(abort_transfers[c]==before_abort[c]+1, "missing/duplicate ABORT payload transfer");
+    send_ack(second, LPDDR5_MC_CONFIG_ABORT, held_sequence);
+    check(!busy && !cfg_good && fault && epoch==previous_epoch && active_image==previous_image,
+      "both ABORT replies must settle idle/invalid with the old image still fenced");
+    write_reg(18'h8, 8);
+    repeat(2) @(negedge pclk);
+    check(command_count==prior_commands+1 && fault && !cfg_good, "settled RECOVER delivery or fault fence changed");
+    $display("APB_SKEWED_NEGATIVE_PASS first=%0d sequence=%0d epoch=%0d",first_channel,held_sequence,epoch);
+    trace_abort = 0;
+    recover_publication_fault();
+  endtask
+
+  task automatic check_bad_abort_response(input int cause);
+    logic [31:0] previous_epoch;
+    lpddr5_mc_register_image_t [1:0] previous_image;
+    int prior_commands;
+    int unsigned abort_entry_edge;
+    int unsigned before_prepare[2];
+    previous_epoch = epoch;
+    previous_image = active_image;
+    prior_commands = command_count;
+    $display("APB_ABORT_REJECTION_BEGIN cause=%0d",cause);
+    for(int c=0;c<2;c++) before_prepare[c]=prepare_transfers[c];
+    if(cause==8) cfg_ready=1;
+    write_reg(18'h1000c, previous_image[0][INDEX_AGE_TICK_DIV]+1);
+    write_reg(18'h20, 1);
+    wait(cfg[0].prepare);
+    repeat(2) @(negedge pclk);
+    held_sequence = cfg[0].epoch;
+    check(prepare_transfers[0]==before_prepare[0]+1 &&
+      prepare_transfers[1]==before_prepare[1]+(cause==8 ? 0 : 1), "PREPARE fault fixture transfer counts");
+    send_ack(1, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+    abort_entry_edge = pclk_edges;
+    check(busy && fault && !cfg_good, "negative PREPARE failed to fence publication");
+    case(cause)
+      0: send_ack(2, LPDDR5_MC_CONFIG_PREPARE, held_sequence-1, 0);
+      1: begin
+        @(negedge pclk);
+        ack[1]='{sequence_number:held_sequence,boot_epoch:cfg_boot-1,phase:LPDDR5_MC_CONFIG_PREPARE,accepted:1'b0};
+        ack_valid=2;
+        @(negedge pclk);ack_valid=0;
+      end
+      2: send_ack(2, LPDDR5_MC_CONFIG_COMMIT, held_sequence);
+      3: send_ack(2, LPDDR5_MC_CONFIG_PREPARE, held_sequence);
+      4: send_ack(2, LPDDR5_MC_CONFIG_DECLINE, held_sequence, 0);
+      5: send_ack(1, LPDDR5_MC_CONFIG_ABORT, held_sequence, 0);
+      6: send_ack(1, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+      7: begin
+        send_ack(2, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+        check(busy, "first matching late rejection released ABORT");
+        send_ack(2, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+      end
+      8: send_ack(2, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+      9: begin
+        send_ack(1, LPDDR5_MC_CONFIG_ABORT, held_sequence);
+        check(busy, "partial ABORT completed all channels");
+        send_ack(1, LPDDR5_MC_CONFIG_ABORT, held_sequence);
+      end
+      10: send_ack(1, LPDDR5_MC_CONFIG_ABORT, held_sequence-1);
+      11: begin
+        // A late old-phase response and one successful ABORT response must
+        // neither finish ABORT nor restart its finite timeout interval.
+        send_ack(2, LPDDR5_MC_CONFIG_PREPARE, held_sequence, 0);
+        send_ack(1, LPDDR5_MC_CONFIG_ABORT, held_sequence);
+        write_reg(18'h8, 8, 15, 1);
+        while(pclk_edges-abort_entry_edge<PUBLICATION_TIMEOUT) begin
+          check(busy && fault && !cfg_good && epoch==previous_epoch && active_image==previous_image,
+            "missing ABORT reply released publication before its deadline");
+          @(negedge pclk);
+        end
+        check(pclk_edges-abort_entry_edge==PUBLICATION_TIMEOUT, "ABORT timeout interval changed");
+        $display("APB_ABORT_TIMEOUT elapsed=%0d",pclk_edges-abort_entry_edge);
+      end
+      default: $fatal(1,"unknown ABORT fault scenario");
+    endcase
+    check(fault && !cfg_good && !busy && epoch==previous_epoch && active_image==previous_image,
+      "malformed/duplicate/stale ABORT response or timeout lost its fault disposition");
+    cfg_ready=3;
+    check(command_count==prior_commands && !cmd_valid, "fault-path early RECOVER queued a command");
+    write_reg(18'h8, 8);
+    repeat(2) @(negedge pclk);
+    check(command_count==prior_commands+1 && fault && !cfg_good, "ABORT-failure RECOVER delivery/fence changed");
+    $display("APB_ABORT_REJECTION_PASS cause=%0d",cause);
+    recover_publication_fault();
+  endtask
+
+  always @(posedge pclk) begin
+    pclk_edges <= pclk_edges+1;
+    for(int c=0;c<2;c++) begin
+      if(cfg_valid[c] && cfg_ready[c] && cfg[c].prepare) prepare_transfers[c]<=prepare_transfers[c]+1;
+      if(cfg_valid[c] && cfg_ready[c] && cfg[c].abort_request) abort_transfers[c]<=abort_transfers[c]+1;
+      if(trace_abort && ack_valid[c] && ack_ready[c])
+        $display("APB_ABORT_ACK time=%0t channel=%0d phase=%0d accepted=%0d sequence=%0d busy=%0d next_state=%0d sent=%b acked=%b",
+          $time,c,ack[c].phase,ack[c].accepted,ack[c].sequence_number,busy,dut.state_d,dut.sent_q,dut.acked_q);
+    end
+  end
 
   task automatic access(input logic write, input logic [17:0] address,
       input logic [31:0] data, input logic [3:0] strobes, input logic expect_error,
@@ -66,7 +217,8 @@ module apb_tb;
     penable = 1;
     #1;
     check(pready, "APB access did not complete");
-    check(rsp.error == expect_error, $sformatf("APB error mismatch at %h", address));
+    if(rsp.error!=expect_error) $display("APB_ERROR address=%h",address);
+    check(rsp.error == expect_error, "APB error response mismatch");
     result = rsp.data;
     @(negedge pclk);
     penable = 0;
@@ -193,7 +345,9 @@ module apb_tb;
       status[c].perf_capture = 0;
     end
     repeat(3) @(negedge pclk);
+    check(!(|status_ready), "reset must fence diagnostic consumption");
     preset_n = 1;
+    @(negedge pclk);
     check(global_ready && &status_ready && &ack_ready, "stream readiness");
     read_reg(0, read_data);
     check(read_data == 32'h4c500200, "ID value");
@@ -357,6 +511,9 @@ module apb_tb;
     write_reg(18'h30,2);publish(7,1);
     write_reg(18'h30,0);
     check_decline();
+    check_skewed_negative(0);
+    check_skewed_negative(1);
+    for(int cause=0;cause<12;cause++) check_bad_abort_response(cause);
     write_reg(18'h10008, 2); // bad AGE_STEP rejects before publication
     write_reg(18'h20, 1, 15, 1);
     check(cfg_good, "invalid staging changed live validity");

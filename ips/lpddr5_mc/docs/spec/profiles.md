@@ -26,6 +26,14 @@ A paired CAS is followed by its access exactly one CK later. The standalone fast
 
 Reused synchronization is allowed only while its maximum window is live, on the same rank and direction. Always-on mode maintains continuous fast toggling until WS_OFF and at least five CK before full disable. Rank transitions use method 1: full stop, fresh synchronization on the new rank. Zero `twck_toggle_cs/rd/wr` means these synchronized-static/multi-CS restart paths are unsupported; it never means they are instantaneous.
 
+### Natural disable and explicit WS_OFF
+
+JESD209-5C sections7.2.1.3/7.2.2 (printed pp196–220) allow normal-mode WCK to stop after the final burst/postamble and require fresh synchronization after expiry. Sections7.2.1.6/7.2.3 (pp208–210/224–225, Figures77–79/92–93) describe explicit WS_OFF for a synchronized rank with no ongoing DQ operation: WCK remains toggling or stable through `tWCKSTOP=max(2nCK,6ns)`. Table363 (p501) requires at least3CK from WS_OFF to a fresh WS_WR/WS_RD/WS_FS. DFI5.0 section4.19 (PDF pp147–149) distinguishes normal access-origin disable from free-running command-origin disable and requires DISABLED before ownership handoff. The reference's5CK explicit recovery at1.25ns CK covers6ns; these are digital path contracts, not electrical qualification.
+
+The serialized rank/enable/edge phases end at `tick_q+phase >= disable_q`. The registered `running_q` clears at the following state update. That remaining state bit cannot authorize an explicit stop: `stop_ready_o` now also requires `tick_q < disable_q`. A direct expired, repeated or access-overlapping stop faults and never extends the old disable timer. At natural disable the backend lets that epoch retire and starts any pending read/write/MRR owner with fresh synchronization; it emits no redundant WS_OFF. Before expiry, a legal stop retains the explicit recovery; always-on behavior retains its postamble/stop/disable ordering. The independent observer continues rejecting WS_OFF without a live matching synchronized owner, early postamble/disable, rank resurrection or change, and now checks Table363's3CK command recovery independently of physical release.
+
+The retained wrapper counterexample at channel0 tick23530 has WS_OFF with all WCK controls zero,40CK (160WCK) after WR. It is followed by fresh CAS at23531 and RD/selection at23532. Equal command/WCK path offsets preserve that one-CK CAS spacing at the pins. Even interpreting zero edge indications as stable WCK cannot satisfy Table363. Source inspection identifies a stale stop-ready boundary, so the owning correction is in `lpddr5_mc_wck`; the old checker rejection remains valid. The prepared owning regression covers stop one CK before/at/after natural disable, direct stale-stop rejection, no clock/rank resurrection, fresh read/write/MRR rank owners, both ratios and all32 admitted profiles. Source/model tests and elaboration do not establish that this behavioral HDL regression has run.
+
 ## Data chip-select duration and rank transitions
 
 DFI 5.0 Tables 12/15 (PDF pp42/46) define read/write `tphy_*csgap` in DFI data-clock cycles. They add rank-change transaction spacing and require continuous CS assertion for at least `csgap + dfirw_length`. These reference profiles support **zero only** for both gap parameters; any nonzero value rejects profile admission, waveform checking and canonical configuration activation. The 16-bit register representation is retained, with this restriction documented in its canonical field descriptions. Supporting a PHY with nonzero gaps requires extending and qualifying both duration and transaction-spacing behavior first.
@@ -44,13 +52,15 @@ CS asserts at the command plus `tphy_*cslat`, independently of read/write enable
 | DQ path offsets | JEDEC pp277, 294, Table 462 p622 | Pin offset bounds; write-path equality, read sample/deadline checks |
 | Core timings | JEDEC AC tables pp557–559 | RCD15, RPpb15/RPab17, RAS34, RC51, RRD4, FAW16 CK; WR28 or31 with write link; WTR S/L5/10 or9/13 CK |
 | Refresh / RFM / thermal | JEDEC pp178, 200, 320–325, 490–494, 566 | RFCab168/pb96, RFMab168/pb136, REFI≤3124 CK; discovered RFM counters, thermal interval/derating and extra SRX refresh |
-| ZQ / MR / FSP | JEDEC pp72–77, 212, 377–387 | ZQCAL1200, ZQLAT24; MRD12, MRR4/8, MRW8; long FSP guard201 and six CK clock guards |
+| ZQ / MR / FSP / VRCG | JEDEC pp72–77, 212, 377–387, 454; Tables255–257/298 and Figures200/242/243 | ZQCAL1200, ZQLAT24; MRD12, MRR4/8, MRW minimum8 (fixtures12); long tFC201; six-CK entry/exit within continuous-CK switch interval; VRCG enable120/disable80CK from each MRW2 |
 | Link ECC, DBI/DM | JEDEC pp311–314, 490–510, Tables 331/332 pp507/508 | Source matrices, per-byte/group transport, correction before inverse transforms |
 | DFI timing, rotation and ownership | DFI pp33, 37–46, 48–55, 64–77, 105–109, 116–129, 138–154 | Per-word/slice completion, low/high frequency acknowledgement, sampled management policy and owner transfer |
 | Data CS duration/rank gap | DFI Tables 12/15, pp42/46 | Zero-gap admission; continuous split-gap hold with explicit deassertion; separate rank-transition checks |
 | Host protocols | Arm IHI0022H A3.4/A6/A7; IHI0024E Chapters 2/3 | Burst, error, exclusive/order and APB strobe/error models |
 
 The exact external identities and inspected coverage are retained in [reference-sources.json](../../config/reference/reference-sources.json). These references support the stated restricted contract. This is not an exhaustive conformance audit or authorization to redistribute the standards.
+
+The fixed VRCG intervals derive from CK=1250ps and Table298; they need no new register fields or generated profile ABI. Existing `TFC`, `TCKFSPE` and `TCKFSPX` fields remain validated, and complete MR16 normal images remain zero before the engine overlays dynamic FSP controls. Profile inputs, register generation, packed profile decoders and software images remain unchanged. The [FSP control sequence](control.md#dfi-management-and-fsp) defines current-versus-target interval ownership, pin origins, restore and admission accounting.
 
 ## Qualification boundary
 

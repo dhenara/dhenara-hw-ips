@@ -10,6 +10,7 @@ module lpddr5_mc_maintenance (
   input logic [4:0] temperature_i,
   input logic [1:0] self_refresh_enter_i, self_refresh_exit_i,
   input logic [1:0] external_refresh_i,
+  input logic [1:0][31:0] external_refresh_age_i,
   input logic self_refresh_request_i,
   output logic request_valid_o,
   input logic request_ready_i,
@@ -18,6 +19,8 @@ module lpddr5_mc_maintenance (
   output logic [1:0][7:0] activate_allowed_o,
   output logic urgent_o, fault_o, extra_pending_o,
   output logic [31:0] refresh_budget_o,
+  output logic [1:0][31:0] rank_refresh_budget_o,
+  output logic [1:0] external_refresh_recovered_o,
   output logic effective_per_bank_o,
   output lpddr5_mc_channel_pkg::lpddr5_mc_profile_t effective_profile_o,
   output logic mr4_request_o, zq_request_o,
@@ -26,16 +29,18 @@ module lpddr5_mc_maintenance (
   output logic [31:0] diagnostic_o
 );
   import lpddr5_mc_channel_pkg::*;
-  logic running_q;
+  logic running_q,poll_refresh_q,mr4_pending_q,zq_pending_q;
   logic [63:0] ck_q, last_refresh_q[2], last_pair_q[2], thermal_deadline_q, last_mr4_q, last_zq_q;
+  logic [63:0] external_recovery_q[2];
   logic [31:0] raa_q[2][8];
   logic [1:0] self_refresh_q, extra_q, thermal_debt_q, all_bank_round_q;
   logic [2:0] next_pair_q[2];
   logic pending_q, pending_rank_q, pending_rfm_q, pending_all_q, pending_extra_q;
   logic [2:0] pending_pair_q;
-  logic [31:0] interval_value, new_interval, imt, maximum, decrement, reserve_value, poll_lead;
+  logic [31:0] interval_value, new_interval, imt, maximum, decrement, reserve_value, poll_lead, refresh_lead;
   logic candidate, candidate_rank, candidate_rfm, candidate_extra;
   logic periodic_due, rfm_due, all_bank_due;
+  logic coalesced_policy,poll_refresh_needed,rfm_waiting;
   logic [63:0] budget_value, candidate_age, rank_age;
   logic unused_profile;
   assign unused_profile=^{profile_i,event_i};
@@ -89,18 +94,59 @@ module lpddr5_mc_maintenance (
     if(pins_idle_i) reserve_value=effective_per_bank_o
       ? 32'(effective_profile_o.dram_ck_trfc_pb)+7*32'(effective_profile_o.dram_ck_tpbr2pbr)+8
       : 32'(effective_profile_o.dram_ck_trfc_ab)+8;
+    // At the normal interval an all-bank REF can share the periodic pin
+    // handover. Pull in one complete rank group before MR4, then retain the
+    // existing pending-register fence through MR4/ZQ. Hot or REFpb service
+    // keeps its conservative early polling policy and independent urgency.
+    coalesced_policy=interval_value==3124 && !effective_per_bank_o;
+    rfm_waiting=pending_q && pending_rfm_q;
+    for(int r=0;r<2;r++) if(r<int'(profile_i.ranks) && !self_refresh_q[r])
+      for(int p=0;p<8;p++)
+        if(profile_i.mr27[0] && raa_q[r][p]+1>=maximum) rfm_waiting=1;
+    refresh_lead=reserve_value;
+    // A single-rank all-bank obligation is discharged at actual REF issue.
+    // Reserve the existing traffic/page/WCK drain before that deadline, but
+    // not this rank's subsequent tRFC. Keep full recovery in MR4 admission,
+    // thermal emergency bounds and serialized multi-rank/pair scheduling.
+    if(coalesced_policy && profile_i.ranks==1 && !pins_idle_i)
+      refresh_lead=reserve_value-32'(effective_profile_o.dram_ck_trfc_ab);
+    poll_lead=32'(profile_i.ranks)*(maintenance_admission_budget(effective_profile_o,effective_per_bank_o)
+      +register_service_budget(effective_profile_o))+64;
+    // The shared REF group already reserves data/page drain and REF
+    // recovery. Its exclusive MRR tail overlaps command recovery with the
+    // bounded return, rather than paying both serially and another 64 CK.
+    // Keep the existing early policy for hot and per-bank service.
+    if(coalesced_policy) poll_lead=32'(profile_i.ranks)
+      *((rfm_waiting ? 2 : 1)*maintenance_admission_budget(effective_profile_o,1'b0)
+        +periodic_register_budget(effective_profile_o));
+    // With mandatory RFM due, an already selected RFM can precede the
+    // shared REF/MR4 group. Register-pending fencing then prevents new ACT
+    // debt, so reserve at most one such complete maintenance visit per rank.
+    // Its recovery cannot be omitted merely because REF follows it.
+    if(!coalesced_policy && poll_lead<600) poll_lead=600;
+    mr4_request_o=running_q && !fault_o && (mr4_pending_q || ck_q-last_mr4_q+64'(poll_lead)>=64'd3000);
+    zq_request_o=running_q && !fault_o && (zq_pending_q || ck_q-last_zq_q+64'(poll_lead)>=64'd3000);
+    // MR4 anchors the group. A later independent ZQ deadline must not
+    // pull in a second REF immediately after the MR4 group completed.
+    poll_refresh_needed=coalesced_policy && mr4_request_o && !poll_refresh_q;
     activate_allowed_o='0; candidate=0; candidate_rank=0; candidate_rfm=0; candidate_extra=0;
     periodic_due=0; rfm_due=0; all_bank_due=0;candidate_age=0; rank_age=0; budget_value=64'hffffffff;
+    rank_refresh_budget_o='1; external_refresh_recovered_o=0;
     for(int r=0;r<2;r++) begin
       if(r<int'(profile_i.ranks)) begin
+        // Evaluated for the upcoming consuming CK edge. Only that edge may
+        // release master ACK; a post-edge change does not attest handback.
+        external_refresh_recovered_o[r]=running_q && !fault_o && ck_q>=external_recovery_q[r];
         for(int p=0;p<8;p++) begin
           activate_allowed_o[r][p]=running_q && !fault_o && !self_refresh_q[r]
             && (!profile_i.mr27[0] || raa_q[r][p]<maximum);
         end
         if(!self_refresh_q[r] && running_q) begin
+          rank_refresh_budget_o[r]=ck_q-last_refresh_q[r]>=64'(interval_value)
+            ? 0 : 32'(64'(interval_value)-(ck_q-last_refresh_q[r]));
           if(ck_q-last_refresh_q[r]>=64'(interval_value)) budget_value=0;
           else if(64'(interval_value)-(ck_q-last_refresh_q[r])<budget_value) budget_value=64'(interval_value)-(ck_q-last_refresh_q[r]);
-          periodic_due=thermal_debt_q[r] || ck_q-last_refresh_q[r]+64'(reserve_value)>=64'(interval_value)
+          periodic_due=poll_refresh_needed || thermal_debt_q[r] || ck_q-last_refresh_q[r]+64'(refresh_lead)>=64'(interval_value)
             || next_pair_q[r]!=0 || all_bank_round_q[r];
           if(periodic_due && !effective_per_bank_o) all_bank_due=1;
           rfm_due=0;
@@ -121,28 +167,28 @@ module lpddr5_mc_maintenance (
     urgent_o=running_q && (pending_q || candidate || fault_o);
     request_valid_o=pending_q && running_q && !fault_o;
     request_rank_o=pending_rank_q; request_rfm_o=pending_rfm_q; request_all_o=pending_all_q; request_pair_o=pending_pair_q;
-    // Poll before a complete REFpb round can consume the last MR4 window.
-    // The lead covers traffic/precharge/refresh drain, serialized rank MRR
-    // service and arbitration slack. Preserve the earlier 600-CK lead when
-    // it is already more conservative (including the all-bank policy).
-    poll_lead=maintenance_admission_budget(effective_profile_o,effective_per_bank_o)
-      +32'(profile_i.ranks)*register_service_budget(effective_profile_o)+64;
-    if(poll_lead<600) poll_lead=600;
-    mr4_request_o=running_q && !fault_o && ck_q-last_mr4_q+64'(poll_lead)>=64'd3000;
-    zq_request_o=running_q && !fault_o && ck_q-last_zq_q+64'(poll_lead)>=64'd3000;
   end
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if(!rst_ni) begin
-      ck_q<=0; running_q<=0; self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0;
+      ck_q<=0; running_q<=0; poll_refresh_q<=0; mr4_pending_q<=0; zq_pending_q<=0;
+      self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0;
       pending_q<=0; pending_rank_q<=0; pending_rfm_q<=0; pending_all_q<=1; pending_pair_q<=0; pending_extra_q<=0;
       thermal_o<=9; thermal_deadline_q<=0; fault_o<=0; diagnostic_o<=0; last_mr4_q<=0; last_zq_q<=0;
-      for(int r=0;r<2;r++) begin last_refresh_q[r]<=0; last_pair_q[r]<=0; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
+      for(int r=0;r<2;r++) begin external_recovery_q[r]<=0; last_refresh_q[r]<=0; last_pair_q[r]<=0; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
     end else if(destructive_reset_i) begin
-      running_q<=0; self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0; pending_q<=0;
+      running_q<=0; poll_refresh_q<=0; mr4_pending_q<=0; zq_pending_q<=0;
+      self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0; pending_q<=0;
       thermal_o<=9; thermal_deadline_q<=0; fault_o<=0; last_mr4_q<=ck_q; last_zq_q<=ck_q;
-      for(int r=0;r<2;r++) begin last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
+      for(int r=0;r<2;r++) begin external_recovery_q[r]<=0; last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
     end else begin
       ck_q<=ck_q+1;
+      // RFM execution removes the debt that enlarged the polling lead. Keep
+      // the resulting request until its own completion, rather than retracting
+      // it mid-sweep when that dynamic reserve becomes smaller again.
+      if(mr4_done_i) mr4_pending_q<=0; else if(mr4_request_o) mr4_pending_q<=1;
+      if(zq_done_i) zq_pending_q<=0; else if(zq_request_o) zq_pending_q<=1;
+      if(!mr4_request_o) poll_refresh_q<=0;
+      else if(poll_refresh_needed) poll_refresh_q<=1;
       if(start_i && !running_q && !fault_o) begin
         running_q<=1; last_mr4_q<=ck_q; last_zq_q<=ck_q;
         for(int r=0;r<2;r++) begin last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; end
@@ -175,7 +221,14 @@ module lpddr5_mc_maintenance (
           end
           if(self_refresh_exit_i[r]) begin self_refresh_q[r]<=0; extra_q[r]<=1; last_refresh_q[r]<=ck_q; end
           if(external_refresh_i[r]) begin
-            last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; thermal_debt_q[r]<=0; next_pair_q[r]<=0;
+            // Lifecycle registers execution attestation one edge earlier.
+            // Retention uses the earliest possible physical execution;
+            // recovery uses the latest (the sampled done edge). Application
+            // is neither origin. One owner retains both bounds per rank.
+            last_refresh_q[r]<=ck_q-64'(external_refresh_age_i[r]);
+            last_pair_q[r]<=ck_q-64'(external_refresh_age_i[r]);
+            external_recovery_q[r]<=ck_q-1+64'(profile_i.dram_ck_trfc_ab);
+            thermal_debt_q[r]<=0; next_pair_q[r]<=0;
             all_bank_round_q[r]<=0;
             if(pending_q && pending_rank_q==1'(r)) pending_q<=0;
             for(int p=0;p<8;p++) raa_q[r][p]<=raa_q[r][p]>imt ? raa_q[r][p]-imt : 0;

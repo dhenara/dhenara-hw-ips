@@ -12,6 +12,7 @@ module lpddr5_mc_apb #(
 ) (
   input logic pclk,
   input logic preset_n,
+  input logic cold_preset_n,
   input logic psel_i,
   input logic penable_i,
   input lpddr5_mc_contract_pkg::lpddr5_mc_apb_request_t request_i,
@@ -63,6 +64,7 @@ module lpddr5_mc_apb #(
   int unsigned timer_q, timer_d, hash_index_q, hash_index_d;
   logic [CHANNELS-1:0][31:0] crc_q, crc_d;
   logic [CHANNELS-1:0] sent_q, sent_d, acked_q, acked_d;
+  logic [CHANNELS-1:0] late_prepare_q, late_prepare_d;
   logic [CHANNELS-1:0] declined_q, declined_d;
   logic prior_valid_q, prior_valid_d;
   logic [CHANNELS-1:0] first_error_q, first_error_d;
@@ -71,6 +73,7 @@ module lpddr5_mc_apb #(
   logic [12:0] irq_q, irq_d;
   logic [31:0] hardware_state_q, hardware_state_d;
   logic valid_q, valid_d, fault_q, fault_d, access_q, access_d;
+  logic diagnostic_active_q;
 
   function automatic lpddr5_mc_register_image_t reset_image();
     lpddr5_mc_register_image_t result;
@@ -160,7 +163,7 @@ module lpddr5_mc_apb #(
   assign command_valid_o = count_q != 0;
   assign command_o = commands_q[head_q];
   assign irq_o = |(irq_q & staging_q[0][INDEX_IRQ_MASK][12:0]);
-  assign status_ready_o = '1;
+  assign status_ready_o = {CHANNELS{diagnostic_active_q}};
   assign global_status_ready_o = 1'b1;
   assign config_ack_ready_o = '1;
 
@@ -173,6 +176,7 @@ module lpddr5_mc_apb #(
     logic [12:0] clear_events, set_events;
     logic [31:0] current_boot;
     logic [CHANNELS-1:0] ack_seen;
+    logic [CHANNELS-1:0] prepare_seen;
     logic bad_ack;
     logic access_fire;
     logic snapshot_ok,publication_request;
@@ -190,6 +194,7 @@ module lpddr5_mc_apb #(
     crc_d = crc_q;
     sent_d = sent_q;
     acked_d = acked_q;
+    late_prepare_d = late_prepare_q;
     declined_d = declined_q;
     prior_valid_d = prior_valid_q;
     first_error_d = first_error_q;
@@ -218,6 +223,7 @@ module lpddr5_mc_apb #(
     set_events = 0;
     current_boot = staging_q[0][INDEX_BOOT_EPOCH];
     ack_seen = acked_q;
+    prepare_seen = acked_q;
     bad_ack = 1'b0;
     access_fire = 1'b0;
     snapshot_ok = 1'b1;
@@ -306,6 +312,7 @@ module lpddr5_mc_apb #(
         timer_d = 0;
         sent_d = 0;
         acked_d = 0;
+        late_prepare_d = 0;
       end else begin
         // Preflight above covers every command and destination before any
         // staging value, sequence or mailbox slot is mutated.
@@ -344,7 +351,7 @@ module lpddr5_mc_apb #(
     end
     for (int c = 0; c < CHANNELS; c++) begin
       if (|(clear_events & first_events_q[c])) first_error_d[c] = 1'b0;
-      if (status_valid_i[c]) begin
+      if (status_valid_i[c] && diagnostic_active_q) begin
         // A retained occurrence keeps the boot/configuration of the event.
         // Destructive recovery does not discard it. Only the live snapshot
         // portion is freshness-gated; acknowledging an old event must still
@@ -398,17 +405,34 @@ module lpddr5_mc_apb #(
           config_o[c].destinations = 2'((1 << CHANNELS) - 1);
           if (config_valid_o[c] && config_ready_i[c]) sent_d[c] = 1'b1;
           if (config_ack_valid_i[c]) begin
-            if ((!sent_q[c] && !(config_valid_o[c] && config_ready_i[c])) || acked_q[c] ||
+            // Each channel has an independent return mailbox. A rejection
+            // already in flight when another channel failed PREPARE is still
+            // owed, but cannot acknowledge or terminate the current ABORT.
+            if (state_q == ABORT && late_prepare_q[c] && !acked_q[c] &&
+                config_ack_i[c].sequence_number == sequence_q && config_ack_i[c].boot_epoch == boot_q &&
+                config_ack_i[c].phase == LPDDR5_MC_CONFIG_PREPARE && !config_ack_i[c].accepted) begin
+              late_prepare_d[c] = 1'b0;
+            end else if ((!sent_q[c] && !(config_valid_o[c] && config_ready_i[c])) || acked_q[c] ||
                 config_ack_i[c].sequence_number != sequence_q ||
                 config_ack_i[c].boot_epoch != boot_q ||
                 !((state_q == PREPARE && config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE
                     && !config_ack_i[c].accepted) ||
                   (config_ack_i[c].phase == (state_q == PREPARE ? LPDDR5_MC_CONFIG_PREPARE :
                     state_q == COMMIT ? LPDDR5_MC_CONFIG_COMMIT : LPDDR5_MC_CONFIG_ABORT)
-                    && config_ack_i[c].accepted))) bad_ack = 1'b1;
+                    && config_ack_i[c].accepted))) begin
+              bad_ack = 1'b1;
+              if (state_q == PREPARE && !acked_q[c] &&
+                  (sent_q[c] || (config_valid_o[c] && config_ready_i[c])) &&
+                  config_ack_i[c].sequence_number == sequence_q && config_ack_i[c].boot_epoch == boot_q &&
+                  config_ack_i[c].phase == LPDDR5_MC_CONFIG_PREPARE && !config_ack_i[c].accepted)
+                prepare_seen[c] = 1'b1;
+            end
             else begin
               ack_seen[c] = 1'b1;
-              if (state_q == PREPARE) declined_d[c] = config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE;
+              if (state_q == PREPARE) begin
+                prepare_seen[c] = 1'b1;
+                declined_d[c] = config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE;
+              end else if (state_q == ABORT) late_prepare_d[c] = 1'b0;
             end
           end
         end
@@ -447,6 +471,7 @@ module lpddr5_mc_apb #(
         else begin
           state_d = ABORT;
           timer_d = 0;
+          late_prepare_d = state_q == PREPARE ? sent_d & ~prepare_seen : '0;
           sent_d = 0;
           acked_d = 0;
         end
@@ -486,9 +511,9 @@ module lpddr5_mc_apb #(
 
   always_ff @(posedge pclk or negedge preset_n) begin
     if (!preset_n) begin
+      diagnostic_active_q <= 0;
       state_q <= IDLE;
       for (int c = 0; c < CHANNELS; c++) begin
-        staging_q[c] <= RESET_IMAGE;
         frozen_q[c] <= RESET_IMAGE;
         active_q[c] <= RESET_IMAGE;
       end
@@ -501,23 +526,21 @@ module lpddr5_mc_apb #(
       crc_q <= '0;
       sent_q <= '0;
       acked_q <= '0;
+      late_prepare_q <= '0;
       declined_q <= '0;
       prior_valid_q <= 0;
-      first_error_q <= '0;
-      first_events_q <= '0;
       sequence_q <= 0;
       epoch_q <= 0;
       boot_q <= 0;
-      irq_q <= 0;
       hardware_state_q <= 0;
       valid_q <= 0;
       fault_q <= 0;
       access_q <= 0;
       last_protection_o <= 0;
     end else begin
+      diagnostic_active_q <= 1;
       if (pready_o) last_protection_o <= request_i.protection;
       state_q <= state_d;
-      staging_q <= staging_d;
       frozen_q <= frozen_d;
       active_q <= active_d;
       commands_q <= commands_d;
@@ -529,18 +552,42 @@ module lpddr5_mc_apb #(
       crc_q <= crc_d;
       sent_q <= sent_d;
       acked_q <= acked_d;
+      late_prepare_q <= late_prepare_d;
       declined_q <= declined_d;
       prior_valid_q <= prior_valid_d;
-      first_error_q <= first_error_d;
-      first_events_q <= first_events_d;
       sequence_q <= sequence_d;
       epoch_q <= epoch_d;
       boot_q <= boot_d;
-      irq_q <= irq_d;
       hardware_state_q <= hardware_state_d;
       valid_q <= valid_d;
       fault_q <= fault_d;
       access_q <= access_d;
+    end
+  end
+
+  // Diagnostic capture, counts, pending IRQs and explicit performance captures
+  // have cold-reset custody. A common reset cannot consume an event or W1C.
+  always_ff @(posedge pclk or negedge cold_preset_n) begin
+    if(!cold_preset_n) begin first_error_q<='0;first_events_q<='0;irq_q<=0;end
+    else if(diagnostic_active_q) begin
+      first_error_q<=first_error_d;first_events_q<=first_events_d;irq_q<=irq_d;
+    end
+  end
+  for(genvar c=0;c<CHANNELS;c++) begin : staging_channels
+    for(genvar r=0;r<REG_COUNT;r++) begin : staging_registers
+      logic [31:0] value_q;
+      assign staging_q[c][r]=value_q;
+      if(r>=INDEX_ERROR_ADDR_LO && r<=INDEX_PERF_CYCLES_1) begin : retained
+        always_ff @(posedge pclk or negedge cold_preset_n) begin
+          if(!cold_preset_n) value_q<=RESET_IMAGE[r];
+          else if(diagnostic_active_q) value_q<=staging_d[c][r];
+        end
+      end else begin : volatile_register
+        always_ff @(posedge pclk or negedge preset_n) begin
+          if(!preset_n) value_q<=RESET_IMAGE[r];
+          else value_q<=staging_d[c][r];
+        end
+      end
     end
   end
 

@@ -7,6 +7,7 @@ module lpddr5_mc_channel #(
   parameter int NOTIFICATION_DEPTH=16
 ) (
   input logic clk_ck_i,rst_ni,
+  input logic cold_rst_ni,
   input logic force_fault_i,
   input logic request_valid_i,
   output logic request_ready_o,
@@ -64,6 +65,8 @@ module lpddr5_mc_channel #(
   logic [7:0] fault_code;
   logic [1:0] sr_enter,sr_exit,external_refresh,syscs,phy_refresh_request;
   logic lp_ctrl_req,lp_data_req,master_ack;
+  logic [1:0][31:0] rank_refresh_budget,external_refresh_age;
+  logic [1:0] external_refresh_recovered;
   lpddr5_mc_ca_t life_ca,backend_ca,fsp_ca;
   logic backend_valid,backend_ready,backend_completion_valid,backend_completion_ready;
   lpddr5_mc_granule_t backend_request;
@@ -87,7 +90,7 @@ module lpddr5_mc_channel #(
   logic fsp_request,fsp_busy,fsp_published,fsp_declined,fsp_fault,fsp_init_start,fsp_clock_done,fsp_target_ready;
   logic [1:0] fsp_value,fsp_ratio,active_fsp_q;
   logic [4:0] fsp_frequency;
-  logic register_valid,register_ready,register_result_valid,register_result_rank,register_result_zq,register_result_failed;
+  logic register_pending,register_valid,register_ready,register_result_valid,register_result_rank,register_result_zq,register_result_failed;
   logic [6:0] register_result_address;
   logic [7:0] register_result_value;
   typedef enum logic [1:0] {REG_IDLE,REG_SEND,REG_WAIT} register_state_t;
@@ -197,7 +200,7 @@ module lpddr5_mc_channel #(
     .request_valid_i(backend_valid),.request_ready_o(backend_ready),.request_i(backend_request),
     .completion_valid_o(backend_completion_valid),.completion_ready_i(backend_completion_ready),.completion_o(backend_completion),
     .maintenance_valid_i(maintenance_valid),.maintenance_rank_i(maintenance_rank),.maintenance_rfm_i(maintenance_rfm),.maintenance_all_i(maintenance_all),.maintenance_pair_i(maintenance_pair),.maintenance_ready_o(maintenance_ready),
-    .activate_allowed_i(activate_allowed),.register_valid_i(register_valid),.register_rank_i(register_rank_q),.register_zq_i(register_zq_q),.register_address_i(7'd4),
+    .activate_allowed_i(activate_allowed),.register_pending_i(register_pending),.register_valid_i(register_valid),.register_rank_i(register_rank_q),.register_zq_i(register_zq_q),.register_address_i(7'd4),
     .register_ready_o(register_ready),.register_result_valid_o(register_result_valid),.register_result_rank_o(register_result_rank),.register_result_zq_o(register_result_zq),
     .register_result_failed_o(register_result_failed),.register_result_address_o(register_result_address),.register_result_value_o(register_result_value),
     .ca_o(backend_ca),.wck_o(wck_o),.write_o(write_o),.read_request_o(read_request_o),.return_i(return_i),.event_o(event_value),
@@ -206,7 +209,8 @@ module lpddr5_mc_channel #(
   lpddr5_mc_maintenance maintenance (
     .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.destructive_reset_i(destructive_reset),.start_i(maintenance_start),.profile_i(active.profile),.per_bank_i(PER_BANK_REFRESH),.event_i(event_value),
     .pins_idle_i(pin_drained && rows_closed && wck_disabled),
-    .temperature_valid_i(temperature_valid),.temperature_i(temperature),.self_refresh_enter_i(sr_enter),.self_refresh_exit_i(sr_exit),.external_refresh_i(external_refresh),.self_refresh_request_i(extra_service),
+    .temperature_valid_i(temperature_valid),.temperature_i(temperature),.self_refresh_enter_i(sr_enter),.self_refresh_exit_i(sr_exit),.external_refresh_i(external_refresh),.external_refresh_age_i(external_refresh_age),
+    .rank_refresh_budget_o(rank_refresh_budget),.external_refresh_recovered_o(external_refresh_recovered),.self_refresh_request_i(extra_service),
     .request_valid_o(maintenance_valid),.request_ready_i(maintenance_ready),.request_rank_o(maintenance_rank),.request_rfm_o(maintenance_rfm),.request_all_o(maintenance_all),.request_pair_o(maintenance_pair),
     .activate_allowed_o(activate_allowed),.urgent_o(maintenance_urgent),.fault_o(maintenance_fault),.extra_pending_o(extra_refresh),.refresh_budget_o(refresh_budget),.effective_per_bank_o(maintenance_per_bank),.effective_profile_o(effective_profile),
     .mr4_request_o(mr4_request),.zq_request_o(zq_request),.mr4_done_i(mr4_done),.zq_done_i(zq_done),.thermal_o(thermal),.diagnostic_o(maintenance_diagnostic));
@@ -222,15 +226,15 @@ module lpddr5_mc_channel #(
     .busy_o(fsp_busy),.declined_o(fsp_declined),.fault_o(fsp_fault),.clock_change_done_o(fsp_clock_done),.target_ready_o(fsp_target_ready),
     .publish_i(mailbox_i.commit && mailbox_i.destinations[CHANNEL_INDEX] && config_drained && prepared_valid_o),.publish_epoch_i(mailbox_i.epoch),.published_o(fsp_published),.frozen_target_o(frozen_target));
   lpddr5_mc_lifecycle lifecycle (
-    .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.profile_i(effective_profile),.profile_valid_i(active_valid),.profile_epoch_i(committed_epoch_o),
+    .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.cold_rst_ni,.profile_i(effective_profile),.fsp_target_profile_i(prepared.profile),.profile_valid_i(active_valid),.profile_epoch_i(committed_epoch_o),
     .command_valid_i(command_valid_i),.command_i(command_i),.command_ready_o(command_ready_o),.command_rejected_o(command_rejected_o),
     .host_settled_i(host_settled_i),.backend_drained_i(backend_drained),.integrity_drained_i(integrity_drained && inline_drained),.pages_closed_i(pages_closed),.wck_disabled_i(wck_disabled),
-    .maintenance_urgent_i(maintenance_urgent),.extra_refresh_i(extra_refresh),.refresh_budget_i(refresh_budget),.fault_i(external_fault),.reset_confirmed_i(reset_confirmed_i),
+    .maintenance_urgent_i(maintenance_urgent),.extra_refresh_i(extra_refresh),.refresh_budget_i(refresh_budget),.rank_refresh_budget_i(rank_refresh_budget),.external_refresh_recovered_i(external_refresh_recovered),.fault_i(external_fault),.reset_confirmed_i(reset_confirmed_i),
     .train_ack_i(train_ack_i),.train_token_i(train_token_i),.management_i(management_i),.rank_report_valid_i(rank_report_valid_i),.rank_self_refresh_i(rank_self_refresh_i),.phy_refresh_done_i(phy_refresh_done_i),
     .update_busy_i(update_busy),.update_done_i(update_done),.update_fault_i(update_fault),.update_request_o(update_request),.update_window_o(update_window),
     .fsp_busy_i(fsp_busy),.fsp_done_i(fsp_published),.fsp_declined_i(fsp_declined),.fsp_fault_i(fsp_fault),.fsp_request_o(fsp_request),
     .admission_o(admission),.issue_o(issue_enable),.close_o(close_pages),.stop_o(stop_wck),.maintenance_enable_o(service),.destructive_reset_o(destructive_reset),.maintenance_start_o(maintenance_start),
-    .self_refresh_enter_o(sr_enter),.self_refresh_exit_o(sr_exit),.external_refresh_o(external_refresh),.extra_service_o(extra_service),.ca_o(life_ca),
+    .self_refresh_enter_o(sr_enter),.self_refresh_exit_o(sr_exit),.external_refresh_o(external_refresh),.external_refresh_age_o(external_refresh_age),.extra_service_o(extra_service),.ca_o(life_ca),
     .lp_ctrl_request_o(lp_ctrl_req),.lp_data_request_o(lp_data_req),.master_ack_o(master_ack),.syscs_state_o(syscs),.phy_refresh_request_o(phy_refresh_request),
     .state_o(life_state),.owner_o(owner),.fault_o(life_fault),.trusted_o(trusted),.train_request_o(train_request),.train_done_o(train_done),.boot_epoch_o(boot_epoch),.first_fault_o(first_fault),.fault_code_o(fault_code));
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
@@ -304,7 +308,7 @@ module lpddr5_mc_channel #(
     end
   end
   lpddr5_mc_notifications #(.DEPTH(NOTIFICATION_DEPTH)) notifications (
-    .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.destructive_reset_i(destructive_reset),
+    .clk_ck_i(clk_ck_i),.rst_ni(cold_rst_ni),.destructive_reset_i(destructive_reset),
     .occurrence_valid_i(occurrence_valid),.occurrence_i(occurrences),
     .notification_valid_o(notification_valid_o),.notification_ready_i(notification_ready_i),.notification_o(notification),.overflow_o(notification_overflow),
     .first_error_clear_i(first_error_clear_i),.first_error_clear_version_i(first_error_clear_version_i),
@@ -318,6 +322,13 @@ module lpddr5_mc_channel #(
     : 2*(32'(active.profile.rl_ck)+32'(active.profile.dram_ck_tras_min)+32'(active.profile.dram_ck_trp_ab)
     +(32'(active.profile.dfi_wck_tphy_rdlat)+32'(active.profile.wck_twck_dis)+8)/(active.profile.ratio==2 ? 2 : 4)
     +32'(active.profile.dram_ck_tmrr)+32'(active.profile.dram_ck_tmrw)+64);
+  // Preserve the physical drain until every due register obligation retires,
+  // including the IDLE/done edge between MR4 and an already-due ZQ sweep.
+  // A completion pulse masks only its own stale request until the timer
+  // samples it. Refresh may still preempt; transaction admission below keeps
+  // its independent budget and urgency checks.
+  assign register_pending=service && !life_fault && !external_fault
+    && (register_state_q!=REG_IDLE || (mr4_request && !mr4_done) || (zq_request && !zq_done));
   assign register_valid=register_state_q==REG_SEND && service && !maintenance_urgent && !life_fault && !external_fault && refresh_budget>register_reserve;
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if(!rst_ni) begin
@@ -346,7 +357,10 @@ module lpddr5_mc_channel #(
         end
       end
       case(register_state_q)
-        REG_IDLE: if(service && !life_fault && (mr4_request || zq_request)) begin
+        // Completion reaches the maintenance timer on this edge. Its old
+        // request is still visible until that timer samples done; do not
+        // start another rank sweep from the just-completed obligation.
+        REG_IDLE: if(service && !life_fault && !mr4_done && !zq_done && (mr4_request || zq_request)) begin
           register_state_q<=REG_SEND;register_rank_q<=0;register_zq_q<=!mr4_request;hottest_q<=1;
         end
         REG_SEND: if(register_valid && register_ready) register_state_q<=REG_WAIT;

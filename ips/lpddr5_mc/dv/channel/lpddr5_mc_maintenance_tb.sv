@@ -11,15 +11,17 @@ module lpddr5_mc_maintenance_tb;
   logic [31:0] budget,diagnostic;
   lpddr5_mc_profile_t profile,effective;
   lpddr5_mc_event_t event_value;
+  logic [1:0][31:0] rank_budget;
+  logic [1:0] recovered;
   logic unused_debug;
-  assign unused_debug=^{diagnostic,zq_request,effective};
+  assign unused_debug=^{rank_budget,recovered,diagnostic,zq_request,effective};
   lpddr5_mc_maintenance dut(.clk_ck_i(clk),.rst_ni(rst_n),.destructive_reset_i(reset_maintenance),.start_i(start),.profile_i(profile),.per_bank_i(per_bank),
     .pins_idle_i(1'b0),
     .event_i(event_value),.temperature_valid_i(temperature_valid),.temperature_i(temperature),.self_refresh_enter_i(sr_enter),.self_refresh_exit_i(sr_exit),
     .self_refresh_request_i(sr_request),.request_valid_o(request_valid),.request_ready_i(request_ready),.request_rank_o(request_rank),.request_rfm_o(request_rfm),
     .request_all_o(request_all),.request_pair_o(request_pair),.activate_allowed_o(allowed),.urgent_o(urgent),.fault_o(fault),.extra_pending_o(extra),
     .refresh_budget_o(budget),.effective_per_bank_o(effective_per_bank),.effective_profile_o(effective),.mr4_request_o(mr4_request),.zq_request_o(zq_request),.mr4_done_i(mr4_done),.zq_done_i(zq_done),
-    .thermal_o(thermal),.diagnostic_o(diagnostic),.external_refresh_i(external_refresh));
+    .thermal_o(thermal),.diagnostic_o(diagnostic),.external_refresh_i(external_refresh),.external_refresh_age_i({32'd1,32'd1}),.rank_refresh_budget_o(rank_budget),.external_refresh_recovered_o(recovered));
   task automatic tick; #1; clk=1; #1; clk=0; #1; endtask
   task automatic reset;
     rst_n=0; tick(); rst_n=1; event_value='0; sr_enter=0; sr_exit=0; external_refresh=0;sr_request=0; temperature_valid=0;
@@ -33,10 +35,109 @@ module lpddr5_mc_maintenance_tb;
     end
     $fatal(1,"missing maintenance request");
   endtask
+  task automatic normal_poll_cadence;
+    // The benchmark's complete REF/MR4 admission fits within 300 CK,
+    // including the latest legal BL16 return and WCK handback. Starting
+    // earlier repeatedly pulls REF in and consumes extra payload windows.
+    profile=fixture_profile(0,0,0,1,0,0);profile.ranks=1;reset();
+    for(int elapsed=0;elapsed<2700;elapsed++) begin
+      assert(!mr4_request && !zq_request && !request_valid && !fault)
+        else $fatal(1,"normal periodic service reserved over 300 CK elapsed=%0d",elapsed);
+      tick();
+    end
+    for(int elapsed=2700;elapsed<3000;elapsed++) begin
+      if(mr4_request && zq_request) break;
+      tick();
+    end
+    assert(mr4_request && zq_request && !fault) else $fatal(1,"normal polling never became due");
+    $display("PASS normal polling cadence: bounded complete service reserve without premature REF pull-in");
+  endtask
+  task automatic normal_refresh_command_deadline;
+    int issue_reserve,elapsed;
+    // Keep polling freshly discharged to isolate the retention scheduler.
+    // Its timestamp moves at REF issue; this rank's post-REF recovery does
+    // not belong in the lead needed to meet that command deadline.
+    profile=fixture_profile(0,0,0,1,0,0);profile.ranks=1;reset();
+    issue_reserve=int'(maintenance_admission_budget(profile,0))-int'(profile.dram_ck_trfc_ab);
+    mr4_done=1;zq_done=1;
+    // reset() returns one CK after the start timestamp was captured.
+    for(elapsed=1;elapsed<3124-issue_reserve;elapsed++) begin
+      assert(!urgent && !request_valid && !fault)
+        else $fatal(1,"normal REF charged post-command recovery elapsed=%0d issue_reserve=%0d",elapsed,issue_reserve);
+      tick();
+    end
+    // A real backend may use the remaining lead to drain traffic/close rows.
+    // Merely making a request does not discharge retention.
+    while(elapsed<3124) begin
+      tick();elapsed++;
+      assert(!fault) else $fatal(1,"REF deadline fault before command deadline");
+    end
+    assert(request_valid && budget==0) else $fatal(1,"REF request did not retain its actual issue deadline");
+    request_ready=1;tick();request_ready=0;
+    assert(!fault && budget>3000) else $fatal(1,"on-deadline REF did not discharge retention");
+    $display("PASS normal REF command deadline: issue reserve=%0d, actual command at CK3124",issue_reserve);
+  endtask
+  task automatic rfm_poll_preemption;
+    profile=fixture_profile(0,0,0,1,0,0);profile.ranks=1;reset();
+    repeat(2400) tick();
+    // This fixture's mandatory RFM maximum is 64. Select an RFM just
+    // before the enlarged lead becomes due, so it cannot become a REF.
+    repeat(63) begin event_value.row_opened=1;event_value.bank=0;tick();end
+    event_value='0;tick();
+    assert(request_valid && request_rfm && mr4_request && zq_request && !fault)
+      else $fatal(1,"selected RFM did not reserve its preemption before polling");
+    request_ready=1;tick();request_ready=0;tick();
+    assert(request_valid && !request_rfm && request_all)
+      else $fatal(1,"RFM preemption did not retain the following REF group");
+    request_ready=1;tick();request_ready=0;
+    repeat(40) begin
+      tick();assert(mr4_request && zq_request && !request_valid && !fault)
+        else $fatal(1,"early polling retracted after RFM debt was discharged");
+    end
+    mr4_done=1;zq_done=1;tick();mr4_done=0;zq_done=0;tick();
+    assert(!mr4_request && !zq_request && !fault) else $fatal(1,"early polling did not retire on done");
+    $display("PASS RFM preemption: preceding selected RFM, shared REF and stable early MR4/ZQ until done");
+  endtask
+  task automatic coalesced_poll_case(input int ranks);
+    int visits[2];
+    profile.ranks=2'(ranks);reset();
+    for(int round_index=0;round_index<2;round_index++) begin
+      visits[0]=0;visits[1]=0;
+      for(int c=0;c<3000;c++) begin
+        if(mr4_request && zq_request) break;
+        tick();assert(!fault) else $fatal(1,"coalesced poll admission fault");
+      end
+      assert(mr4_request && zq_request) else $fatal(1,"missing due periodic sweep");
+      for(int rank_index=0;rank_index<ranks;rank_index++) begin
+        for(int c=0;c<8;c++) begin
+          if(request_valid) break;
+          tick();
+        end
+        assert(request_valid && request_all && !request_rfm && int'(request_rank)<ranks)
+          else $fatal(1,"due periodic sweep did not share a REF drain ranks=%0d round=%0d",ranks,round_index);
+        visits[int'(request_rank)]++;
+        request_ready=1;tick();request_ready=0;
+      end
+      assert(visits[0]==1 && visits[1]==ranks-1) else $fatal(1,"coalesced REF rank membership");
+      // Refresh already discharged the group. A pending ZQ request and
+      // the MR4 done edge must not repeatedly pull in another REF round.
+      mr4_done=1;tick();mr4_done=0;
+      repeat(40) begin tick();assert(!request_valid && !urgent && !fault) else $fatal(1,"duplicate coalesced REF");end
+      zq_done=1;tick();zq_done=0;tick();
+      assert(!mr4_request && !zq_request && !request_valid && !fault) else $fatal(1,"coalesced sweep retirement");
+    end
+    $display("PASS coalesced periodic drain ranks=%0d: two REF/MR4/ZQ rounds, exact membership and no duplicate pull-in",ranks);
+  endtask
   initial begin
     logic held_rank,held_rfm,held_all;
     logic [2:0] held_pair;
     profile=fixture_profile(0,0,0,0,0,0); profile.ranks=1; event_value='0;
+    normal_poll_cadence();
+    normal_refresh_command_deadline();
+    rfm_poll_preemption();
+    profile=fixture_profile(0,0,0,0,0,0);
+    for(int ranks=1;ranks<=2;ranks++) coalesced_poll_case(ranks);
+    profile.ranks=1;
     reset(); assert(allowed[1]==0) else $fatal(1,"inactive rank");
     // Counter saturation cannot be cleared by an ordinary self-refresh cycle.
     repeat(64) begin event_value.row_opened=1; event_value.bank=0; tick(); end

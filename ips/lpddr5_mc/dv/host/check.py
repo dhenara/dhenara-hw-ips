@@ -73,6 +73,22 @@ def phases(report: Path, build_name: str, storage: Path) -> list[Phase]:
             evidence / "foundation.json",
         ),
     ]
+    parameter_report = evidence / "parameters.json"
+    result.append(
+        Phase(
+            "parameters",
+            [
+                sys.executable,
+                str(IP / "dv/host/parameter_run.py"),
+                "--report",
+                str(parameter_report),
+                "--build-name",
+                build_name + "-parameters",
+            ],
+            600,
+            parameter_report,
+        )
+    )
     for name, runner in (("cdc", "cdc_check.py"), ("apb", "apb_run.py"), ("adapters", "adapter_run.py")):
         child_report = evidence / (name + ".json")
         result.append(

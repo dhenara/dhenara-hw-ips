@@ -3,12 +3,14 @@
 module lpddr5_mc_control_link (
   input logic aclk_i,
   input logic arst_ni,
+  input logic a_status_rst_ni,
   input logic a_enable_i,
   input logic a_rearm_i,
   output logic a_fault_o,
   output logic a_rearm_ready_o,
   input logic cclk_i,
   input logic crst_ni,
+  input logic c_status_rst_ni,
   input logic c_enable_i,
   input logic c_rearm_i,
   output logic c_fault_o,
@@ -35,6 +37,24 @@ module lpddr5_mc_control_link (
   import lpddr5_mc_apb_pkg::*;
   logic [2:0] a_faults, c_faults;
   logic [2:0] a_reset_ready, c_reset_ready;
+  logic a_status_armed_q,c_status_armed_q,a_status_rearm_q,c_status_rearm_q;
+  wire status_arst_n=a_status_rst_ni && c_status_rst_ni;
+  // Retain occurrences and their in-flight acknowledgement through operational
+  // reset. Rearm this transport once per cold reset, apart from publication.
+  always_ff @(posedge aclk_i or negedge status_arst_n) begin
+    if(!status_arst_n) begin a_status_armed_q<=0;a_status_rearm_q<=0;end
+    else begin
+      a_status_rearm_q<=0;
+      if(!a_status_armed_q && a_reset_ready[2]) begin a_status_rearm_q<=1;a_status_armed_q<=1;end
+    end
+  end
+  always_ff @(posedge cclk_i or negedge status_arst_n) begin
+    if(!status_arst_n) begin c_status_armed_q<=0;c_status_rearm_q<=0;end
+    else begin
+      c_status_rearm_q<=0;
+      if(!c_status_armed_q && c_reset_ready[2]) begin c_status_rearm_q<=1;c_status_armed_q<=1;end
+    end
+  end
   assign a_rearm_ready_o = &a_reset_ready;
   assign c_rearm_ready_o = &c_reset_ready;
   assign a_fault_o = |a_faults;
@@ -54,10 +74,10 @@ module lpddr5_mc_control_link (
     .dvalid_o(a_ack_valid_o), .dready_i(a_ack_ready_i), .ddata_o(a_ack_o), .d_fault_o(a_faults[1])
   );
   lpddr5_mc_mailbox #(.WIDTH($bits(lpddr5_mc_channel_status_t))) status_crossing (
-    .sclk_i(cclk_i), .srst_ni(crst_ni), .s_enable_i(c_enable_i), .s_rearm_i(c_rearm_i),
+    .sclk_i(cclk_i), .srst_ni(c_status_rst_ni), .s_enable_i(c_enable_i), .s_rearm_i(c_status_rearm_q),
     .svalid_i(c_status_valid_i), .sready_o(c_status_ready_o), .sdata_i(c_status_i), .s_fault_o(c_faults[2]),
     .s_rearm_ready_o(c_reset_ready[2]), .d_rearm_ready_o(a_reset_ready[2]),
-    .dclk_i(aclk_i), .drst_ni(arst_ni), .d_enable_i(a_enable_i), .d_rearm_i(a_rearm_i),
+    .dclk_i(aclk_i), .drst_ni(a_status_rst_ni), .d_enable_i(a_enable_i), .d_rearm_i(a_status_rearm_q),
     .dvalid_o(a_status_valid_o), .dready_i(a_status_ready_i), .ddata_o(a_status_o), .d_fault_o(a_faults[2])
   );
 endmodule

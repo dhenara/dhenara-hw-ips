@@ -18,7 +18,10 @@ module lpddr5_mc_wck (
   always_comb begin
     wck_o='0; at_tick=0;
     disabled_o=!running_q;
-    stop_ready_o=running_q && !stopping_q && tick_q>=post_q && !access_i;
+    // Serialized selection has already ended at disable_q, although
+    // running_q retires on this edge. Never issue WS_OFF for that expired
+    // epoch or extend its timer and resurrect the old rank on the next CK.
+    stop_ready_o=running_q && !stopping_q && tick_q<disable_q && tick_q>=post_q && !access_i;
     reusable_o=running_q && !stopping_q && (profile_i.always_on || tick_q<expiry_q);
     for (int p=0; p<4; p++) begin
       at_tick=tick_q+64'(p);
@@ -67,7 +70,7 @@ module lpddr5_mc_wck (
         if (!profile_i.always_on) disable_q<=tick_q+64'(profile_i.wck_twck_dis);
       end
       if (stop_i) begin
-        if (!running_q || tick_q<post_q) fault_o<=1;
+        if (!running_q || stopping_q || tick_q>=disable_q || tick_q<post_q || access_i) fault_o<=1;
         else begin stopping_q<=1; disable_q<=tick_q+64'(profile_i.wck_twck_dis); end
       end
     end

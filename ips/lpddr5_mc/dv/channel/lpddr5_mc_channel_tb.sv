@@ -25,9 +25,14 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   lpddr5_mc_read_request4_t read_value;
   lpddr5_mc_return4_t return_value;
   int mr43_count,mr4_count,zq_count,refresh_count,rfm_count,cycles;
+  bit check_poll_handoff=0,poll_handoff_pending=0;
+  int poll_handoff_windows=0,poll_handoff_zq;
+  bit check_poll_coalesce=0,poll_coalesce_pending=0,poll_request_seen=0;
+  logic [1:0] poll_refresh_seen=0;
+  int poll_coalesce_windows=0;
   logic notification_valid,notification_error_valid,first_error_valid;
   logic notification_ready=1,memory_reset=0,check_fsp=0,mrw_pending=0;
-  int mrw_count=0,mrw_address=0,last_mrw=0,sre_count=0,srx_count=0,last_srx=0;
+  int mrw_count=0,mrw_address=0,last_mrw=0,fsp_switch_mrw2=-1,fsp_restore_mrw2=-1,fsp_des_until=0,sre_count=0,srx_count=0,last_srx=0;
   logic [127:0] mrw_seen=0;
   logic [1:0] expected_old_fsp=0,expected_target_fsp=1;
   logic [12:0] notification_events;
@@ -37,7 +42,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   logic unused_debug;
   assign unused_debug=^{fsp_snapshot,notification_valid,notification_error_valid,notification_events,notification_boot,notification_epoch,notification_error,first_error_valid,first_error_version,first_error_boot,first_error_epoch,status_value,command_rejected,fsp_ready,fsp_declined,wck,prepared_epoch,committed_epoch,management_out};
   lpddr5_mc_channel #(.DEPTH(16),.PER_BANK_REFRESH(PER_BANK_REFRESH)) dut (
-    .clk_ck_i(clk),.rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(request_valid),.request_ready_o(request_ready),.request_i(request),.request_boot_epoch_i(request_boot),.request_config_epoch_i(request_epoch),
+    .clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(request_valid),.request_ready_o(request_ready),.request_i(request),.request_boot_epoch_i(request_boot),.request_config_epoch_i(request_epoch),
     .completion_valid_o(completion_valid),.completion_ready_i(completion_ready),.completion_o(completion),
     .feedback_valid_i(1'b0),.feedback_i(lpddr5_mc_channel_response_feedback_t'('0)),.host_settled_i(host_settled),.reset_confirmed_i(reset_confirmed),
     .command_valid_i(command_valid),.command_i(command),.command_ready_o(command_ready),.command_rejected_o(command_rejected),.train_ack_i(train_ack),.train_token_i(train_token),
@@ -79,12 +84,47 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       if(dut.backend.reg_valid) $display("register result ck=%0d epoch=%0d rank=%0d",cycles,dut.backend.is_epoch_q,dut.backend.reg_rank);
     end
 
-    if(rst_n && !memory_reset) begin memory_model.prepare();memory_model.sample();check_control_pins();end
-    else memory_model.reset();
+    if(rst_n && !memory_reset) begin
+      memory_model.prepare();
+      c2_sample();
+      memory_model.sample();check_control_pins();
+    end else begin memory_model.reset();c2_sample();end
   end
   task automatic check_control_pins;
     logic [7:0] expected_value;
+    if(check_poll_coalesce) begin
+      if(dut.mr4_request && !poll_request_seen) begin
+        assert(!poll_coalesce_pending) else $fatal(1,"overlapping periodic sweep");
+        poll_coalesce_pending=1;poll_refresh_seen=0;
+      end
+      poll_request_seen=dut.mr4_request;
+      if(poll_coalesce_pending && ca.cs!=0) begin
+        if(ca.address[6:0]==56 && !ca.address[10]) begin
+          assert(ca.address[13] && !poll_refresh_seen[ca.cs==2 ? 1 : 0]) else $fatal(1,"duplicate/partial coalesced REF");
+          poll_refresh_seen[ca.cs==2 ? 1 : 0]=1;
+        end
+        if(ca.address[6:0]==24 && ca.address[13:7]==4)
+          assert(poll_refresh_seen==2'((1<<int'(cfg.profile.ranks))-1))
+            else $fatal(1,"periodic MR4 preceded its full REF rank group");
+      end
+      if(poll_coalesce_pending && dut.mr4_done) begin
+        assert(poll_refresh_seen==2'((1<<int'(cfg.profile.ranks))-1)) else $fatal(1,"missing coalesced REF membership");
+        poll_coalesce_pending=0;poll_coalesce_windows++;
+      end
+    end
+    if(check_poll_handoff && dut.mr4_done) begin
+      $display("periodic handoff sample CK=%0d ranks=%0d pendingZQ=%0d MR4=%0d ZQ=%0d",cycles,cfg.profile.ranks,dut.zq_request,mr4_count,zq_count);
+      if(dut.zq_request) begin
+        poll_handoff_pending=1;poll_handoff_zq=zq_count;poll_handoff_windows++;
+      end
+    end
+    if(poll_handoff_pending && zq_count>poll_handoff_zq) poll_handoff_pending=0;
+    if(check_fsp && cycles<fsp_des_until)
+      assert(ca.cs==0) else $fatal(1,"connected FSP/VRCG recovery requires DES");
     if(ca.cs!=0) begin
+      if(check_poll_handoff && poll_handoff_pending)
+        assert(!(ca.address[2:0] inside {3'b111,3'b011}))
+          else $fatal(1,"periodic handoff reopened a row before due ZQ CK=%0d",cycles);
       if(ca.address[6:0]==104) sre_count++;
       if(ca.address[6:0]==40) begin srx_count++;last_srx=cycles;end
       if(check_fsp) begin
@@ -94,13 +134,24 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
           assert(ca.address[5:0]==8 && cycles==last_mrw+1) else $fatal(1,"connected MRW pair");
           expected_value=fsp_snapshot.mr[mrw_address];
           if(mrw_count==0) expected_value={fsp_snapshot.mr[16][7:4],expected_old_fsp,expected_target_fsp};
-          if(mrw_count==18) expected_value={fsp_snapshot.mr[16][7:4],expected_target_fsp,expected_target_fsp};
+          if(mrw_count==18) begin
+            expected_value={fsp_snapshot.mr[16][7:4],expected_target_fsp,expected_target_fsp}|8'h40;
+            fsp_switch_mrw2=cycles;
+            fsp_des_until=cycles+int'(fsp_switch_guard(memory_profile,fsp_snapshot));
+          end
+          if(mrw_count==19) begin
+            expected_value={fsp_snapshot.mr[16][7:4],expected_target_fsp,expected_target_fsp};
+            assert(cycles-1-fsp_switch_mrw2>=int'(fsp_switch_guard(memory_profile,fsp_snapshot)))
+              else $fatal(1,"connected normal restore before switch recovery");
+            fsp_restore_mrw2=cycles;
+            fsp_des_until=cycles+int'(fsp_restore_guard(fsp_snapshot));
+          end
           assert({ca.address[6],ca.address[13:7]}==expected_value) else $fatal(1,"connected frozen MR value");
           mrw_count++;mrw_pending=0;
         end else begin
           assert(ca.address[6:0]==88 && cycles-last_mrw>=12) else $fatal(1,"connected MRW spacing/encoding");
           mrw_address=int'(ca.address[13:7]);mrw_pending=1;
-          if(mrw_count inside {0,18}) assert(mrw_address==16) else $fatal(1,"connected FSP control order");
+          if(mrw_count inside {0,18,19}) assert(mrw_address==16) else $fatal(1,"connected FSP control order");
           else begin
             assert(mrw_address inside {1,2,3,10,11,12,14,15,17,18,19,20,22,24,30,41,58} && !mrw_seen[mrw_address])
               else $fatal(1,"connected missing/duplicate MR");
@@ -122,6 +173,28 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   endtask
   task automatic send_command(input lpddr5_mc_channel_command_t value);
     assert(command_ready) else $fatal(1,"command not ready");command=value;command_valid=1;tick();command_valid=0;
+  endtask
+  // QUIET continues maintenance. ENABLE can be declined on an urgent CK;
+  // observe that disposition before issuing any traffic and retry boundedly.
+  task automatic enable_after_maintenance;
+    int declined;
+    logic urgent_before;
+    declined=0;
+    for(int c=0;c<2000;c++) begin
+      assert(status_value.state==1 && status_value.config_valid && status_value.memory_trusted && !status_value.fault)
+        else $fatal(1,"enable retry requires trusted configured QUIET");
+      #1;urgent_before=dut.maintenance_urgent;
+      send_command(CH_CMD_ENABLE);
+      if(status_value.state==2) begin
+        assert(!command_rejected) else $fatal(1,"RUN with rejected ENABLE");
+        $display("PASS enable after maintenance CK=%0d declines=%0d",cycles,declined);
+        step();return;
+      end
+      assert(command_rejected && urgent_before && status_value.state==1 && !request_ready)
+        else $fatal(1,"ENABLE decline without urgent maintenance or quiet admission fence");
+      declined++;step();
+    end
+    $fatal(1,"ENABLE remained declined for 2000 CK");
   endtask
   task automatic wait_quiet;
     for(int c=0;c<2000;c++) begin step();if(status_value.state==1 && status_value.drained) return;end
@@ -262,15 +335,57 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     end
     request_valid=0;step();assert(sent==160 && received==160) else $fatal(1,"row churn progress");
   endtask
-  task automatic setup_control;
+  task automatic setup_control(input int rank_count=2,input bit inline_mode=0);
     rst_n=0;request_valid=0;command_valid=0;config_mailbox='0;management_in='0;request='0;
     check_fsp=0;notification_ready=1;memory_reset=0;tick();rst_n=1;cycles=0;
-    cfg='0;cfg.profile=fixture_profile(0,0,0,1,0,1);cfg.profile.ranks=2;
-    cfg.service_div=2;cfg.age_tick_div=8;cfg.read_urgent_age=4;cfg.write_urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
+    cfg='0;cfg.profile=fixture_profile(0,0,0,1,0,1);cfg.profile.ranks=2'(rank_count);
+    cfg.inline_ecc=inline_mode;cfg.service_div=2;cfg.age_tick_div=8;cfg.read_urgent_age=4;cfg.write_urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
     memory_profile=cfg.profile;request_boot=0;request_epoch=1;host_settled=1;reset_confirmed=0;
-    report_valid=3;report_sr=0;phy_refresh_done=0;train_ack=0;completion_ready=1;mr43=0;mr4=9;
+    report_valid=2'((1<<rank_count)-1);report_sr=0;phy_refresh_done=0;train_ack=0;completion_ready=1;mr43=0;mr4=9;
     target_fsp=1;target_frequency=0;sre_count=0;srx_count=0;last_srx=0;
     publish(1);boot();
+  endtask
+  task automatic poll_once_case;
+    int first_mr4,first_zq;
+    for(int rank_count=1;rank_count<=2;rank_count++) begin
+      setup_control(rank_count);
+      // Observe completed device status, then leave enough time for any
+      // accidentally retriggered visit to reach the physical pins. A new
+      // periodic poll cannot yet be due in this bounded interval.
+      for(int c=0;c<3000;c++) begin step();if(status_value.temperature_mr4==9) break;end
+      assert(status_value.temperature_mr4==9) else $fatal(1,"first periodic MR4 completion missing");
+      repeat(600) step();
+      assert(mr4_count==rank_count) else $fatal(1,"duplicate periodic MR4 visit ranks=%0d commands=%0d",rank_count,mr4_count);
+      assert(zq_count==rank_count) else $fatal(1,"duplicate periodic ZQ visit ranks=%0d commands=%0d",rank_count,zq_count);
+      first_mr4=mr4_count;first_zq=zq_count;mr4=10;
+      for(int c=0;c<3000;c++) begin step();if(status_value.temperature_mr4==10) break;end
+      assert(status_value.temperature_mr4==10) else $fatal(1,"next periodic MR4 status missing");
+      repeat(600) step();
+      assert(mr4_count==first_mr4+rank_count && zq_count==first_zq+rank_count && !status_value.fault)
+        else $fatal(1,"periodic visit count/progress after new temperature ranks=%0d MR4=%0d ZQ=%0d",rank_count,mr4_count,zq_count);
+      $display("PASS single periodic MR4/ZQ visit ranks=%0d MR4=%0d ZQ=%0d temperature=%0d",rank_count,mr4_count,zq_count,status_value.temperature_mr4);
+    end
+  endtask
+  task automatic poll_handoff_case;
+    for(int rank_count=1;rank_count<=2;rank_count++) begin
+      setup_control(rank_count);check_poll_handoff=1;
+      poll_handoff_pending=0;poll_handoff_windows=0;
+      check_poll_coalesce=!PER_BANK_REFRESH;poll_request_seen=dut.mr4_request;
+      poll_coalesce_pending=0;poll_refresh_seen=0;poll_coalesce_windows=0;
+      // Boot may have serviced the initial sweep in QUIET already. Arm on
+      // actual final-rank MR4 completion only when ZQ is still due, then
+      // observe CA until its first latch. Require a nonempty checked window.
+      row_churn();
+      for(int c=0;c<1000 && poll_coalesce_pending;c++) step();
+      check_poll_handoff=0;check_poll_coalesce=0;
+      assert(poll_handoff_windows>0 && !poll_handoff_pending)
+        else $fatal(1,"periodic handoff not exercised ranks=%0d windows=%0d pending=%0d",rank_count,poll_handoff_windows,poll_handoff_pending);
+      $display("PASS periodic MR4 to due ZQ handoff ranks=%0d windows=%0d MR4=%0d ZQ=%0d",rank_count,poll_handoff_windows,mr4_count,zq_count);
+      if(!PER_BANK_REFRESH) begin
+        assert(poll_coalesce_windows>0 && !poll_coalesce_pending) else $fatal(1,"no complete coalesced periodic window");
+        $display("PASS pin REF group before periodic MR4 ranks=%0d windows=%0d",rank_count,poll_coalesce_windows);
+      end
+    end
   endtask
   task automatic wait_low_power;
     for(int c=0;c<2000;c++) begin
@@ -321,6 +436,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       for(int c=0;c<2000;c++) begin step();if(management_out.init_start) break;end
       assert(management_out.init_start && !fsp_ready) else $fatal(1,"connected FSP request");
       check_fsp=1;mrw_count=0;mrw_seen=0;mrw_pending=0;last_mrw=cycles-100;
+      fsp_switch_mrw2=-1;fsp_restore_mrw2=-1;fsp_des_until=0;
       management_in.init_complete=0;release_edge=-1;
       // Only the prepared immutable bank may influence programming.
       cfg='0;target_fsp=2;target_frequency=1;
@@ -332,7 +448,8 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
         step();if(fsp_ready) break;
       end
       check_fsp=0;
-      assert(fsp_ready && mrw_count==19 && !mrw_pending && release_edge>last_mrw+207 && committed_epoch==1 && !request_ready)
+      assert(fsp_ready && mrw_count==20 && !mrw_pending && fsp_switch_mrw2>=0 && fsp_restore_mrw2>fsp_switch_mrw2
+          && release_edge>fsp_restore_mrw2+int'(fsp_restore_guard(fsp_snapshot))+int'(fsp_command_tail(memory_profile,fsp_snapshot)) && committed_epoch==1 && !request_ready)
         else $fatal(1,"connected FSP programming/guard/readiness");
       cfg=target_config;config_mailbox.commit=1;step();config_mailbox='0;memory_profile=cfg.profile;request_epoch=2;
       wait_quiet();assert(committed_epoch==2 && management_out.frequency==0 && management_out.fsp==1) else $fatal(1,"connected common FSP commit");
@@ -349,7 +466,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       assert(saw_decline && !prepared && committed_epoch==2 && management_out.frequency==0 && management_out.fsp==1)
         else $fatal(1,"connected decline changed active point");
       cfg=target_config;send_command(CH_CMD_ENABLE);step();stream(1,8);stream(0,8);
-      $display("PASS connected FSP: frozen 19 MR pairs, fresh low/high, guard, common epoch commit, retained data and normal decline");
+      $display("PASS connected FSP: frozen 20 MR pairs, OP/high-VRCG, normal restore, separate switch/restore recovery and pin tail, fresh low/high, common epoch commit, retained data and normal decline");
     end else if(kind==1) begin
       stream(1,8);send_command(CH_CMD_QUIESCE);wait_quiet();
       send_command(CH_CMD_POWER_DOWN);wait_low_power();repeat(8) step();
@@ -420,16 +537,20 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       row_churn();$display("stress row churn finished CK%0d REF=%0d RFM=%0d",cycles,refresh_count,rfm_count);assert(rfm_count>0) else $fatal(1,"mandatory RFM not exercised");
       send_command(CH_CMD_QUIESCE);wait_quiet();mr4=13;
       repeat(5000) step();$display("stress hot13 finished CK%0d REF=%0d MR4=%0d",cycles,refresh_count,mr4_count);assert(dut.thermal==13) else $fatal(1,"hot MR4 not observed");
-      send_command(CH_CMD_ENABLE);step();stream(1,8);stream(0,8);
+      enable_after_maintenance();stream(1,8);stream(0,8);
       send_command(CH_CMD_QUIESCE);wait_quiet();mr4=15;
       repeat(5000) step();assert(dut.thermal==15) else $fatal(1,"hottest MR4 not observed");
       $display("PASS connected stress REFpb=%0d: paired RAA/RFM bound, hot thermal refresh/derating and MR4 service",PER_BANK_REFRESH);
     end
   endtask
+  `include "channel_observer.svh"
+  `include "dirty_management.svh"
   initial begin
     int selected_case;
+    c2_open();
     selected_case=0;
     if($value$plusargs("channel_case=%d",selected_case)) begin end
+    assert(c2_stream==0 || selected_case==9) else $fatal(1,"channel observations require case9");
     cfg='0;request='0;config_mailbox='0;management_in='0;cycles=0;
     for(int c=0;c<10;c++) begin
       if(selected_case==0 || (selected_case==1 && c==6) || (selected_case==2 && c==7) || (selected_case==3 && c>=8))
@@ -438,6 +559,10 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     if(selected_case inside {0,4}) for(int c=0;c<2;c++) invalid_ingress(1'(c));
     for(int c=0;c<5;c++)
       if(selected_case==0 || (selected_case==5 && c<4) || (selected_case==6 && c==4)) control_case(c);
+    if(selected_case inside {0,7}) poll_once_case();
+    if(selected_case inside {0,8}) poll_handoff_case();
+    if(selected_case==9) for(int kind=0;kind<4;kind++) for(int failed=0;failed<2;failed++) dirty_management_case(kind,1'(failed));
+    c2_complete=1;
     $display("PASS selected channel cases selection=%0d",selected_case);$finish;
   end
 endmodule

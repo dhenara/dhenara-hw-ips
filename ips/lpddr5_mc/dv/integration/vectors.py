@@ -7,11 +7,20 @@ from pathlib import Path
 IP = Path(__file__).resolve().parents[2]
 
 
+def write_fixture(path: Path, text: str) -> None:
+    # Verilator records input timestamps. Rewriting identical includes forces
+    # a new translation and compilation when selecting another runtime case.
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)
+
+
 def generate(destination: Path) -> None:
     sys.path.insert(0, str(IP / "dv"))
     from contracts.configuration import example_configuration, register_image
+    from contracts.raw_parity import generate_read_encoder
 
     destination.mkdir(parents=True, exist_ok=True)
+    generate_read_encoder(destination)
     profiles = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"]
     schema = json.loads((IP / "config/contracts/registers.json").read_text())
     include = ["task automatic expected_profile(input int number);", "  profile='0;", "  case(number)"]
@@ -57,6 +66,23 @@ def generate(destination: Path) -> None:
                 image["DVFS"] = fsp
                 rows.append(f"{index} {ranks} {fsp}")
                 rows.extend(f"{image[reg['name']]:08x}" for reg in schema["registers"])
+    # The wrapper final-tail deadline is generated from the selected profile;
+    # no independent magic loop bound lives in the HDL fixture.
+    from maintenance_window import window_budget
+    from wrapper_management import final_tail_budget, profile_binding
+
+    tail = final_tail_budget(profile_binding())
+    window = window_budget(profile_binding())
     include += ['    default: $fatal(1,"unknown profile");', "  endcase", "endtask"]
-    (destination / "expected_profiles.svh").write_text("\n".join(include) + "\n")
-    (destination / "images.txt").write_text("\n".join(rows) + "\n")
+    write_fixture(
+        destination / "wrapper_tail.svh",
+        f"localparam int WM_FINAL_TAIL_CK={tail['total_ck']};\n"
+        f"localparam int WM_FINAL_PAGE_IDLE_CK={tail['page_idle_ck']};\n"
+        + "".join(
+            f"localparam int WM_WINDOW_{k.upper()}={v};\n"
+            for k, v in window.items()
+            if k in ("setup_ck", "request_ck", "total_ck", "refresh_lead_ck", "poll_lead_ck")
+        ),
+    )
+    write_fixture(destination / "expected_profiles.svh", "\n".join(include) + "\n")
+    write_fixture(destination / "images.txt", "\n".join(rows) + "\n")

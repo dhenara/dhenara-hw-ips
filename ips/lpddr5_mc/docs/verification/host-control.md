@@ -12,11 +12,11 @@ python3 ips/lpddr5_mc/dv/host/check.py \
   --report ips/lpddr5_mc/dv/host/out/committed/summary.json
 ```
 
-Add `--dry-run` to print the literal phase commands and deadlines without executing checks or writing reports. The aggregate runs its own failure-handling tests, the existing foundation `Makefile` check, CDC transports, APB/control-link checks, register/channel adapters, four representative host-core configurations, the full AXI bridge fixture matrix, assembled-host behavior, the independent lease/source-order oracle and warning-fatal assembly elaboration. All phases run serially so compiler processes do not compete for the same sandbox memory.
+Add `--dry-run` to print the literal phase commands and deadlines without executing checks or writing reports. The aggregate runs its own failure-handling tests, the existing foundation `Makefile` check, static parameter admission, CDC transports, APB/control-link checks, register/channel adapters, four representative host-core configurations, the full AXI bridge fixture matrix, assembled-host behavior, the independent lease/source-order oracle and warning-fatal assembly elaboration. All phases run serially so compiler processes do not compete for the same sandbox memory.
 
 The core behavior configurations are strict 64-bit/depth-16, 128-bit/depth-16 and 256-bit/depth-64, plus early-posted 128-bit/depth-16. Their testbench uses two ports and two channels to retain overlap and ordering checks. Root `lpddr5_mc_host` lint uses minimum `(ports=1, channels=1, ranks=1, data=64, ID=4, address=32, depth=16)`, the source defaults, and maximum `(2, 2, 2, 256, 16, 40, 64)`. These representative variants and boundary checks do not cover the Cartesian product of all supported parameters. Root elaboration does not establish combined host/channel behavior.
 
-Compiler output, captured simulator sources and Python caches remain below `DHENARA_AGENT_TOOL_STORAGE_ROOT`. The aggregate report and a sibling `<report-stem>-phases/` directory retain phase reports and logs under `dv/host/out/`. Every phase has a finite deadline: runner and Python checks 30 seconds each, root elaboration 120 seconds each, AXI matrix 600 seconds, foundation 300 seconds, and transport/core/assembly/lease phases 900 seconds each. A timeout kills that phase's compiler/simulator process group, records its actual signal exit and makes the aggregate exit 124. Other failures preserve their exit status; later phases are marked `not_run`. A child process exiting zero without its required valid report fails the aggregate.
+Compiler output, captured simulator sources and Python caches remain below `DHENARA_AGENT_TOOL_STORAGE_ROOT`. The aggregate report and a sibling `<report-stem>-phases/` directory retain phase reports and logs under `dv/host/out/`. Every phase has a finite deadline: runner and Python checks 30 seconds each, root elaboration 120 seconds each, static parameters and AXI matrix 600 seconds each, foundation 300 seconds, and transport/core/assembly/lease phases 900 seconds each. A timeout kills that phase's compiler/simulator process group, records its actual signal exit and makes the aggregate exit 124. Other failures preserve their exit status; later phases are marked `not_run`. A child process exiting zero without its required valid report fails the aggregate.
 
 The aggregate records the complete tracked and nonignored source-file inventory, hashes, Git revision and dirty state before and after execution. A source change or a different revision invalidates the aggregate result. Reports are immutable by convention: an existing report or phase directory is rejected, and reruns require a new report path. Dirty-tree runs remain development evidence. Delivery evidence requires a separate run on the exact clean committed contribution.
 
@@ -28,6 +28,14 @@ The contribution checks host/control behavior against independent behavioral cha
 
 ## Common-domain core and simulator qualification
 
+The [parameter runner](../../dv/host/parameter_run.py) checks the canonical static descriptor across all supported ports/channels/ranks, data/ID/address widths, depths, service divisions, WCK ratios and read/write/raw-parity capability combinations. It requires 176904 admitted descriptors, 227448 rejected link combinations and 30 invalid single-field boundaries/holes. A separate reset-held production-core fixture admits minimum/maximum structural settings and requires the core's actual initial assertion for unsupported nonzero counts, widths and queue sizes. Compiler failure or an arbitrary crash fails the runner. Expected assertion exits and their original logs are retained separately from commands that must exit zero. Zero structural dimensions are checked in the descriptor matrix; negative-width RTL arrays are not elaborated. Static admission does not exercise data traffic or replace the [connected parameter checks](system.md#actual-rtl-binding). Run with fresh report and build names:
+
+```sh
+python3 ips/lpddr5_mc/dv/host/parameter_run.py \
+  --report "$PWD/ips/lpddr5_mc/evidence/parameter-admission/report.json" \
+  --build-name parameter-admission
+```
+
 The [core runner](../../dv/host/core_run.py) captures its package, contracts, core RTL, testbench and runner before compilation and rejects a source change during the run. It retains the observed `CORE_RESULT` family count and requires every family expected by its current fixture. It also runs minimum/maximum core elaboration. Its independent byte-memory responder verifies host behavior within one common clock domain; asynchronous AXI admission and real channel pin/ECC behavior need their separate checks.
 
 The qualified Verilator 5.006 core simulation requires `--public-flat-rw`, which `core_run.py` supplies. A retained minimal reproducer showed a task-written packed slot changing from 0 to 1 while its derived combinational slot remained 0 without that option; the same source with the option produced matching 0/1/2 values and `SENSITIVITY PASS`. This option keeps task-driven packed writes visible to the simulator's combinational scheduling. Diagnostic logs are retained as `dv/host/out/core/sensitivity-2-run.log` and `sensitivity-public-run.log`. Keep the remedy when reproducing this qualified tool version; qualify another simulator version independently.
@@ -37,6 +45,22 @@ The qualified Verilator 5.006 core simulation requires `--public-flat-rw`, which
 The [APB runner](../../dv/host/apb_run.py) checks generated metadata consistency, schema-derived register access, strobes, locks, command sequencing, IRQ/W1C behavior, immutable prepare/commit snapshots, stale/partial/timeout acknowledgement handling and status/first-error snapshots. It exercises the actual configuration/command/acknowledgement/status mailboxes on independent clocks, checks minimum/maximum APB parameters and compiles the C11 programming example. The APB fixture clears an error event, repeatedly transfers ordinary zero-event snapshots, and checks no IRQ relatch, counter increment or detail replacement; a later same-bit notification must increment once and capture its new detail. Channel-side numeric-profile validation, notification production and live drain witnesses remain integration responsibilities.
 
 The [adapter runner](../../dv/host/adapter_run.py) compares committed register-image decoding and mapping with canonical Python oracle vectors. Cases cover all 16 QoS classes, port limits, modes/epochs, 40-bit boundaries, region holes and unsorted permutations, ECC capacity and rank boundaries, one/two channels and eight regions. Real channel-link queues compare complete request, completion and response-feedback payloads at actual handshakes. Reset tests account for aborted transport records and require explicit two-sided rearm with fresh epochs; acceptance-ledger settlement remains the host owner's responsibility.
+
+## Focused cross-transaction forwarding and merging
+
+The core runner has a bounded composition selection; the lease runner connects that same production core to the real asynchronous bridge/endpoints. Use fresh report/build names:
+
+```sh
+python3 ips/lpddr5_mc/dv/host/core_run.py --compose-only \
+  --report ips/lpddr5_mc/evidence/host-compose-new/report.json --build-name host-compose-new
+python3 ips/lpddr5_mc/dv/host/lease_run.py --compose-only \
+  --report ips/lpddr5_mc/evidence/host-compose-connected-new/report.json \
+  --build-subdir host-compose-connected-new
+```
+
+The core fixture captures source descriptors/W bytes, physical requests/completions and offered/consumed responses. The [independent composer oracle](../../dv/host/compose_oracle.py) uses the existing serial host and merge ledgers to derive byte results. A read request and completed base data before contributor integrity, or fewer physical writes than originals, distinguish exercised optimization from serial fallback. Ten cases cover multiple contributors/overwrites, partial and narrow multibeat writes, delayed/failed integrity, incompatible attributes, intervening reads, unvalidated AW/W barriers, response stalls, stale completion, contributor slot reuse and fatal/reset recovery. Five deliberate trace mutations must fail independently. This selection uses AXI128, two core ports/channels, depth16; minimum/maximum lint checks structure, not the behavioral parameter matrix.
+
+The connected selection drives three original writes and one read through one actual AXI source. It requires a read before writer integrity, then two compatible originals sharing one physical write, with exactly three B responses and one R response. Independent source-byte and memory-image checks reject two corruption probes. Cross-port conflicts still serialize through the existing leases before READY. The modeled channel completion boundary is an explicit physical/integrity witness; actual ECC/DFI pin composition remains a separate combined check. The [qualification matrix](qualification.md#source-impact-and-minimum-remaining-selections) records current reports, original development failures and the remaining source-impact/reproduction work.
 
 ## CDC transports
 

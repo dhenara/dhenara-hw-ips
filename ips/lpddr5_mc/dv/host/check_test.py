@@ -68,6 +68,7 @@ class AggregateTests(unittest.TestCase):
                 "python-lint",
                 "python-format",
                 "foundation",
+                "parameters",
                 "cdc",
                 "apb",
                 "adapters",

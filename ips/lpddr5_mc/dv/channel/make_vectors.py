@@ -9,6 +9,7 @@ sys.path.insert(0, str(IP / "dv"))
 from contracts.dvfs import Sample, check_dvfs  # noqa: E402
 from contracts.integrity import transport  # noqa: E402
 from contracts.profiles import waveform  # noqa: E402
+from contracts.raw_parity import generate_read_encoder  # noqa: E402
 from contracts.read_completion import CompletionOracle, ExpectedWord, ReadBusOracle  # noqa: E402
 from contracts.update import check_update  # noqa: E402
 
@@ -39,6 +40,7 @@ def fields(profile: dict) -> dict:
 
 def generate(destination: Path) -> dict:
     destination.mkdir(parents=True, exist_ok=True)
+    generate_read_encoder(destination)
     update_rows = []
     for assertion in (-1, 0, 1, 2, 3, 4, 5, 31):
         for release in (2, 3, 4, 5, 29, 30, 31, 32, 36):

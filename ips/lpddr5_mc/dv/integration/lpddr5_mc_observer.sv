@@ -2,6 +2,7 @@
 // edges. No completion flag is converted into a physical-memory witness.
 module lpddr5_mc_observer #(
   parameter int PORTS=2,CHANNELS=2,DATA_BITS=128,
+  parameter bit OBSERVE_CYCLES=0,
   parameter string FILE_ARGUMENT="observations=%s"
 ) (
   input logic clk_ck_i,rst_ni,
@@ -40,6 +41,9 @@ module lpddr5_mc_observer #(
     initial forever begin
       @(posedge axi_clk_i[p]);
       if(stream!=0 && rst_ni && axi_rst_ni[p]) begin
+        if(OBSERVE_CYCLES)
+          $fdisplay(stream,"{\"kind\":\"axi\",\"ps\":%0d,\"port\":%0d,\"flags\":%0d}",
+            timestamp_ps(),p,{awvalid_i[p],awready_i[p],arvalid_i[p],arready_i[p],wvalid_i[p],wready_i[p],bvalid_i[p],bready_i[p],rvalid_i[p],rready_i[p]});
         if(awvalid_i[p] && awready_i[p])
           $fdisplay(stream,"{\"kind\":\"aw\",\"ps\":%0d,\"port\":%0d,\"id\":%0d,\"address\":\"0x%h\",\"length\":%0d,\"size\":%0d,\"burst\":%0d,\"lock\":%0d}",
             timestamp_ps(),p,aw_i[p].id,aw_i[p].address,aw_i[p].len,aw_i[p].size,aw_i[p].burst,aw_i[p].lock);

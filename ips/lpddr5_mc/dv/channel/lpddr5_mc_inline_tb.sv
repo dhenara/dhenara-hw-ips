@@ -58,6 +58,57 @@ module lpddr5_mc_inline_tb;
     completion_ready=1; tick(); completion_ready=0;
     assert(drained && !fault) else $fatal(1,"inline drain");
   endtask
+  task automatic scrub_with_waiting_rewrite;
+    lpddr5_mc_granule_t first_request,held_physical;
+    logic [511:0] newer_data;
+    int serviced;
+    first_request='0;first_request.tag=64'(writes)+64'(read_count)+1;
+    first_request.generation=3;first_request.is_64_bytes=1;
+    request=first_request;request_valid=1;
+    #1;assert(request_ready) else $fatal(1,"scrub-race admission");tick();
+    // Hold a younger same-granule rewrite at ingress for the entire older
+    // correction, including check commit and response backpressure.
+    newer_data=~expected;request.tag=first_request.tag+1;request.is_write=1;
+    request.byte_enable='1;request.data=newer_data;serviced=0;
+    for(int n=0;n<100;n++) begin
+      #1;
+      assert(!request_ready) else $fatal(1,"rewrite passed older scrub lock");
+      if(physical_valid) begin
+        physical_ready=0;held_physical=physical;
+        repeat(3) begin
+          tick();assert(physical_valid && physical==held_physical && !request_ready)
+            else $fatal(1,"scrub physical payload/lock changed under stall");
+        end
+        physical_ready=1;service();serviced++;
+      end else if(completion_valid) break;
+      else tick();
+    end
+    assert(serviced==4 && completion_valid && !completion.failed && completion.corrected
+      && !completion.is_write && completion.identity.tag==first_request.tag
+      && completion.data==expected && memory_data==expected)
+      else $fatal(1,"older correction must commit before younger rewrite");
+    repeat(3) begin
+      tick();assert(completion_valid && completion.identity.tag==first_request.tag
+        && completion.data==expected && !request_ready && memory_data==expected)
+        else $fatal(1,"scrub response/lock lost to waiting rewrite");
+    end
+    completion_ready=1;tick();completion_ready=0;
+    assert(request_ready) else $fatal(1,"rewrite did not regain admission after scrub settlement");
+    tick();request_valid=0;
+    for(int n=0;n<100;n++) begin
+      #1;
+      if(physical_valid) service();
+      else if(completion_valid) break;
+      else tick();
+    end
+    assert(completion_valid && !completion.failed && !completion.corrected
+      && completion.is_write && completion.identity.tag==first_request.tag+1
+      && memory_data==newer_data) else $fatal(1,"younger rewrite lost to stale scrub");
+    completion_ready=1;tick();completion_ready=0;expected=newer_data;
+    assert(drained && !fault) else $fatal(1,"scrub/rewrite race drain");
+    transact(0,1,0,0,0);
+    $display("INLINE_SCRUB_REWRITE_RACE_PASS physical_stalls=12 response_stalls=3");
+  endtask
   initial begin
     request='0; result_value='0; memory_data=0; memory_check=0; expected=0; writes=0; read_count=0; fail_write=-1;
     tick(); rst_n=1;
@@ -69,6 +120,7 @@ module lpddr5_mc_inline_tb;
     // A correctable bit is scrubbed while the granule remains locked.
     memory_data[23]^=1; transact(0,1,0,0,0,0,1);
     assert(memory_data==expected) else $fatal(1,"correction scrub missing");
+    memory_data[19]^=1;scrub_with_waiting_rewrite();
     // Double error must not be treated as a successful read or partial write.
     memory_data[30]^=1; memory_data[31]^=1;
     transact(0,1,0,0,1); transact(1,1,1,0,1);

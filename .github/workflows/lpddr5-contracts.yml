@@ -1,0 +1,18 @@
+name: LPDDR5 reference contracts
+on:
+  push:
+  pull_request:
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    env:
+      DHENARA_AGENT_TOOL_STORAGE_ROOT: ${{ runner.temp }}/lpddr5-tools
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.18'
+      - run: make -f ips/lpddr5_mc/Makefile prepare
+      - run: make -f ips/lpddr5_mc/Makefile check REPORT="$RUNNER_TEMP/contract-report.json"

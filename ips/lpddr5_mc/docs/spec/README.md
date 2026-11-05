@@ -19,6 +19,8 @@ sha256sum -c SHA256SUMS
 
 When a consolidated specification is agreed, identify its version, superseded documents, and resolved decisions here. Keep the original references available in Git history and distinguish normative requirements from implementation proposals.
 
-## External references still needed
+## External references
 
-The drafts cite JESD209-5 and DFI 5.0, but the uploads do not include those standards, target-device timing data, or a PHY integration contract. They have not been checked in this review. Exact standard revisions and authorized reference/model access must be established before freezing command encoding, timing, WCK behavior, training handshakes, or compliance claims.
+The owner supplied JESD209-5C (June 2023) on 2026-11-05 as `scratchpad/uploads/cd6d9f71-884f-4f5f-a8c5-2383b8c6cede/JESD209-5C.pdf`, SHA-256 `76457d4019dc40c57b550c10dc3416cfae4d6ea1984de8f5c42e3e34d00ed031`. It is retained as an external reference and is not copied into this repository. The [review](review.md#supplied-jedec-reference-and-review-limits) records inspected sections, corrections, and the limits of that targeted review. LPDDR5X is not added to scope.
+
+DFI 5.0 remains unavailable. Its exact command/data representation, timing and controller/PHY responsibilities must be checked before freezing interfaces. Relevant AXI/APB references, the complete supported configuration/timing matrix, and independent verification models also remain to be qualified. The supplied JEDEC PDF does not establish controller compliance or a PHY integration contract.

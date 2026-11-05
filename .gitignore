@@ -1,0 +1,21 @@
+# Disposable outputs belong in a named output directory, never among RTL.
+**/build/
+**/out/
+**/work/
+**/obj_dir/
+
+# Simulation traces and Python caches.
+*.vcd
+*.fst
+*.fsdb
+*.wlf
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local editor and operating-system files.
+.DS_Store
+*.swp
+*.swo
+*~

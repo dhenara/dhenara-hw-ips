@@ -1,16 +1,16 @@
 # LPDDR5 draft review and scope decisions
 
-Reviewed on 2026-11-05 against the [base specification](lpddr5_mc_microarch_spec.md) and [v0.2 addendum](lpddr5_mc_microarch_addendum_v0.2.md). Their original digests are recorded in [SHA256SUMS](SHA256SUMS). The repository baseline for this update is `2f9f360dd7da0bdce37a17887f8282970c0ed1d3`.
+Reviewed on 2026-11-05 against the [base specification](lpddr5_mc_microarch_spec.md) and [v0.2 addendum](lpddr5_mc_microarch_addendum_v0.2.md). Their original digests are recorded in [SHA256SUMS](SHA256SUMS). The repository baseline for this update is `240f9fdd13e8394c0b41ea092477188413816fe2`.
 
-This is a source-document review and a record of the owner's direction. There is no controller implementation to verify yet. The supplied JESD209-5C standard has now been inspected in the targeted sections listed below; DFI remains unavailable. The owner accepted the recommended corrections on 2026-11-05, with the throughput and release-scope clarifications below. Acceptance of that direction does not establish a complete interface specification or verified hardware behavior. The imported drafts remain unchanged references; this page records how they must be refined.
+This is a source-document review and a record of the owner's direction. There is no controller implementation to verify yet. Supplied JESD209-5C and DFI 5.0 references have been inspected in the targeted sections listed below. The DFI copy resolves several questions but exposes clocking contradictions and incomplete timing entries that prevent freezing the interface. The owner accepted the recommended corrections on 2026-11-05, with the throughput and release-scope clarifications below. Acceptance of that direction does not establish a complete interface specification or verified hardware behavior. The imported drafts remain unchanged references; this page records how they must be refined.
 
 ## Owner decisions
 
 | Topic | Confirmed direction on 2026-11-05 | Consequence for refinement |
 | --- | --- | --- |
-| PHY | Generic PHY-facing controller using the standard DFI interface | Retain the draft DFI 5.0 target pending standard validation; define configurable timing and supported interface options without coupling the controller to one PHY vendor. Vendor qualification remains separate evidence. |
+| PHY | Generic PHY-facing controller using the standard DFI interface | Retain DFI 5.0 as the intended basis while reconciling the supplied copy and its incomplete entries; define configurable timing and supported options without coupling the controller to one PHY vendor. Vendor qualification remains separate evidence. |
 | Technology and PPA | Keep the implementation independent of technology node and pursue the best practical power, performance, and area (PPA) | Optimize architecture and portable RTL. Assess resource costs and critical paths; report any later synthesis measurements with their tool, target, and constraints. No absolute physical PPA number or technology-node sign-off is agreed. |
-| DFI throughput | Full throughput at 1:2; reduced throughput at 1:4 is acceptable | A single scheduler-selection lane remains a starting proposal, but its serializer must support legal one-CK commands and mandatory command pairs. DFI packing and reduced-mode limits must be documented and tested. |
+| DFI throughput | Full throughput at 1:2; reduced throughput at 1:4 is acceptable, using the original draft terminology | Preserve this performance intent, but correct the clock-domain terminology: the draft uses core:CK, whereas supplied DFI 5.0 uses DFI:WCK for LPDDR5 and keeps DFI clock equal to CK. A slower internal scheduler plus a CK-rate DFI boundary is a proposal pending contract and throughput analysis. |
 | Meaning of full throughput | DFI interface bandwidth must match the combined bandwidth of two AXI ports | Match payload capacity in a declared configuration and verify sustained transfer under conditions that can legally sustain that rate. Do not equate this with unconditional saturation of both DRAM channels or sum peak AXI read and write rates as if DRAM were full duplex. |
 | First delivery | RTL verified against simulation models first | Functional and protocol evidence is required; technology-specific synthesis/timing closure and physical sign-off are not prerequisites for this first release. |
 | First-release exclusions | Defer patrol scrubbing, optional RFM extensions, and deep power-down | The latest clarification includes optional RFM in the deferral, with an explicit exception for standard-required behavior. Retain normal power-down, self-refresh, DVFS, inline/link ECC, correction-triggered scrub, and any RFM required by a supported device/operating configuration. |
@@ -34,7 +34,7 @@ This pass checked the command truth-table notes, ACT timing, bank modes and BL32
 
 Table 201 note 4 and section 7.3.1, p226 / PDF p264 require ACT-2 within eight CK of ACT-1 and prohibit issuing another ACT-1 before completing the pair. The addendum A.5 example that sends ACT-2 through the scheduler again needs an explicit deadline guarantee. Figure 94 shows ACT-2 as the origin for tRCD, tRAS, tRC and tRRD, and the destination of the illustrated tRP interval. Timing checks must name the actual command edge, not a generic ACT issue event.
 
-**Recommended correction:** Use CK/edge-aware timing and reserve completion of multi-command operations. Start with adjacent ACT-1/ACT-2 rather than independent re-arbitration. Table 201 note 4 and section 7.3.1 differ in their lists of permitted intervening commands; adjacent pairing avoids depending on that difference. A single scheduler selection may need multiple commands in a DFI cycle. Exact DFI phase representation remains unresolved until the DFI specification is inspected.
+**Recommended correction:** Use CK/edge-aware timing and reserve completion of multi-command operations. Start with adjacent ACT-1/ACT-2 rather than independent re-arbitration. Table 201 note 4 and section 7.3.1 differ in their lists of permitted intervening commands; adjacent pairing avoids depending on that difference. A single slower-scheduler selection may need to reserve multiple external command cycles. The supplied DFI copy describes one 14-bit CA word per CK-rate DFI cycle, as detailed below; the slower-core bridge contract remains unresolved.
 
 ### Split BL32 data and completion tracking
 
@@ -46,7 +46,7 @@ Table 201 note 4 and section 7.3.1, p226 / PDF p264 require ACT-2 within eight C
 
 **Observed standard rule:** Section 7.2.1.2, p194 / PDF p232 distinguishes CAS with WS_WR, WS_RD and WS_FS. Write-sync CAS must be immediately followed by WRITE; read-sync CAS must be immediately followed by READ. Fast-sync CAS is standalone and has separate timing. Section 7.2.1.3, p197 / PDF p235 explicitly forbids an intervening command for the write-sync pair.
 
-**Required refinement:** Replace the universal “sync, wait for WCK ready, then issue RD/WR” model in addendum B.3/B.4 with separate sequences for paired read/write sync and standalone fast sync. Preserve pair adjacency even in reduced-throughput 1:4 mode, and track WCK synchronization validity across power transitions and burst completion. The physical WCK rules do not establish the draft's proposed DFI signal names or controller/PHY ownership.
+**Required refinement:** Replace the universal “sync, wait for WCK ready, then issue RD/WR” model in addendum B.3/B.4 with separate sequences for paired read/write sync and standalone fast sync. Preserve pair adjacency even in reduced-throughput 1:4 mode, and track WCK synchronization validity across power transitions and burst completion. The physical WCK rules alone do not establish DFI ownership. The supplied DFI copy confirms the three signal names and their encoding below, but leaves timing bounds incomplete.
 
 ### Refresh granularity, thermal transitions and self-refresh
 
@@ -72,6 +72,54 @@ Sections 7.5.1–7.5.2, pp284–287 / PDF pp322–325 specify rate-dependent pos
 
 Section 2.2.3.3, p8 / PDF p46 gives 16B as the DRAM reset default, selects other organizations through MR3, permits BG↔16B changes through FSP while idle, and requires reset for transitions to or from 8B. Controller configuration and initialization must distinguish the controller's preferred mode from the DRAM reset state and reject unsupported live changes.
 
+## Supplied DFI reference and review limits
+
+Ajith Jose supplied *DDR PHY Interface, DFI 5.0 Specification*, cover date April 27, 2018, as `scratchpad/uploads/ea823e67-d6fb-47f7-841a-3bc10b90b924/774634393-DDR-PHY-Interface-Specification-v5-0.pdf`. The readable 160-page PDF has SHA-256 `ffe2e764fce70dae4ec8e82ccdcb762acb5e3ea0cb3fe776eaf3fd0df56a84ec`. A companion text file at the same upload path with `.txt` extension has SHA-256 `0879f290f1f8f86ca7d44125e6730e134348f4316974bbdb84db03a008956362`. The PDF was the review source; its tables and figures on pages 33, 38, 72 and 148 were also visually inspected. Both uploads remain external references, not redistributed repository files. Printed and PDF page numbers coincide.
+
+This pass inspected command packing and clock definitions, data timing/validity/rotation, update and ownership handshakes, initialization, frequency change, low power and WCK control. It did not qualify a PHY or exhaustively validate all 160 pages. The cover and page footers identify version 5.0; embedded PDF metadata still says 3.1. That metadata discrepancy alone does not invalidate the contents, but Table 39 on pp72–73 visibly contains `?` minimum/maximum WCK timing entries. Section 3.1.1 calls LPDDR5 CA DDR while the glossary on p158 calls it SDR; JESD209-5C and the explicit 14-bit mapping support the former. Table 17 and section 4.9.1 also differ on the update-acknowledgement window, as recorded below. Treat this as an inspected supplied reference with unresolved entries, not a fully reconciled normative baseline.
+
+### LPDDR5 clock ratio and command packing
+
+**Observed in the supplied DFI copy:** Section 3.1.1, Table 7, p33 packs one LPDDR5 command into a single-phase 14-bit `dfi_address`: rising-edge CA in bits [6:0], falling-edge CA in bits [13:7]. Table 10, p38 explicitly defines LPDDR5 `dfifreq_ratio` as DFI clock:WCK and DFI clock:CK as 1:1. Section 4.10, p108 distinguishes command and data clocks and repeats that separate-clock memories keep the command clock equal to DFI clock. Generic multi-phase command examples for other memory clock arrangements must not override that LPDDR5-specific rule.
+
+**Consequence:** The base's 400 MHz core for CK=800 MHz and its 200 MHz alternative cannot directly be the DFI boundary described by this copy. At the illustrative LPDDR5-6400 point, WCK=3200 MHz and CK=800 MHz imply an 800 MHz DFI clock and DFI:WCK=1:4. Calling a 400 MHz CK/2 boundary “DFI 1:2” is not supported by these clauses. This is a correction to the earlier provisional review as well as to addendum B.1.
+
+**Recommended architecture, not a frozen agreement:** Separate internal scheduler:CK ratios from external DFI:WCK ratios. Evaluate a 400 MHz scheduler (and a reduced-service 200 MHz profile) feeding a shallow 800 MHz command/timing and data adapter. Reserve complete ACT and sync pairs, transfer sufficient look-ahead command information, recheck live legality at issue, and return state/credits across the boundary. A FIFO alone does not establish throughput or resolve feedback latency. Also evaluate a single CK-rate memory engine if the split adds unnecessary complexity. Preserve the two-port AXI payload target and quantify each profile before confirming the clock contract; no 800 MHz physical timing closure is claimed.
+
+For x16 and DFI:WCK=1:4, the ordinary two-beat DFI data word is 32 payload bits; four such words give 128 payload bits per DFI cycle (sections 3.2.4 and 4.10.3; glossary p158). At 800 MHz that is 12.8 GB/s per channel, matching the raw pin calculation. Two 128-bit AXI ports at 400 MHz offer 12.8 GB/s combined; two 256-bit ports at that clock offer 25.6 GB/s. These are capacity calculations, not sustained results; BL32 interleaving, ECC and maintenance still constrain the legal schedule.
+
+### Timing units and read completion
+
+Tables 9, 12, 15 and 18, pp37, 41–42, 46 and 50–51 distinguish command-clock, data-clock and DFI-clock units and identify whether the MC, PHY or system defines each parameter. Addendum B.2's blanket “DFI cycles” and “PHY supplies these” rules are insufficient. Preserve unit and owner metadata in the canonical timing schema; convert with explicit phase/edge semantics, including the `tcmd_lat` relationship where supported. Data parameters cannot simply be counted in slower scheduler cycles.
+
+Sections 3.3.3–3.3.4, pp43–45 permit independent per-slice read returns and nonconsecutive valid cycles within `tphy_rdlat`, with one-to-one enable/valid transfer accounting. Section 4.10.4, p117 requires rotating read-word handling when transfers do not fill the full DFI bus, and resets the word pointer on `dfi_init_start`. Retire a request only after all of its expected words and slices are assembled. Qualify this together with JEDEC split BL32: the generic examples do not themselves specify whether an LPDDR5 PHY reshapes interleaving. A full-bus return profile may simplify rotation only when the supported transfer matrix proves that assumption.
+
+### Updates require idle data paths and correct acknowledgement order
+
+Sections 3.4 and 4.9, pp47–51 and 105–107 require a DFI idle window, including completed writes at the DRAM boundary; `twrdata_delay` participates in the drain condition. Normal ACT/PRE traffic is not permitted during an asserted controller-update window or acknowledged PHY-update window. Any preparatory traffic must complete before ownership transfer. A controller update is an invitation: the PHY may ignore it. If acknowledged, the MC holds its request while acknowledgement is high and waits for acknowledgement to drop before normal completion. The draft's “wait for ack, deassert request, resume” ordering is incorrect for this handshake.
+
+Table 17, p48 requires acknowledgement before `tctrlupd_min`; section 4.9.1, p105 instead describes acknowledgement before `tctrlupd_max`. This is an unresolved inconsistency in the supplied copy. A conservative proposed integration profile requires a participating PHY to acknowledge within the earlier window, but that proposal is not evidence that every PHY does so. Obtain release/errata clarification before claiming generic compliance for this corner.
+
+For PHY updates, use `tphyupd_resp` and the selected `tphyupd_type0..3` bound, include simultaneous-request arbitration, and do not assert `dfi_ctrlupd_req` and `dfi_phyupd_ack` together. Section 3.4 also requires a controller-update request immediately before self-refresh exit. Refresh admission must account for the complete pause, not just detect exhausted credits afterward. Fault recovery and negotiated disconnect behavior still need a complete contract.
+
+### Boot, training and frequency-change ownership
+
+Sections 4.1–4.2, pp75–77 describe PHY-independent training: the PHY performs memory boot/training before asserting `dfi_init_complete`, and transfers known memory state specified by `dfiboot_state`. Refresh starts without credit or debt. The draft must not unconditionally replay a DRAM reset/init sequence after that handover. Keep controller configuration, command hooks and management in scope, but choose and document one coherent boot/refresh ownership contract. Section 4.15, pp138–140 separately describes runtime PHY-master handover; the MC still supplies required refresh commands unless memory was handed over in self-refresh, with the PHY honoring the corresponding forwarding/timing bound.
+
+Section 4.11, pp128–130 requires the PHY to acknowledge frequency change by taking `dfi_init_complete` low within `tinit_start`. Only then does an accepted change proceed; the MC holds the settings stable, completes the clock change, drops `dfi_init_start`, and waits for completion to return high within `tinit_complete`. A request may be ignored and must then be withdrawn. A stale high completion signal is not a new completion. Replace the addendum's simplified sequence and test declined, delayed and failed transitions without losing refresh or queued work.
+
+Section 4.13, p133 similarly permits the PHY to decline a low-power opportunity. Control/data wakeup hints and handshakes are distinct; the hints are not by themselves a hard failure timeout. Define controller recovery bounds separately instead of treating every ignored opportunity as a PHY fault.
+
+### WCK signals are present; some limits remain unresolved
+
+Section 3.12, Tables 38–39, pp72–73 confirms `dfi_wck_en`, `dfi_wck_cs` and `dfi_wck_toggle`, with phase replication and a two-bit toggle encoding for static low, static high, toggle and fast-toggle. This resolves the prior signal-name uncertainty, but not the `?` timing bounds in Table 39. Parameterize only after documenting permitted ranges and their JEDEC/PHY basis; do not translate question marks into invented constants.
+
+Section 4.19, pp147–148 requires WCK disabled at DFI ownership transfer, including initialization, frequency change, PHY master and updates, even for free-running operation. The controller's always-on policy must yield to those transitions and resynchronize when needed. Figure 81 illustrates adjacent sync CAS and READ, consistent with the JEDEC pairing correction.
+
+### Link ECC remains an integration gap
+
+The inspected read/write signal tables define data, mask/DBI, valid and data-not-valid behavior. Generic ECC mentions on pp55 and 62 do not define the LPDDR5 link-ECC transport and encoder/decoder ownership needed by JESD209-5C. A text search found no explicit link-ECC protocol in this copy. Do not equate the optional `dfi_error` interface with command-correlated ECC completion or assume DBI signals may carry ECC under an undocumented convention. Preserve link ECC in scope, but establish a documented PHY-facing capability contract or obtain the applicable DFI clarification before freezing this part of the interface.
+
 ## Findings requiring refinement
 
 ### Burst size, timing units, and DFI issue width
@@ -80,7 +128,7 @@ Base section 2 defaults `BURST_BYTES` to 32; addendum A.1 recommends 64, and C.2
 
 Base section 5.5 uses phase-aware CK counters; addendum A.1 changes timing accounting to two-CK slots. Addendum A.1 says 1:4 issues two slots per core cycle, whereas B.1 limits v0.1 to one command per core cycle. The owner's reduced-throughput decision resolves the scope choice, but counter progression, command placement, and data timing still need one consistent model. A single command lane must not imply incorrectly halving the passage of DRAM time at 1:4.
 
-JEDEC now resolves the command-duration question: commands are one CK, with separate rules for multi-command operations. DFI phase alignment remains unresolved. Rebuild the slot-budget calculation from those separate facts rather than retaining the two-CK representation. Reduced throughput never permits violating command-pair adjacency or maximum spacing.
+JEDEC now resolves the command-duration question: commands are one CK, with separate rules for multi-command operations. The supplied DFI copy also changes the assumed clock boundary and packs both CA edges into one address word. Rebuild the command budget and internal-to-DFI timing from those facts rather than retaining the two-CK representation. Reduced throughput never permits violating command-pair adjacency or maximum spacing.
 
 ### End-to-end bandwidth
 
@@ -88,7 +136,7 @@ Base section 2.1 gives 12.8 GB/s raw bandwidth per x16 channel, or 25.6 GB/s acr
 
 The owner's clarification makes combined AXI payload bandwidth the reference, rather than requiring every configuration to saturate both DRAM channels. Retain the draft's 128-bit default. Two 256-bit ports remain an allowed higher-bandwidth configuration; widening is not required merely to compensate for a configuration that already meets its host rate.
 
-For same-direction traffic, calculate `B_AXI = sum(AXI_DATA_W[p] / 8 * f_AXI[p])` and compare it with the usable DFI payload rate across the enabled channels. DFI widths must count actual payload transferred in one controller cycle, without double-counting phases. Exact DFI packing remains unverified. At the illustrative 400 MHz AXI clock, two 128-bit ports require 12.8 GB/s; two 256-bit ports require 25.6 GB/s. These are calculated interface rates, not measured sustained memory bandwidth. The chosen channel count, rank/bank distribution, and clock ratios must make a claimed full-rate configuration feasible.
+For same-direction traffic, calculate `B_AXI = sum(AXI_DATA_W[p] / 8 * f_AXI[p])` and compare it with the usable DFI payload rate across the enabled channels. Calculate payload transferred per DFI cycle and per internal core cycle separately, without double-counting phases. The supplied DFI copy establishes the basic CA/data width conventions above; the slower-core bridge and LPDDR5 burst/capability profile remain unqualified. At the illustrative 400 MHz AXI clock, two 128-bit ports require 12.8 GB/s; two 256-bit ports require 25.6 GB/s. These are calculated interface rates, not measured sustained memory bandwidth. The chosen channel count, rank/bank distribution, and clock ratios must make a claimed full-rate configuration feasible.
 
 Proposed verification procedure: run saturated, aligned, full-burst, same-direction streams on both ports, balanced across enabled channels with enough outstanding requests and row locality to support the rate. Warm up the pipeline, disable optional throttling, and declare ECC and maintenance settings. Require no avoidable controller-induced bubbles against an independent legal-command reference schedule. Run refresh-enabled, mixed-direction, random, ECC, backpressure, and 1:4 cases separately and account for their legitimate overhead. Retain the owner's full-rate requirement; quantitative windows, tolerances, and the reference schedule remain to be qualified against the actual protocol before acceptance. Do not claim equal read-plus-write aggregate throughput on the shared DRAM data bus.
 
@@ -128,11 +176,12 @@ Addendum B.5 allows update pauses to consume refresh credit, then forces refresh
 
 ## Inputs and decisions still needed before freezing implementation
 
-- An authorized DFI 5.0 copy or access, plus inspection of the relevant AXI/APB references and revisions. JESD209-5C is supplied; complete the remaining protocol traceability against it. Only the specific findings above are checked, not every `[VERIFY]` item.
+- Resolve the supplied DFI copy's WCK timing placeholders and update-acknowledgement inconsistency through a released reference/errata or an explicitly justified compatible integration contract. Complete JEDEC/DFI traceability and inspect relevant AXI/APB references; receipt of both PDFs does not close every `[VERIFY]` item.
+- Freeze distinct scheduler, DFI, CK and WCK clock contracts and qualify the proposed adapter. Preserve the original higher-throughput/reduced-throughput intent without treating core:CK and DFI:WCK as interchangeable.
 - A generic DFI/DRAM verification strategy and accessible models or VIP. The repository currently contains none. Define supported DFI options, configurable latency bounds, and responsibility for PHY training without assuming a vendor-specific model.
 - Quantified throughput, latency, fairness, and PPA evaluation conditions. Preserve technology independence; state the limits of any technology-independent or generic-library estimate.
 - A verified configuration matrix. The owner has resolved the optional-feature scope above. Choose queue/ECC-cache sizes and other reversible implementation details through analysis within that scope.
 
-The [DFI publisher's site](https://ddr-phy.org/) was inspected on 2026-11-05. Its [specification download link](https://ddr-phy.org/pages/2351641-Page-301) redirected to sign-in, and no authorized credential profile was available in this session. The public announcement is useful context but cannot validate the detailed protocol. An authorized standard copy or access is still needed. JESD209-5C is now supplied as recorded above. AXI/APB normative references and an independent LPDDR5 model have not yet been inspected; the repository contains no such model.
+Both requested PDFs are now supplied. The [DFI publisher's download page](https://ddr-phy.org/pages/2351641-Page-301) was rechecked on 2026-11-05 and still redirected to sign-in; no authorized credential profile was available to inspect a released copy or errata there. The inspected upload supports the findings above but does not resolve its own incomplete entries. Relevant AXI/APB normative references and an independent LPDDR5 model have not yet been inspected; the repository contains no such model.
 
 These confirmed directions can be captured in a working Definition. It must remain incomplete until the required protocol references are inspected, the verification source is established, and the outstanding interface and acceptance details above are resolved. RTL execution has not started.

@@ -63,18 +63,16 @@ def check(p: dict, e, fast_sync: bool = False) -> None:
     d = p["dfi_wck"]
     phy = p["phy_half_wck"]
     origin = e.command - e.cas
-    expected_cs = tuple(
-        (
-            origin
-            + 2 * d["tphy_rdcslat" if read else "tphy_wrcslat"]
-            + 2 * i
-            + (16 if r == 4 and e.beats == 32 and i >= 8 else 0),
-            e.rank,
-        )
-        for i in range(e.beats // 2)
-    )
-    if e.data_cs != expected_cs:
-        raise ValueError("DFI data chip-select timing/identity")
+    # DFI Tables 12/15, PDF pp42/46: csgap + dfirw_length is a
+    # continuous assertion minimum, not just the valid-word strobes. The
+    # admitted implementation supports zero extra rank gap only. For split
+    # BL32 it conservatively holds CS through the entire command data span.
+    if d["tphy_rdcsgap"] != 0 or d["tphy_wrcsgap"] != 0:
+        raise ValueError("nonzero data chip-select gap unsupported")
+    cs_begin = origin + 2 * d["tphy_rdcslat" if read else "tphy_wrcslat"]
+    span = e.beats + (16 if r == 4 and e.beats == 32 else 0)
+    if e.data_cs_end != cs_begin + span or e.data_cs != tuple((at, e.rank) for at in range(cs_begin, e.data_cs_end, 2)):
+        raise ValueError("DFI data chip-select continuous duration/identity")
     if len(e.dfi_enable) != e.beats // 2:
         raise ValueError("DFI enable count")
     for i, en in enumerate(e.dfi_enable):
@@ -94,6 +92,30 @@ def check(p: dict, e, fast_sync: bool = False) -> None:
             raise ValueError("write data path/enable")
     if not read and e.data[-1] + 1 - e.dfi_enable[0] > 2 * d["twrdata_delay"]:
         raise ValueError("false write drain")
+
+
+def check_data_cs_sequence(p: dict, events: list[tuple[int, object]]) -> None:
+    """Check shifted standalone waveforms at rank-change boundaries.
+
+    Offsets are DFI CAS origins in half-WCK, in command order. The restricted
+    method-1 policy requires full WCK disable and completed CS holds before
+    fresh synchronization on another rank. Same-rank overlapped holds merge
+    naturally; this is a CS/rank oracle, not full command/bank legality.
+    """
+    previous = []
+    last_origin = -1
+    for origin, event in events:
+        if type(origin) is not int or origin < 0 or origin < last_origin or origin % (2 * p["ratio"]):
+            raise ValueError("CS sequence origin/order/CK phase")
+        check(p, event)
+        for offset, old in previous:
+            if old.rank != event.rank:
+                if origin + event.cas < offset + old.disabled:
+                    raise ValueError("rank change before WCK disable")
+                if origin + event.data_cs[0][0] < offset + old.data_cs_end:
+                    raise ValueError("rank change before data CS deassertion")
+        previous.append((origin, event))
+        last_origin = origin
 
 
 @dataclass

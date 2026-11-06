@@ -16,6 +16,7 @@ COMMANDS: list[dict] = []
 SHAPING_COMMIT = "252648f79786d740c6518abfdb58a325e70af500"
 INITIAL_COMMIT = "b46072841f1a8e89bb110ee2ed578af6fc80dd0a"
 PREDECESSOR_COMMIT = "441e24c847bd909aaa297ffa3928440b45843c22"
+REVIEWED_COMMIT = "8fb3e4dce57bd0b6c2ef02d4ccb8efe20c2e4f47"
 ACCEPTED_DOCUMENTS = {
     "lpddr5_mc_microarch_spec.md": "0d05f3cd2fe858ba30d4a87d89a117989fbbf6d7a5889cf18ae12da09d437ba6",
     "lpddr5_mc_microarch_addendum_v0.2.md": "7aaff327b6f857a37a7a66e89c7614318205dd103d905f840734ddd68bbc6d4b",
@@ -98,7 +99,8 @@ def main() -> None:
     check_docs()
     run(["git", "merge-base", "--is-ancestor", INITIAL_COMMIT, SHAPING_COMMIT], env)
     run(["git", "merge-base", "--is-ancestor", SHAPING_COMMIT, PREDECESSOR_COMMIT], env)
-    run(["git", "merge-base", "--is-ancestor", PREDECESSOR_COMMIT, "HEAD"], env)
+    run(["git", "merge-base", "--is-ancestor", PREDECESSOR_COMMIT, REVIEWED_COMMIT], env)
+    run(["git", "merge-base", "--is-ancestor", REVIEWED_COMMIT, "HEAD"], env)
     run(["git", "diff", "--check"], env)
     run([sys.executable, "ips/lpddr5_mc/tools/generate.py", "--check"], env)
     run(
@@ -159,6 +161,7 @@ def main() -> None:
             "initial_commit": INITIAL_COMMIT,
             "retained_shaping_commit": SHAPING_COMMIT,
             "retained_predecessor_commit": PREDECESSOR_COMMIT,
+            "retained_reviewed_commit": REVIEWED_COMMIT,
         },
         "accepted_document_sha256": ACCEPTED_DOCUMENTS,
         "commands": COMMANDS,

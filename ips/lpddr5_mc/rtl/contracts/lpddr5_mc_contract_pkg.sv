@@ -126,6 +126,8 @@ package lpddr5_mc_contract_pkg;
     logic [3:0][31:0] data;
     logic [3:0][3:0] mask;
     logic [3:0][1:0] enable;
+    // CS is a level, including BL32 split-gap slots. Keep the selected rank
+    // through the final data-clock slot; qualified csgap values are zero.
     logic [3:0][1:0] cs;
     // Integration extension: two beats x two byte lanes per word.
     logic [3:0][3:0] link_parity;
@@ -148,6 +150,7 @@ package lpddr5_mc_contract_pkg;
 
   typedef struct packed {
     logic [3:0][1:0] enable;
+    // Same continuous hold contract as write CS, independently of enables.
     logic [3:0][1:0][1:0] cs;
   } lpddr5_mc_read_request4_t;
 

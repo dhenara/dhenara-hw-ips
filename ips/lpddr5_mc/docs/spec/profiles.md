@@ -24,6 +24,14 @@ A paired CAS is followed by its access exactly one CK later. The standalone fast
 
 Reused synchronization is allowed only while its maximum window is live, on the same rank and direction. Always-on mode maintains continuous fast toggling until WS_OFF and at least five CK before full disable. Rank transitions use method 1: full stop, fresh synchronization on the new rank. Zero `twck_toggle_cs/rd/wr` means these synchronized-static/multi-CS restart paths are unsupported; it never means they are instantaneous.
 
+## Data chip-select duration and rank transitions
+
+DFI 5.0 Tables 12/15 (PDF pp42/46) define read/write `tphy_*csgap` in DFI data-clock cycles. They add rank-change transaction spacing and require continuous CS assertion for at least `csgap + dfirw_length`. These reference profiles support **zero only** for both gap parameters; any nonzero value rejects profile admission, waveform checking and canonical configuration activation. The 16-bit register representation is retained, with this restriction documented in its canonical field descriptions. Supporting a PHY with nonzero gaps requires extending and qualifying both duration and transaction-spacing behavior first.
+
+CS asserts at the command plus `tphy_*cslat`, independently of read/write enable. The selected rank remains continuously asserted through the final word slot. `Waveform.data_cs` records every asserted data-clock slot, including idle slots between split halves; `data_cs_end` is the explicit first deasserted edge in half-WCK units. BL16 holds eight data clocks, unsplit BL32 sixteen, and BG split BL32 twenty-four, including its eight-clock split gap. This conservative split hold exceeds the ordinary sixteen-word minimum; sparse valid-word samples do not describe a continuous CS level. The independent checker rejects early/late deassertion, missing split-gap slots, shifted assertions and wrong ranks.
+
+`check_data_cs_sequence` checks shifted standalone waveforms in DFI CAS order. Before changing rank, all earlier CS holds must end and the previous rank's WCK must be fully disabled before the fresh CAS synchronization. Same-direction and cross-direction changes obey both conditions. This temporal CS check complements the JEDEC synchronization oracle; it is not a complete bank/command legality checker. The qualification report includes all four direction combinations for each profile. The same-rank performance witnesses retain their existing command/data schedules and bandwidth accounting.
+
 ## Numeric timing basis
 
 | Contract | Source, one-based PDF pages | Representation / check |
@@ -37,6 +45,7 @@ Reused synchronization is allowed only while its maximum window is live, on the 
 | ZQ / MR / FSP | JEDEC pp72–77, 212, 377–387 | ZQCAL1200, ZQLAT24; MRD12, MRR4/8, MRW8; long FSP guard201 and six CK clock guards |
 | Link ECC, DBI/DM | JEDEC pp311–314, 490–510, Tables 331/332 pp507/508 | Source matrices, per-byte/group transport, correction before inverse transforms |
 | DFI timing, rotation and ownership | DFI pp33, 37–46, 48–55, 64–77, 105–109, 116–129, 138–154 | Per-word/slice completion, low/high frequency acknowledgement, sampled management policy and owner transfer |
+| Data CS duration/rank gap | DFI Tables 12/15, pp42/46 | Zero-gap admission; continuous split-gap hold with explicit deassertion; separate rank-transition checks |
 | Host protocols | Arm IHI0022H A3.4/A6/A7; IHI0024E Chapters 2/3 | Burst, error, exclusive/order and APB strobe/error models |
 
 The exact external identities and inspected coverage are retained in [reference-sources.json](../../config/reference/reference-sources.json). These references support the stated restricted contract. This is not an exhaustive conformance audit or authorization to redistribute the standards.

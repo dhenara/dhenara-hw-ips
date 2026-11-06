@@ -16,7 +16,7 @@ Use this document and its linked pages for the corrected design. The preserved [
 | Payload feasibility | [Performance criteria](performance.md), `performance.py` | Independent periodic bank/CA/pin/host ledger, maintenance and checker faults | Feasible schedule; no measured RTL performance |
 | Reproduction | [Owning checks](../verification/contracts.md), `tools/`, explicit `files.f` | Generation consistency, Python tests, C header compilation, SV assertions, source hashes/links | CI execution and clean-host portability separately reported |
 
-The source preserves initial commit `b46072841f1a8e89bb110ee2ed578af6fc80dd0a`, shaping ancestor `252648f79786d740c6518abfdb58a325e70af500` and predecessor `441e24c847bd909aaa297ffa3928440b45843c22`. No moving upstream replaces the assigned source. The source-integrity check verifies this ancestry and all three accepted document digests.
+The source preserves initial commit `b46072841f1a8e89bb110ee2ed578af6fc80dd0a`, shaping ancestor `252648f79786d740c6518abfdb58a325e70af500`, predecessor `441e24c847bd909aaa297ffa3928440b45843c22` and reviewed contract commit `8fb3e4dce57bd0b6c2ef02d4ccb8efe20c2e4f47`. No moving upstream replaces the assigned source. The source-integrity check verifies this ancestry and all three accepted document digests.
 
 ## Supported configuration
 
@@ -25,6 +25,8 @@ The proposed matrix permits one/two AXI4 ports, one/two independent full-x16 cha
 The digital operating points keep CK/DFI at 800 MHz: WCK:CK=4 at 6400 Mb/s in BG mode, or WCK:CK=2 at 3200 Mb/s in 16B mode. There are three staging FSP banks. Other densities, byte/8B modes, data copy, enhanced/non-target ODT, DVFSC and arbitrary CK rates require new traced profiles before admission. This bounds the delivered fixtures rather than waiving later controller requirements.
 
 Inline ECC is permitted at either ratio. Read/write link ECC is permitted only at ratio four with both discovered DRAM support and the documented raw parity PHY extension. Read link ECC excludes read DBI. Write DBI and masking use the ordered transform in the integrity contract. Profile admission never trusts a user-supplied “qualified” flag. All timings are explicit, range checked and independently evaluated before traffic admission.
+
+Both read/write data CS gap values must be zero in the qualified profiles; nonzero values reject activation. CS remains continuously asserted through split BL32 gaps with an explicit deassertion edge, and rank changes wait for old CS holds and full WCK disable. Posted writes separate physical completion, response eligibility, stable BVALID and actual acknowledgement. Destructive recovery clears volatile maintenance/ownership state while retaining first-fault diagnostics and rejecting stale training/profile epochs. The linked profile, integrity and lifecycle checks exercise these boundaries.
 
 ## Resolved design choices
 

@@ -277,9 +277,12 @@ class IntegrityTests(unittest.TestCase):
             e = WriteEpoch(posted)
             e.add(99, 0, 30)
             e.add(100, 1, 31)
-            self.assertEqual(len(e.responses), 2 if posted else 0)
+            self.assertEqual(e.responses, {})
             with self.assertRaises(ValueError):
                 e.poll(30)
+            if posted:
+                self.assertEqual(e.acknowledge(99, 30), "OKAY")
+                self.assertEqual(e.acknowledge(100, 31), "OKAY")
             e.poll(32)
             with self.assertRaises(ValueError):
                 e.settle(51, 128, 8, 12)
@@ -789,8 +792,8 @@ class ClosureTests(unittest.TestCase):
         for posted in (False, True):
             e = WriteEpoch(posted)
             e.add(1, 0, 20)
-            self.assertEqual(e.fail(), {1: "OKAY" if posted else "SLVERR"})
-            self.assertEqual(e.late_error, posted)
+            self.assertEqual(e.fail(), {1: "SLVERR"})
+            self.assertFalse(e.late_error)
             self.assertEqual(e.tags, [])
 
     def test_profile_to_actual_read_word_completion(self):

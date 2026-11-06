@@ -3167,7 +3167,7 @@
           "width": 16,
           "access": "rw",
           "unit": "WCK",
-          "description": "value"
+          "description": "Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32."
         }
       ]
     },
@@ -3186,7 +3186,7 @@
           "width": 16,
           "access": "rw",
           "unit": "WCK",
-          "description": "value"
+          "description": "Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32."
         }
       ]
     },
@@ -4820,7 +4820,7 @@
           "width": 16,
           "access": "rw",
           "unit": "WCK",
-          "description": "value"
+          "description": "Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32."
         }
       ]
     },
@@ -4839,7 +4839,7 @@
           "width": 16,
           "access": "rw",
           "unit": "WCK",
-          "description": "value"
+          "description": "Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32."
         }
       ]
     },
@@ -6473,7 +6473,7 @@
           "width": 16,
           "access": "rw",
           "unit": "WCK",
-          "description": "value"
+          "description": "Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32."
         }
       ]
     },
@@ -6492,7 +6492,7 @@
           "width": 16,
           "access": "rw",
           "unit": "WCK",
-          "description": "value"
+          "description": "Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32."
         }
       ]
     },

@@ -239,57 +239,130 @@ class InlineStore:
 
 @dataclass
 class WriteEpoch:
+    """Rank-local link-write epoch, including AXI response backpressure.
+
+    ``pin_end`` is the supplied physical-completion witness, in CK. Advancing
+    time makes a posted response eligible only at that edge. ``responses`` is
+    internal eligibility, ``offered`` is stable BVALID, and ``acknowledged`` is
+    the actual B handshake. Neither admission nor MR43 settlement implies one.
+    """
+
     posted: bool = False
     limit: int = 16
     tags: list[int] = field(default_factory=list)
     responses: dict[int, str] = field(default_factory=dict)
+    offered: dict[int, str] = field(default_factory=dict)
+    acknowledged: dict[int, str] = field(default_factory=dict)
+    pin_ends: dict[int, int] = field(default_factory=dict)
+    completed: set[int] = field(default_factory=set)
+    now: int = 0
+    fault: bool = False
     late_error: bool = False
     first_ck: int | None = None
     last_pin_end: int = 0
     poll_at: int | None = None
 
+    def advance(self, at: int) -> None:
+        if type(at) is not int or at < self.now:
+            raise ValueError("write epoch time reversal")
+        self.now = at
+        if not self.fault:
+            for tag, end in self.pin_ends.items():
+                if at >= end and tag not in self.completed:
+                    self.completed.add(tag)
+                    if self.posted:
+                        self.responses[tag] = "OKAY"
+
     def add(self, tag: int, at: int, pin_end: int) -> None:
-        if tag in self.tags or tag in self.responses or self.poll_at is not None or len(self.tags) >= self.limit:
+        if (
+            self.fault
+            or tag in self.tags
+            or tag in self.responses
+            or tag in self.acknowledged
+            or self.poll_at is not None
+            or not 1 <= self.limit <= 16
+            or len(self.tags) >= self.limit
+        ):
             raise ValueError("write epoch admission")
         if self.first_ck is not None and at - self.first_ck > 256:
             raise ValueError("epoch poll deadline")
-        if pin_end < at:
+        if type(pin_end) is not int or pin_end < at:
             raise ValueError("write completion")
+        self.advance(at)
         self.first_ck = at if self.first_ck is None else self.first_ck
         self.tags.append(tag)
+        self.pin_ends[tag] = pin_end
         self.last_pin_end = max(self.last_pin_end, pin_end)
-        if self.posted:
-            self.responses[tag] = "OKAY"
+        self.advance(at)
+
+    def offer(self, tag: int, at: int) -> str:
+        """Assert BVALID; the value cannot change while BREADY is low."""
+        self.advance(at)
+        if tag not in self.responses:
+            raise ValueError("write response not eligible/already acknowledged")
+        self.offered.setdefault(tag, self.responses[tag])
+        return self.offered[tag]
+
+    def acknowledge(self, tag: int, at: int) -> str:
+        """Complete BVALID/BREADY, optionally offering on the same edge."""
+        value = self.offer(tag, at)
+        self.acknowledged[tag] = value
+        del self.offered[tag]
+        del self.responses[tag]
+        return value
 
     def poll(self, at: int) -> None:
-        if not self.tags or at < self.last_pin_end or at - self.first_ck > 256:
+        if (
+            self.fault
+            or self.poll_at is not None
+            or not self.tags
+            or at < self.last_pin_end
+            or at - self.first_ck > 256
+        ):
             raise ValueError("MR43 before drain/late")
+        self.advance(at)
         self.poll_at = at
 
-    def settle(self, at: int, mr43: int, tmrr: int, tmrw: int) -> dict[int, str]:
-        if self.poll_at is None or at < self.poll_at + tmrr + tmrw:
-            raise ValueError("MR43 clear delay")
-        error = bool(mr43 & 128)
-        if self.posted:
-            self.late_error |= error
-        else:
-            self.responses.update({tag: "SLVERR" if error else "OKAY" for tag in self.tags})
-        result = {tag: self.responses[tag] for tag in self.tags}
-        self.tags = []
+    def _outcome(self, tag: int, error: bool) -> str:
+        # An exposed OKAY cannot be retracted, even if BREADY has not yet
+        # arrived. An internal, unoffered response can still report SLVERR.
+        exposed = self.acknowledged.get(tag, self.offered.get(tag))
+        if exposed is not None:
+            self.late_error |= error and exposed == "OKAY"
+            return exposed
+        value = "SLVERR" if error else "OKAY"
+        self.responses[tag] = value
+        return value
+
+    def _close(self) -> None:
+        self.tags.clear()
+        self.pin_ends.clear()
+        self.completed.clear()
         self.first_ck = None
         self.poll_at = None
         self.last_pin_end = 0
+
+    def settle(self, at: int, mr43: int, tmrr: int, tmrw: int) -> dict[int, str]:
+        if self.fault or tmrr < 1 or tmrw < 1 or self.poll_at is None or at < self.poll_at + tmrr + tmrw:
+            raise ValueError("MR43 clear delay")
+        if type(mr43) is not int or not 0 <= mr43 < 256:
+            raise ValueError("MR43 value")
+        self.advance(at)
+        error = bool(mr43 & 128)
+        result = {tag: self._outcome(tag, error) for tag in self.tags}
+        self._close()
         return result
 
-    def fail(self) -> dict[int, str]:
-        """Ownership/retention loss completes strict epochs as failed."""
-        if self.posted:
-            self.late_error = bool(self.tags) or self.late_error
-        else:
-            self.responses.update({tag: "SLVERR" for tag in self.tags})
-        result = {tag: self.responses[tag] for tag in self.tags}
-        self.tags.clear()
-        self.first_ck = None
-        self.poll_at = None
-        self.last_pin_end = 0
+    def fail(self, at: int | None = None) -> dict[int, str]:
+        """Fault the epoch; preserve exposed B, fail all unoffered responses.
+
+        Omitting ``at`` faults at the current sampled time. No timer or late
+        completion can reopen this instance; destructive recovery creates a
+        new epoch owner after the old host responses have been settled.
+        """
+        self.advance(self.now if at is None else at)
+        affected = set(self.tags) | self.responses.keys()
+        result = {tag: self._outcome(tag, True) for tag in sorted(affected)}
+        self.fault = True
+        self._close()
         return result

@@ -14,6 +14,7 @@ from contracts.configuration import example_configuration, register_image, valid
 from contracts.performance import check, witness  # noqa: E402
 from contracts.profiles import admit, waveform  # noqa: E402
 from contracts.waveform_oracle import check as check_waveform  # noqa: E402
+from contracts.waveform_oracle import check_data_cs_sequence  # noqa: E402
 
 
 def check_benchmark_profile(benchmark: dict) -> None:
@@ -71,6 +72,15 @@ def qualification() -> dict:
                         if profile is profiles[0] and rank == 0:
                             traces.append({"fast_sync": fast, **asdict(event)})
         qualified.append({"name": profile["name"], "digital_waveform_cases": count})
+        rank_cases = 0
+        for first_direction in ("read", "write"):
+            for next_direction in ("read", "write"):
+                first = waveform(profile, first_direction, 32, rank=0)
+                second = waveform(profile, next_direction, 32, rank=1)
+                next_cas = max(first.disabled - second.cas, first.data_cs_end - second.data_cs[0][0])
+                check_data_cs_sequence(profile, [(0, first), (next_cas, second)])
+                rank_cases += 1
+        qualified[-1]["data_cs_rank_transition_cases"] = rank_cases
     config = example_configuration()
     validate_register_image(register_image(schema, profiles[0], config), profiles[0], config, schema)
     benchmark = next(

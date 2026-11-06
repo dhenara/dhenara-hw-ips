@@ -153,8 +153,8 @@ Shared addresses are absolute. Channel offsets add `0x10000 + channel * 0x10000`
 | FSP0_TPHY_RDLAT | channel / 0x1094 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
 | FSP0_TPHY_WRCSLAT | channel / 0x1098 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
 | FSP0_TPHY_RDCSLAT | channel / 0x109c | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
-| FSP0_TPHY_WRCSGAP | channel / 0x10a0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
-| FSP0_TPHY_RDCSGAP | channel / 0x10a4 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
+| FSP0_TPHY_WRCSGAP | channel / 0x10a0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32. |
+| FSP0_TPHY_RDCSGAP | channel / 0x10a4 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32. |
 | FSP0_TCTRLUPD_MIN | channel / 0x10a8 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
 | FSP0_TCTRLUPD_MAX | channel / 0x10ac | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
 | FSP0_TPHYUPD_RESP | channel / 0x10b0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
@@ -240,8 +240,8 @@ Shared addresses are absolute. Channel offsets add `0x10000 + channel * 0x10000`
 | FSP1_TPHY_RDLAT | channel / 0x1494 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
 | FSP1_TPHY_WRCSLAT | channel / 0x1498 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
 | FSP1_TPHY_RDCSLAT | channel / 0x149c | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
-| FSP1_TPHY_WRCSGAP | channel / 0x14a0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
-| FSP1_TPHY_RDCSGAP | channel / 0x14a4 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
+| FSP1_TPHY_WRCSGAP | channel / 0x14a0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32. |
+| FSP1_TPHY_RDCSGAP | channel / 0x14a4 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32. |
 | FSP1_TCTRLUPD_MIN | channel / 0x14a8 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
 | FSP1_TCTRLUPD_MAX | channel / 0x14ac | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
 | FSP1_TPHYUPD_RESP | channel / 0x14b0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
@@ -327,8 +327,8 @@ Shared addresses are absolute. Channel offsets add `0x10000 + channel * 0x10000`
 | FSP2_TPHY_RDLAT | channel / 0x1894 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
 | FSP2_TPHY_WRCSLAT | channel / 0x1898 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
 | FSP2_TPHY_RDCSLAT | channel / 0x189c | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
-| FSP2_TPHY_WRCSGAP | channel / 0x18a0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
-| FSP2_TPHY_RDCSGAP | channel / 0x18a4 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): value |
+| FSP2_TPHY_WRCSGAP | channel / 0x18a0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32. |
+| FSP2_TPHY_RDCSGAP | channel / 0x18a4 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw WCK): Additional rank-change CS hold in DFI data clocks. The qualified reference profile requires zero; nonzero values reject activation. CS stays continuous through split BL32. |
 | FSP2_TCTRLUPD_MIN | channel / 0x18a8 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
 | FSP2_TCTRLUPD_MAX | channel / 0x18ac | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |
 | FSP2_TPHYUPD_RESP | channel / 0x18b0 | 0x00000000 | inactive_or_quiesced | software / snapshot | VALUE (0:16 rw CK): value |

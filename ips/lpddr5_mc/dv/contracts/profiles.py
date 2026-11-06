@@ -179,6 +179,8 @@ def admit(p: dict) -> None:
     d = p["dfi_wck"]
     m = p["management_ck"]
     t = p["dram_ck"]
+    if d["tphy_rdcsgap"] or d["tphy_wrcsgap"]:
+        raise ValueError("nonzero data chip-select gap unsupported")
     if phy["trained_phase"] != 0:
         raise ValueError("fixture requires trained zero phase")
     if phy["command"] != m["tctrl_delay"] * 2 * r or m["tcmd_lat"] != 0:
@@ -254,6 +256,7 @@ class Waveform:
     dfi_data: tuple[int, ...]
     returned: tuple[int, ...]
     data_cs: tuple[tuple[int, int], ...]
+    data_cs_end: int
 
 
 def waveform(p: dict, direction: str, beats: int, rank: int = 0, fast_sync: bool = False) -> Waveform:
@@ -284,6 +287,10 @@ def waveform(p: dict, direction: str, beats: int, rank: int = 0, fast_sync: bool
     disabled = (ws_off - cas if ws_off is not None else command - cas) + 2 * w["twck_dis"] + phy["wck"]
     offsets = [2 * i + (16 if r == 4 and beats == 32 and i >= 8 else 0) for i in range(beats // 2)]
     dfi_command = command - cas
+    cs_start = dfi_command + 2 * d["tphy_rdcslat" if direction == "read" else "tphy_wrcslat"]
+    # Continuous assertion through the final word slot, including a BG BL32
+    # split gap. End is an explicit half-open deassertion edge, not a word.
+    cs_end = cs_start + offsets[-1] + 2
     en = tuple(dfi_command + 2 * d["trddata_en" if direction == "read" else "tphy_wrlat"] + x for x in offsets)
     driven = tuple(x + 2 * d["tphy_wrdata"] for x in en) if direction == "write" else ()
     # Each word returns on a CK sampling edge after its last physical beat and
@@ -313,7 +320,6 @@ def waveform(p: dict, direction: str, beats: int, rank: int = 0, fast_sync: bool
         en,
         driven,
         returned,
-        tuple(
-            (dfi_command + 2 * d["tphy_rdcslat" if direction == "read" else "tphy_wrcslat"] + x, rank) for x in offsets
-        ),
+        tuple((at, rank) for at in range(cs_start, cs_end, 2)),
+        cs_end,
     )

@@ -5,7 +5,7 @@ clock change cannot extend a deadline. Conservative policy: no postponed REF,
 no low-temperature interval extension, no RFM exemption, paired-bank counters.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from fractions import Fraction
 
 MULTIPLIERS = {
@@ -169,14 +169,19 @@ class Lifecycle:
     target_fsp: int | None = None
     maximum: int = 0
     active_fsp: int = 0
+    retired_profile_epoch: int = 0
+    fault_diagnostics: list[dict] = field(default_factory=list)
 
     def boot(self, at: int, *, complete: bool, boot_state: str, training_epoch: int, profile_epoch: int) -> None:
         if (
             self.state != "RESET"
             or not complete
             or boot_state not in ("IDLE", "SELF_REFRESH")
+            or type(at) is not int
+            or at < 0
             or training_epoch != self.boot_epoch
-            or profile_epoch <= 0
+            or type(profile_epoch) is not int
+            or not self.retired_profile_epoch < profile_epoch < 1 << 32
             or not self.wck_disabled
         ):
             raise ValueError("boot/training/profile handover")
@@ -315,6 +320,28 @@ class Lifecycle:
         self.retention_deadline_ps = min(x + self.maintenance.interval for x in self.maintenance.last_refresh) * 1250
 
     def fail(self) -> None:
+        if self.state != "FAULT":
+            # Retain evidence, separate from the volatile state that reset
+            # must clear. asdict copies nested counters and rank sets.
+            self.fault_diagnostics.append(
+                {
+                    "boot_epoch": self.boot_epoch,
+                    "profile_epoch": self.profile_epoch,
+                    "training_epoch": self.training_epoch,
+                    "state": self.state,
+                    "owner": self.owner,
+                    "active_fsp": self.active_fsp,
+                    "kind": self.kind,
+                    "target_fsp": self.target_fsp,
+                    "maximum": self.maximum,
+                    "transfer_at": self.transfer_at,
+                    "retention_deadline_ps": self.retention_deadline_ps,
+                    "write_end": self.write_end,
+                    "pending": set(self.pending),
+                    "ecc_dirty": self.ecc_dirty,
+                    "maintenance": asdict(self.maintenance),
+                }
+            )
         self.state = "FAULT"
         self.trusted = False
         self.owner = "UNKNOWN"
@@ -322,6 +349,9 @@ class Lifecycle:
     def recover(self, host_settled: bool, reset_confirmed: bool) -> None:
         if self.state != "FAULT" or not host_settled or not reset_confirmed:
             raise ValueError("destructive recovery prerequisites")
+        if self.boot_epoch >= (1 << 32) - 1:
+            raise ValueError("boot epoch exhausted; coordinated reset required")
+        self.retired_profile_epoch = max(self.retired_profile_epoch, self.profile_epoch)
         self.state = "RESET"
         self.owner = "PHY"
         self.trusted = False
@@ -329,8 +359,19 @@ class Lifecycle:
         self.boot_epoch += 1
         self.training_epoch = None
         self.pending.clear()
+        self.write_end = 0
         self.ecc_dirty = False
         self.wck_disabled = True
+        self.retention_deadline_ps = None
+        self.transfer_at = None
+        self.kind = None
+        self.target_fsp = None
+        self.maximum = 0
+        self.active_fsp = 0
+        # These capability inputs describe the selected device, not retained
+        # refresh state. Fresh boot still attests discovery/MRs/training.
+        old = self.maintenance
+        self.maintenance = Maintenance(mr27=old.mr27, mr57=old.mr57, ranks=old.ranks)
 
 
 def check_low_power(response: int, wakeup: int, ack: list[bool], release: int) -> str:

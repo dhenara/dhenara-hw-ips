@@ -1,26 +1,30 @@
 # LPDDR5 memory controller
 
-Technology-independent memory-controller IP in the specification stage. The supplied drafts target LPDDR5-6400, AXI4 request ports, a DFI 5.0 interface to an external PHY, and APB configuration registers. They describe independent one- or two-port and one- or two-channel configurations, scheduling and QoS, refresh, power management, frequency changes, and ECC.
-
-The [contract investigation](docs/spec/contracts.md) adds limited executable reference models, draft SystemVerilog types and a representation smoke. There is no controller RTL, complete DRAM/DFI model, formal proof, synthesis result or measured controller performance. The interface-critical qualification gaps are listed explicitly; no ordinary-traffic PHY profile is admitted.
+Technology-independent AXI4-to-DFI controller IP with a proposed, executable contract foundation. The source includes canonical interfaces/register generation,32 numeric generic-PHY fixtures, independent protocol/data/integrity/lifecycle models and periodic bandwidth schedules. Production controller RTL, complete multi-clock regression, synthesis and vendor-PHY qualification remain pending.
 
 ## Start here
 
-- [Specification index and import checks](docs/spec/README.md)
-- [Incomplete contract investigation and qualification gaps](docs/spec/contracts.md)
-- [Reference check commands and evidence limits](docs/verification/contracts.md)
-- [Clocking and finite schedule investigation](docs/architecture/clocking.md)
-- [Draft v0.1 microarchitecture specification](docs/spec/lpddr5_mc_microarch_spec.md)
-- [Draft v0.2 scheduler, DFI, and CSR addendum](docs/spec/lpddr5_mc_microarch_addendum_v0.2.md)
-- [Review findings and scope decisions](docs/spec/review.md)
-- [Repository conventions](../../docs/development/repository-layout.md)
+- [Contract status and proposed corrected agreement](docs/spec/contracts.md)
+- [Supported profiles and source traceability](docs/spec/profiles.md)
+- [Canonical interfaces](docs/spec/interfaces.md)
+- [AXI ordering and ECC](docs/spec/host-ecc.md)
+- [Configuration, lifecycle and recovery](docs/spec/control.md)
+- [Performance and fairness criteria](docs/spec/performance.md)
+- [Generated register/programming reference](docs/programming/registers.md)
+- [Reproduction and evidence limits](docs/verification/contracts.md)
+- [Clock architecture](docs/architecture/clocking.md)
+- [Preserved specifications and review](docs/spec/README.md)
 
-## Current direction
+The proposed matrix is one/two AXI ports, one/two independent x16 channels, one/two identical 8Gb ranks, 64/128/256-bit host data, 32/64-byte granules and bounded queues. Numeric digital fixtures keep CK/DFI at 800MHz with WCK:CK/4 (6400 BG) or2 (3200 16B). Link ECC requires a documented raw parity PHY extension at ratio 4; inline ECC has explicit reserved-capacity/RMW/scrub rules. Missing profiles or lost ownership prevent traffic.
 
-The owner confirmed a generic PHY-facing design, technology-independent implementation with power, performance, and area as optimization goals, and simulation-verified RTL as the first delivery. The higher-throughput profile must match the combined payload bandwidth of the two AXI ports in a declared feasible configuration; a reduced-throughput profile is acceptable. The original drafts call these 1:2 and 1:4 relative to CK. The supplied DFI 5.0 copy instead keeps DFI clock equal to CK and defines the LPDDR5 ratio relative to WCK, so the clock-domain contract must be corrected without changing the performance intent. The review records the measurement proposal and remaining protocol prerequisites. The current recommendation is to evaluate a single CK-rate command/timing engine against the slower-selector alternative; its buffering, feedback and sustained throughput remain unqualified. The DFI reference also contains unresolved WCK timing entries. Generic compatibility does not establish qualification with every PHY.
+The default two 128-bit AXI400 ports offer 12.8GB/s combined in one direction. A periodic model schedule demonstrates that target including rows, refresh, MR4 and ZQ; CK/4 selection demonstrates 11.5712GB/s. These are schedule-feasibility results, not measured controller throughput. The recommended engine runs at CK with slower selection enables and immediate pair completion.
 
-The selected [DFI source-gap policy](docs/spec/review.md#engineering-disposition-of-dfi-source-gaps) uses the earlier update-acknowledgement window and requires explicit WCK timing profiles checked against DRAM-side timing. Missing profiles prevent traffic; an update timeout never permits unsafe automatic resumption. This is an engineering integration choice, not publisher errata or completed PHY qualification.
+Run the owning flow from the repository root:
 
-The first release excludes patrol scrubbing, optional RFM extensions, and deep power-down. It retains inline/link ECC, correction-triggered scrub, normal refresh, normal power-down, self-refresh, DVFS, and any refresh management required by supported device/operating configurations. JESD209-5C makes RFM conditional on device capabilities and refresh rate; optional deferral cannot disable mandatory protection. The agreed burst default is 64 bytes, retaining 32-byte support.
+```sh
+export DHENARA_AGENT_TOOL_STORAGE_ROOT=/absolute/path/to/disposable-tools
+make -f ips/lpddr5_mc/Makefile prepare
+make -f ips/lpddr5_mc/Makefile check REPORT=/absolute/path/to/evidence/contracts.json
+```
 
-PHY design and PHY training algorithms remain outside the supplied controller scope; controller-side handshakes and training hooks are described in the drafts. The supplied JESD209-5C has been reviewed in selected sections, revealing corrections to command duration/pairing, split BL32 transfers, WCK sync, refresh and link ECC. A targeted review of the supplied DFI 5.0 copy adds corrections to CA packing, timing units, per-slice data completion, boot ownership, updates and frequency changes. The review records the evidence and remaining `[VERIFY]` items, source inconsistencies and integration gaps. Use this material to refine the implementation agreement before starting RTL.
+The first release retains normal refresh/ZQ/thermal handling, mandatory RFM, inline/link ECC, correction-triggered scrub, power-down/self-refresh and frequency/FSP management. PHY circuitry/training algorithms, patrol scrub, optional RFM extensions, deep power-down, LPDDR5X and technology-specific sign-off are excluded. The lead must review this foundation and the owner must accept the corrected agreement before dependent RTL release.

@@ -1,12 +1,12 @@
-# Reproducing the contract experiments
+# Contract qualification and reproduction
 
-This flow checks the available reference models and draft type representation. It does not instantiate a controller, qualify a vendor PHY or close the incomplete [implementation contracts](../spec/contracts.md).
+The owning flow qualifies canonical source, digital PHY fixtures, transaction/lifecycle reference models and independent schedule feasibility. It compiles interface types and generated software constants. It does not simulate a production controller, qualify a vendor PHY or prove real CDC/electrical behavior. The [contract index](../spec/contracts.md) and [benchmark](../spec/performance.md) define those boundaries.
 
-## Tools and setup
+## Tools and commands
 
-The exercised environment is Linux amd64, Debian 12 userspace, Python 3.13.18, GNU make and g++ 12.2.0. The flow pins Debian's Verilator 5.006-3 binary package, SHA-256 `97239c73375f4e3c6d5e04afd7afdcae133e1b25bf0d876f81af04f09961c6bf`. This older distro version was selected for this Debian environment and the limited package/type smoke; it is not asserted to be the newest Verilator. Its compatibility must be re-evaluated for the later production regression and required language features. No proprietary simulator or host Docker capability is needed.
+The exercised environment is Linux amd64, Debian 12 userspace, Python 3.13.18, GNU make, gcc/g++ 12.2.0 and pinned Verilator 5.006-3. The Debian package SHA-256 is `97239c73375f4e3c6d5e04afd7afdcae133e1b25bf0d876f81af04f09961c6bf`. This distro version is qualified for the present package/assertion smoke; production regression language/model requirements need their own qualification. Ruff 0.17.4 is pinned with its wheel hash in requirements-dev.txt. No proprietary simulator, licensed model or Docker daemon is needed.
 
-Run from the repository root:
+From a clean repository with its full Git history:
 
 ```sh
 export DHENARA_AGENT_TOOL_STORAGE_ROOT=/absolute/path/to/disposable-tools
@@ -14,26 +14,32 @@ make -f ips/lpddr5_mc/Makefile prepare
 make -f ips/lpddr5_mc/Makefile check REPORT=/absolute/path/to/evidence/contracts.json
 ```
 
-Preparation uses Python's standard library, HTTPS access to the recorded Debian package, and `dpkg-deb` to extract it without privilege. It verifies the package checksum before extraction. The check resolves the extracted simulator explicitly and rejects a different version. Compiler output and bytecode remain beneath the supplied tool-storage directory. `REPORT` must be an explicit evidence path; use a separate location for each retained run. Preparation also installs the pinned Ruff 0.17.4 wheel with pip into tool storage for Python lint and formatting; the behavioral tests themselves use only the standard library. PDF inspection tools were used during source review but are not test dependencies.
+Preparation downloads/checks/extracts the pinned Debian binary without privilege and installs Ruff into tool storage. It requires HTTPS, dpkg-deb, pip, make and a compatible C++ compiler. The check explicitly resolves these installed tools, rejects different Python/Ruff/Verilator versions, puts compilation/bytecode/cache output in tool storage and preserves reports in the explicit evidence destination. It refuses to overwrite reports. A failed subprocess propagates failure; only a completely passing flow writes the final report.
 
-Run `make -f ips/lpddr5_mc/Makefile format` for local Python lint fixes and formatting. The owning check is non-mutating for authored source and checks Ruff lint/format separately. It checks relative Markdown file links (not anchors or authenticated external links), all three accepted-document hashes, retained shaping ancestry and `git diff --check`; runs the focused Python tests; compiles the explicit SystemVerilog list with assertions and warnings as errors; runs its representation smoke; and writes a JSON report only after all steps succeed. It refuses to overwrite an existing report so that a failed rerun cannot be mistaken for an earlier success. A failed command propagates failure. CI runs the same entry point; CI execution itself has not been observed in this environment.
+Use `make -f ips/lpddr5_mc/Makefile format` for Python format/lint fixes. Generate artifacts with `make -f ips/lpddr5_mc/Makefile generate`; the check uses `--check` and never rewrites source. CI invokes the same prepare/check entry point. Current reports describe commands actually executed; repository CI configuration alone is not evidence of a remote CI run.
 
-## Behavior and sensitivity
+The check verifies initial/shaping/predecessor ancestry, all three accepted-document hashes, relative Markdown file links, whitespace and generated products. It runs the Python suite and numeric qualification, compiles/runs a C11 header consumer with warnings as errors, and compiles/runs the explicit SV source list with assertions and warnings as errors. The generated register API intentionally waives only UNUSEDPARAM inside that generated package because consumers use subsets of its constants; width/typing/assertion warnings remain failures. Missing tests never count as passes.
 
-| Test family | Positive evidence | Deliberate failures |
+## Behavior and fault sensitivity
+
+| Family | Positive cases | Deliberate failures / limitations |
 | --- | --- | --- |
-| WCK | Three numeric row cases, paired reads/writes, BL16/32, ideal half/full-rate edges | Every principal event moved early/late by half a WCK, altered path delay, missing/extra edges, short postamble, premature disable, missing/invalid offsets, unsupported profiles |
-| Update | Ignored opportunity, legal early acknowledgement and earliest/latest registered releases | Acknowledgement at/after minimum, unsolicited/stuck/reasserted acknowledgement, completion beyond release margin, undrained/insufficient-refresh admission |
-| Link ECC | Each of 137 data and 22 DMI single-bit locations corrected; all 9,547 two-bit pairs detected; 128 seeded payloads per code; source column anchors and parity beat placement | Corrupted payload/check columns, including check-bit errors; no claim about triple errors |
-| Read completion | Two interleaved BL32 identities, words/slices, two/four actual word lanes, cyclic wrap, skew, gaps, DNV and explicit pointer reset | Wrong/noncontiguous word rotation, early/late/missing/extra valid, duplicate enable metadata, repeated snapshots and resynchronization before drain |
-| DVFS handshake | Sampled low-then-high acknowledgement, unchanged-high decline and stable target settings | Boundary/late acknowledgement, completion timeout/early high, settings changed, premature clock change/release, request reassertion and WCK enabled at transfer |
-| Schedule | Single-group and interleaved BG row-hit occupancy | Illegal same-group spacing, duplicate identities, cross-group pin collision |
-| Representation | Full 16-bit IDs, 40-bit addresses, 64-bit tags, 16-bit ages, CA edge packing, max granule data/strobes and word/slice dimensions | Compile/lint/assertion failures stop the flow; this is not a protocol simulation |
+| PHY profiles |32 combinations; both directions, BL16/32, both ranks, paired/standalone sync, complete WCK/data/CS paths | Missing/overflowing fields, incompatible capabilities/MRs, early/late paths, missing edges, split/CS identity, short postamble/disable; ideal digital phase only |
+| Temporal completion | Same-rank reuse/expiry, fresh rank/owner restart, two/four-word rotation, skew/gaps, DNV, profile-derived enables and actual returned words | Premature half/slice retirement, duplicate/missing/early/late valid, wrong rotation, stale reset; no real PHY |
+| CA and masking | Literal Table201 anchors, ACT row/bank and access operands, MRW fixed opcode, MWR16 and tCCDMW | Invalid MWR32, column alignment, bank/row bounds, pair deadline/collision; no command serializer RTL |
+| Link/inline ECC | All single/double matrix faults, seeded payloads, full x16 groups, DBI/mask transforms, SECDED72, RMW/scrub/version/cache/epochs | Corrupted parity/data/DMI, reserved identities, poisoned partial physical writes, stale scrub, premature poll/ack; no triple-error guarantee |
+| Host | Full burst forms, narrow/unaligned/strobes, same-ID and cross-port hazards, exclusives, errors and complete fatal settlement | AW-before-W hazard, W order/count errors, 4KB/overflow, unsolicited response/early recovery; transaction-level reference |
+| APB/CDC protocol | Strobes, reset/locks, shared/broadcast commands, atomic all-channel commit, hardware status snapshots | Invalid access, stale/partial ack, overflow without partial side effect, stale image; metastability/reset timing requires RTL checks |
+| Lifecycle | Boot/training epochs, thermal intervals/derating, REFpb, mandatory RFM, extra SRX refresh, long SR, update/PM/FSP/master contracts | Late/stuck/ignored handshakes, false write drain, refresh budget/retention loss, stale high DVFS completion, unknown owner/state |
+| Scheduling/performance | Ages/classes/weights/replay, byte caps, fairness including trace tail; periodic reads/writes for CK/CK2/CK/4 selection | Stale/duplicate picks, empty direction, cap overshoot, starvation, missing REF/MR4/ZQ, early PRE/OFF, split collisions, row wrap |
+| Representation | Maximum IDs/addresses/data/strobes, raw parity/WCK phases, DFI ratio conversion, generated C/SV constants and invalid parameters | Compile/lint/assertion failure; no functional controller test |
 
-The random seed is 2095. The ECC payload seed is deterministic, and the location sweep is exhaustive for one- and two-bit faults in each single codeword. The independently supplied matrix is shared reference data; the checker is not copied from production RTL because no production algorithm exists. This does not replace later vectors against the actual encoder/decoder and PHY transport.
+The deterministic random seed is 2095. Source matrices are shared JEDEC-derived reference data, while syndrome checking and waveform/resource oracles are independent of future production RTL. Some earlier focused experiments remain under `config/reference/`; they keep their narrower docstrings and invalid-traffic guard. Ordinary integration uses `config/contracts/profiles.json`, full pin qualification and atomic activation instead of those legacy experiment inputs.
 
-## Evidence interpretation and next checks
+## Reports and clean reproduction
 
-Reports identify the source commit, dirty-worktree status, source-file hashes, initial/shaping ancestry, accepted-document digests, tool versions, executed commands and durations, seed and explicit qualification limits. A dirty development report is iteration evidence only. The final review must use the committed source and a clean reproduction. The build cache is reusable disposable output, not evidence. Retain the command log and final report with the submitted source.
+`contracts.json` records the exact commit, dirty flag, source-file SHA-256s, tools, commands/durations, seed, ancestry and accepted-document digests. Its adjacent `contracts-qualification.json` records all profile names/counts, profile-source hash, representative half-WCK traces, canonical configuration, selected benchmark profile and six periodic schedule reports. Test output lists every executed test. These are model/representation results; controller implementation and vendor qualification are explicitly false.
 
-The next qualification must add the fast-sync/reuse/rank/ownership WCK matrix; full command/data-path timing and enable generation; host and APB/CDC semantics; inline/link ECC transaction lifetimes; mandatory refresh/RFM/thermal behavior; boot/PM/DVFS failure and recovery; complete register/configuration generation; and a periodic legal schedule including maintenance and feedback. Coverage of these items is currently absent, not implicitly passed.
+A development report from a dirty tree is iteration evidence only. Submit source only after committing it and rerunning the whole flow clean. Reproduce that commit in an independent local clone with complete ancestry and an isolated build directory (`BUILD_SUBDIR=clean-reproduction`). Retain both runs' reports and command logs; compare committed source identities and measured schedules. A clean clone using the same installed pinned tools proves source reproducibility in that environment, not independent host/tool installation. Remote CI and a fresh host remain distinct evidence.
+
+Candidate evidence is retained under the ignored `ips/lpddr5_mc/evidence/` area. It is not compiler cache or deliverable source. Later RTL contributors must add owning bus/channel/CDC tests and run these present checks unchanged; final qualification runs the full combined supported matrix, fault recovery and actual RTL performance criteria.

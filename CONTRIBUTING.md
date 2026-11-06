@@ -6,7 +6,7 @@ Use [the repository layout](docs/development/repository-layout.md) when adding a
 
 Create `ips/<lower_snake_case_name>/` and add it to the root IP catalog. Its README should identify its purpose, current maturity, interfaces, supported configurations, dependencies, and available build and verification commands. Create implementation subdirectories as needed; a placeholder directory does not establish implemented capability.
 
-Keep imported specifications versioned and distinguish drafts, reviewed requirements, implemented behavior, and verified results. For LPDDR5, preserve the two supplied originals listed in its [specification index](ips/lpddr5_mc/docs/spec/README.md); track proposed corrections in the linked review until a revised specification is agreed.
+Keep imported specifications versioned and distinguish drafts, reviewed requirements, implemented behavior, and verified results. For LPDDR5, preserve the two supplied originals listed in its [specification index](ips/lpddr5_mc/docs/spec/README.md); use its linked current contracts for proposed corrections and keep the historical review intact until a revised specification is agreed.
 
 ## Source and checks
 

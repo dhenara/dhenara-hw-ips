@@ -19,3 +19,6 @@ __pycache__/
 *.swp
 *.swo
 *~
+
+# Selected run evidence is retained with a candidate, outside source commits.
+/ips/lpddr5_mc/evidence/

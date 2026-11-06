@@ -19,6 +19,8 @@ sha256sum -c SHA256SUMS
 
 When a consolidated specification is agreed, identify its version, superseded documents, and resolved decisions here. Keep the original references available in Git history and distinguish normative requirements from implementation proposals.
 
+The [contract investigation](contracts.md) is the current incomplete working refinement. It contains numeric reference experiments, targeted traceability, proposed interface/recovery choices and the remaining qualification gaps. It does not supersede the accepted requirements or establish an interface freeze. Run the owning [contract checks](../verification/contracts.md) to reproduce the available evidence.
+
 ## External references
 
 The owner supplied JESD209-5C (June 2023) on 2026-11-05 as `scratchpad/uploads/cd6d9f71-884f-4f5f-a8c5-2383b8c6cede/JESD209-5C.pdf`, SHA-256 `76457d4019dc40c57b550c10dc3416cfae4d6ea1984de8f5c42e3e34d00ed031`. It is retained as an external reference and is not copied into this repository. The [review](review.md#supplied-jedec-reference-and-review-limits) records inspected sections, corrections, and the limits of that targeted review. LPDDR5X is not added to scope.

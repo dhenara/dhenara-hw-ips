@@ -1,6 +1,6 @@
 # Hardware IP repository conventions
 
-This page defines the initial repository organization for maintainers adding independent hardware IPs. The repository currently contains the LPDDR5 documentation and scaffold only.
+This page defines the initial repository organization for maintainers adding independent hardware IPs. LPDDR5 has documentation, limited reference-contract experiments and draft types; controller implementation remains pending.
 
 ## Organize by IP
 

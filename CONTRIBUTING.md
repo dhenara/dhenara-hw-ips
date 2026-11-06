@@ -21,4 +21,4 @@ For documentation-only changes, check relative links, `git diff --check`, and an
 git diff --check
 ```
 
-No EDA flow, simulator, formatter, CI pipeline, or release process has been qualified yet. Add a documented, non-mutating check command and CI integration with the first implemented flow. Keep proprietary tool installations, licensed external models, generated outputs, and credentials out of source commits; record authorized external dependencies and their versions instead.
+LPDDR5 now has a scoped [reference-contract check flow](ips/lpddr5_mc/docs/verification/contracts.md), including a pinned simulator recipe and CI entry point. Its representation smoke does not qualify the future controller regression. No repository-wide EDA release flow or formatter convention is established. Keep proprietary tool installations, licensed external models, generated outputs, and credentials out of source commits; record authorized external dependencies and their versions instead.

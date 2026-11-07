@@ -63,6 +63,8 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     if(dut.backend.epoch_fault) for(int r=0;r<2;r++) for(int j=0;j<16;j++)
       if(dut.backend.epochs.members_q[r][j].valid) $display("member rank=%0d slot=%0d tag=%0d physical=%0d",r,j,dut.backend.epochs.members_q[r][j].identity.tag,dut.backend.epochs.members_q[r][j].physical);
     if(status_value.fault) $display("control thermal=%0d MR4=%0d REF=%0d RFM=%0d budget=%0d urgent=%0d regstate=%0d reservereg=%0d",dut.thermal,mr4_count,refresh_count,rfm_count,dut.refresh_budget,dut.maintenance_urgent,dut.register_state_q,dut.register_reserve);
+    if(status_value.fault) $display("maintenance ck=%0d lastref=%0d/%0d pair=%0d/%0d pages=%0d rows=%0d pin=%0d wck=%0d",
+      dut.maintenance.ck_q,dut.maintenance.last_refresh_q[0],dut.maintenance.last_refresh_q[1],dut.maintenance.next_pair_q[0],dut.maintenance.next_pair_q[1],dut.pages_closed,dut.rows_closed,dut.pin_drained,dut.wck_disabled);
     assert(!status_value.fault) else $fatal(1,"connected channel fault CK%0d life=%0d code=%0d maint=%h reg=%0d data=%0d sched=%0d epoch=%0d wck=%0d",
       cycles,status_value.state,status_value.fault_code,dut.maintenance_diagnostic,dut.register_fault_q,dut.backend.data_fault,dut.backend.scheduler_fault,dut.backend.epoch_fault,dut.backend.wck_fault);
   end

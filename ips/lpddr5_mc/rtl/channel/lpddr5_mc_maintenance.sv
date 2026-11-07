@@ -29,13 +29,13 @@ module lpddr5_mc_maintenance (
   logic running_q;
   logic [63:0] ck_q, last_refresh_q[2], last_pair_q[2], thermal_deadline_q, last_mr4_q, last_zq_q;
   logic [31:0] raa_q[2][8];
-  logic [1:0] self_refresh_q, extra_q, thermal_debt_q;
+  logic [1:0] self_refresh_q, extra_q, thermal_debt_q, all_bank_round_q;
   logic [2:0] next_pair_q[2];
   logic pending_q, pending_rank_q, pending_rfm_q, pending_all_q, pending_extra_q;
   logic [2:0] pending_pair_q;
   logic [31:0] interval_value, new_interval, imt, maximum, decrement, reserve_value, poll_lead;
   logic candidate, candidate_rank, candidate_rfm, candidate_extra;
-  logic periodic_due, rfm_due;
+  logic periodic_due, rfm_due, all_bank_due;
   logic [63:0] budget_value, candidate_age, rank_age;
   logic unused_profile;
   assign unused_profile=^{profile_i,event_i};
@@ -90,7 +90,7 @@ module lpddr5_mc_maintenance (
       ? 32'(effective_profile_o.dram_ck_trfc_pb)+7*32'(effective_profile_o.dram_ck_tpbr2pbr)+8
       : 32'(effective_profile_o.dram_ck_trfc_ab)+8;
     activate_allowed_o='0; candidate=0; candidate_rank=0; candidate_rfm=0; candidate_extra=0;
-    periodic_due=0; rfm_due=0; candidate_age=0; rank_age=0; budget_value=64'hffffffff;
+    periodic_due=0; rfm_due=0; all_bank_due=0;candidate_age=0; rank_age=0; budget_value=64'hffffffff;
     for(int r=0;r<2;r++) begin
       if(r<int'(profile_i.ranks)) begin
         for(int p=0;p<8;p++) begin
@@ -101,7 +101,8 @@ module lpddr5_mc_maintenance (
           if(ck_q-last_refresh_q[r]>=64'(interval_value)) budget_value=0;
           else if(64'(interval_value)-(ck_q-last_refresh_q[r])<budget_value) budget_value=64'(interval_value)-(ck_q-last_refresh_q[r]);
           periodic_due=thermal_debt_q[r] || ck_q-last_refresh_q[r]+64'(reserve_value)>=64'(interval_value)
-            || next_pair_q[r]!=0;
+            || next_pair_q[r]!=0 || all_bank_round_q[r];
+          if(periodic_due && !effective_per_bank_o) all_bank_due=1;
           rfm_due=0;
           for(int p=0;p<8;p++) if(profile_i.mr27[0] && raa_q[r][p]+1>=maximum) rfm_due=1;
           // Interleave ranks by their last issued pair, rather than holding
@@ -132,12 +133,12 @@ module lpddr5_mc_maintenance (
   end
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if(!rst_ni) begin
-      ck_q<=0; running_q<=0; self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;
+      ck_q<=0; running_q<=0; self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0;
       pending_q<=0; pending_rank_q<=0; pending_rfm_q<=0; pending_all_q<=1; pending_pair_q<=0; pending_extra_q<=0;
       thermal_o<=9; thermal_deadline_q<=0; fault_o<=0; diagnostic_o<=0; last_mr4_q<=0; last_zq_q<=0;
       for(int r=0;r<2;r++) begin last_refresh_q[r]<=0; last_pair_q[r]<=0; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
     end else if(destructive_reset_i) begin
-      running_q<=0; self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0; pending_q<=0;
+      running_q<=0; self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0; pending_q<=0;
       thermal_o<=9; thermal_deadline_q<=0; fault_o<=0; last_mr4_q<=ck_q; last_zq_q<=ck_q;
       for(int r=0;r<2;r++) begin last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
     end else begin
@@ -147,9 +148,15 @@ module lpddr5_mc_maintenance (
         for(int r=0;r<2;r++) begin last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; end
       end
       if(running_q && !fault_o) begin
+        // Keep all-bank periodic service in one rank group. Independently
+        // staggered ranks can otherwise overlap REF recovery forever at a
+        // hot interval, denying the global pin/page idle boundary for MR4.
+        // Pull in each non-SR rank once, and discharge only on actual REF.
+        if(all_bank_round_q==0 && all_bank_due)
+          all_bank_round_q<=(2'b11>>(2-int'(profile_i.ranks))) & ~self_refresh_q;
         if(!pending_q && candidate) begin
           pending_q<=1; pending_rank_q<=candidate_rank; pending_rfm_q<=candidate_rfm;
-          pending_all_q<=candidate_extra || candidate_rfm || !effective_per_bank_o; pending_extra_q<=candidate_extra; pending_pair_q<=next_pair_q[candidate_rank];
+          pending_all_q<=candidate_extra || candidate_rfm || !effective_per_bank_o || all_bank_round_q[candidate_rank]; pending_extra_q<=candidate_extra; pending_pair_q<=next_pair_q[candidate_rank];
         end
         if(event_i.row_opened) begin
           if(!activate_allowed_o[event_i.rank_index][event_i.bank[2:0]]) begin
@@ -169,6 +176,7 @@ module lpddr5_mc_maintenance (
           if(self_refresh_exit_i[r]) begin self_refresh_q[r]<=0; extra_q[r]<=1; last_refresh_q[r]<=ck_q; end
           if(external_refresh_i[r]) begin
             last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; thermal_debt_q[r]<=0; next_pair_q[r]<=0;
+            all_bank_round_q[r]<=0;
             if(pending_q && pending_rank_q==1'(r)) pending_q<=0;
             for(int p=0;p<8;p++) raa_q[r][p]<=raa_q[r][p]>imt ? raa_q[r][p]-imt : 0;
           end
@@ -188,7 +196,10 @@ module lpddr5_mc_maintenance (
             last_pair_q[pending_rank_q]<=ck_q;
             if(pending_all_q || pending_pair_q==7) begin
               if(pending_extra_q) extra_q[pending_rank_q]<=0;
-              else begin last_refresh_q[pending_rank_q]<=ck_q; thermal_debt_q[pending_rank_q]<=0; end
+              else begin
+                last_refresh_q[pending_rank_q]<=ck_q; thermal_debt_q[pending_rank_q]<=0;
+                if(pending_all_q) all_bank_round_q[pending_rank_q]<=0;
+              end
             end
             if(!pending_extra_q) next_pair_q[pending_rank_q]<=pending_all_q ? 3'd0 : pending_pair_q+1;
           end

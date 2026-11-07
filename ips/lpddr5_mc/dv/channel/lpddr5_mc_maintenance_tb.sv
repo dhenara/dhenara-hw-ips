@@ -3,7 +3,7 @@ module lpddr5_mc_maintenance_tb;
   import lpddr5_mc_channel_pkg::*;
   logic clk=0,rst_n=0,reset_maintenance=0,start=0,per_bank=0,temperature_valid=0,sr_request=0;
   logic [4:0] temperature=9,thermal;
-  logic [1:0] sr_enter=0,sr_exit=0;
+  logic [1:0] sr_enter=0,sr_exit=0,external_refresh=0;
   logic request_valid,request_ready=0,request_rank,request_rfm,request_all;
   logic [2:0] request_pair;
   logic [1:0][7:0] allowed;
@@ -19,10 +19,10 @@ module lpddr5_mc_maintenance_tb;
     .self_refresh_request_i(sr_request),.request_valid_o(request_valid),.request_ready_i(request_ready),.request_rank_o(request_rank),.request_rfm_o(request_rfm),
     .request_all_o(request_all),.request_pair_o(request_pair),.activate_allowed_o(allowed),.urgent_o(urgent),.fault_o(fault),.extra_pending_o(extra),
     .refresh_budget_o(budget),.effective_per_bank_o(effective_per_bank),.effective_profile_o(effective),.mr4_request_o(mr4_request),.zq_request_o(zq_request),.mr4_done_i(mr4_done),.zq_done_i(zq_done),
-    .thermal_o(thermal),.diagnostic_o(diagnostic),.external_refresh_i(2'b0));
+    .thermal_o(thermal),.diagnostic_o(diagnostic),.external_refresh_i(external_refresh));
   task automatic tick; #1; clk=1; #1; clk=0; #1; endtask
   task automatic reset;
-    rst_n=0; tick(); rst_n=1; event_value='0; sr_enter=0; sr_exit=0; sr_request=0; temperature_valid=0;
+    rst_n=0; tick(); rst_n=1; event_value='0; sr_enter=0; sr_exit=0; external_refresh=0;sr_request=0; temperature_valid=0;
     per_bank=0; request_ready=0; start=1; mr4_done=0; zq_done=0; tick(); start=0;
   endtask
   task automatic wait_request;
@@ -69,6 +69,16 @@ module lpddr5_mc_maintenance_tb;
       assert(!effective_per_bank) else $fatal(1,"infeasible hot REFpb round admitted code=%0d",code_value);
       wait_request();assert(request_all && !request_rfm) else $fatal(1,"hot all-bank fallback");
     end
+    // A PHY refresh can leave rank deadlines far apart. All-bank service
+    // must pull the other populated rank into the same periodic round;
+    // otherwise overlapping recovery windows can starve exclusive MR4.
+    reset();repeat(500) tick();external_refresh=2;tick();external_refresh=0;
+    wait_request();assert(request_rank==0 && request_all) else $fatal(1,"skewed round first rank");
+    request_ready=1;tick();request_ready=0;
+    repeat(8) begin tick();if(request_valid) break;end
+    assert(request_valid && request_rank==1 && request_all && !request_rfm)
+      else $fatal(1,"staggered all-bank refresh failed to group ranks");
+    request_ready=1;tick();request_ready=0;tick();assert(!urgent && !fault) else $fatal(1,"grouped round settlement");
     profile.ranks=1;
     // SR hold suspends external retention. Exit requires a separate extra REF.
     reset(); sr_enter=1; tick(); sr_enter=0; repeat(4000) tick();

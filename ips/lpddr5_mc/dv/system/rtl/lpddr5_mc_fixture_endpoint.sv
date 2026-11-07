@@ -83,4 +83,3 @@ module lpddr5_mc_fixture_endpoint #(
   lpddr5_mc_observer #(.WIDTH($bits(lpddr5_mc_axi_b_t))) b_check(clk_i,rst_ni,b_valid_o,b_ready_i,b_o);
   lpddr5_mc_observer #(.WIDTH($bits(lpddr5_mc_axi_read_t))) r_check(clk_i,rst_ni,r_valid_o,r_ready_i,r_o);
 endmodule
-

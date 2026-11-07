@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[4]
 IP = REPO / "ips/lpddr5_mc"
+FOUNDATION = "8fefc83619f66eb89a6522727adeed797a4cc4c2"
 
 
 def main() -> None:
@@ -135,7 +136,8 @@ def main() -> None:
         bad = run([binary, "+bad_stability"], "sensitivity.log", expected_failure=True)
         if "ready/valid payload changed while stalled" not in bad:
             raise ValueError("negative fixture failed for an unexpected reason")
-        run(["git", "diff", "--check"], "whitespace.log")
+        run(["git", "merge-base", "--is-ancestor", FOUNDATION, "HEAD"], "foundation-ancestry.log")
+        run(["git", "diff", "--check", FOUNDATION], "whitespace.log")
         if not args.skip_foundation:
             run(
                 [

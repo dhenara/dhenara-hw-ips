@@ -119,6 +119,54 @@ module apb_tb;
     check(active_image[0] == held_image && active_image[1] == cfg_image[1], "published image differs");
   endtask
 
+  task automatic check_decline;
+    lpddr5_mc_register_image_t [1:0] previous_image;
+    logic [31:0] previous_epoch, declined_sequence;
+    previous_image = active_image;
+    previous_epoch = epoch;
+    write_reg(18'h20, 1);
+    wait(cfg[0].prepare);
+    repeat(2) @(negedge pclk);
+    held_sequence = cfg[0].epoch;
+    declined_sequence = held_sequence;
+    check(held_sequence > previous_epoch, "declined publication reused sequence");
+    send_ack(2'b01, LPDDR5_MC_CONFIG_DECLINE, held_sequence, 0);
+    repeat(5) @(negedge pclk);
+    check(busy && !cfg_good && !fault && !cfg[0].commit && epoch == previous_epoch,
+        "partial decline published or resumed admission");
+    send_ack(2'b10, LPDDR5_MC_CONFIG_DECLINE, held_sequence, 0);
+    check(cfg_good && !fault && !busy && epoch == previous_epoch && active_image == previous_image,
+        "unanimous normal decline lost old profile");
+    publish(7);
+    check(epoch > declined_sequence, "declined publication sequence was reused");
+
+    write_reg(18'h20, 1);
+    wait(cfg[0].prepare);
+    repeat(2) @(negedge pclk);
+    held_sequence = cfg[0].epoch;
+    send_ack(2'b01, LPDDR5_MC_CONFIG_PREPARE, held_sequence);
+    send_ack(2'b10, LPDDR5_MC_CONFIG_DECLINE, held_sequence, 0);
+    check(fault && !cfg_good && cfg[0].abort_request && !cfg[0].commit,
+        "mixed FSP outcome resumed without proved rollback");
+    repeat(2) @(negedge pclk);
+    send_ack(2'b11, LPDDR5_MC_CONFIG_ABORT, held_sequence);
+    @(negedge pclk); recovery = 1;
+    @(negedge pclk); recovery = 0;
+
+    // A decline cannot manufacture a valid initial operating point.
+    write_reg(18'h20, 1);
+    wait(cfg[0].prepare);
+    repeat(2) @(negedge pclk);
+    held_sequence = cfg[0].epoch;
+    send_ack(2'b11, LPDDR5_MC_CONFIG_DECLINE, held_sequence, 0);
+    check(fault && !cfg_good && cfg[0].abort_request, "decline restored an invalid old profile");
+    repeat(2) @(negedge pclk);
+    send_ack(2'b11, LPDDR5_MC_CONFIG_ABORT, held_sequence);
+    @(negedge pclk); recovery = 1;
+    @(negedge pclk); recovery = 0;
+    publish(7);
+  endtask
+
   // Checks command delivery at its actual mailbox handshake, separately from
   // command completion or channel ownership changes.
   always @(posedge pclk) begin
@@ -256,10 +304,28 @@ module apb_tb;
     write_reg(18'h1c, 32'h20);
     check(irq, "IRQ mask gating");
     write_reg(18'h18, 32'h20);
+    // Repeated ordinary images must not replay a delivered notification.
+    // A later new CE uses a fresh event record even when the bit repeats.
+    status[0].events = 0;
+    status[0].error_valid = 0;
+    repeat(3) begin
+      @(negedge pclk); status_valid = 1;
+      @(negedge pclk); status_valid = 0;
+    end
+    read_reg(18'h18, read_data);
+    check(!read_data[5] && !irq, "ordinary snapshot replayed cleared error event");
+    read_reg(18'h10258, read_data);
+    check(read_data == 2, "ordinary snapshot recounted corrected error");
+    read_reg(18'h10240, read_data);
+    check(read_data == 32'h12345678, "ordinary snapshot replaced held error detail");
+    status[0].events = 13'h20;
+    status[0].error_valid = 1;
     @(negedge pclk); status_valid = 1;
     @(negedge pclk); status_valid = 0;
     read_reg(18'h10240, read_data);
     check(read_data == 32'hbad, "W1C did not rearm first error");
+    read_reg(18'h10258, read_data);
+    check(read_data == 3 && irq, "new same-bit notification was lost after W1C");
     check(!cfg_good, "IRQ clear restored configuration trust");
     for (int r = 0; r < REG_COUNT; r++) status[0].image[r] = 0;
     status[0].events = 0;
@@ -287,6 +353,7 @@ module apb_tb;
     write_reg(18'h20, 1, 15, 1);
     settled = 1;
     publish(7);
+    check_decline();
     write_reg(18'h10008, 2); // bad AGE_STEP rejects before publication
     write_reg(18'h20, 1, 15, 1);
     check(cfg_good, "invalid staging changed live validity");

@@ -33,6 +33,9 @@ module lpddr5_mc_host_channel_link #(
   localparam int REQUEST_WIDTH = $bits(lpddr5_mc_granule_t)+64;
   logic [2:0] h_faults, c_faults;
   logic [2:0] h_reset_ready, c_reset_ready;
+  // Transaction settlement is reported by the acceptance/completion owner;
+  // raw queue occupancy is not a channel completion witness.
+  logic [2:0] unused_pending;
   assign h_rearm_ready_o = &h_reset_ready;
   assign c_rearm_ready_o = &c_reset_ready;
   assign h_fault_o = |h_faults;
@@ -41,7 +44,7 @@ module lpddr5_mc_host_channel_link #(
     .wclk_i(hclk_i),.wrst_ni(hrst_ni),.w_enable_i(h_enable_i),.w_rearm_i(h_rearm_i),
     .wvalid_i(h_request_valid_i),.wready_o(h_request_ready_o),
     .wdata_i({h_boot_epoch_i,h_config_epoch_i,h_request_i}),.w_fault_o(h_faults[0]),
-    .w_rearm_ready_o(h_reset_ready[0]), .r_rearm_ready_o(c_reset_ready[0]),
+    .w_pending_o(unused_pending[0]), .w_rearm_ready_o(h_reset_ready[0]), .r_rearm_ready_o(c_reset_ready[0]),
     .rclk_i(cclk_i),.rrst_ni(crst_ni),.r_enable_i(c_enable_i),.r_rearm_i(c_rearm_i),
     .rvalid_o(c_request_valid_o),.rready_i(c_request_ready_i),
     .rdata_o({c_boot_epoch_o,c_config_epoch_o,c_request_o}),.r_fault_o(c_faults[0])
@@ -49,7 +52,7 @@ module lpddr5_mc_host_channel_link #(
   lpddr5_mc_async_fifo #(.WIDTH($bits(lpddr5_mc_host_completion_t)),.DEPTH(DEPTH)) completion_fifo (
     .wclk_i(cclk_i),.wrst_ni(crst_ni),.w_enable_i(c_enable_i),.w_rearm_i(c_rearm_i),
     .wvalid_i(c_completion_valid_i),.wready_o(c_completion_ready_o),.wdata_i(c_completion_i),.w_fault_o(c_faults[1]),
-    .w_rearm_ready_o(c_reset_ready[1]), .r_rearm_ready_o(h_reset_ready[1]),
+    .w_pending_o(unused_pending[1]), .w_rearm_ready_o(c_reset_ready[1]), .r_rearm_ready_o(h_reset_ready[1]),
     .rclk_i(hclk_i),.rrst_ni(hrst_ni),.r_enable_i(h_enable_i),.r_rearm_i(h_rearm_i),
     .rvalid_o(h_completion_valid_o),.rready_i(h_completion_ready_i),.rdata_o(h_completion_o),.r_fault_o(h_faults[1])
   );
@@ -58,7 +61,7 @@ module lpddr5_mc_host_channel_link #(
   lpddr5_mc_async_fifo #(.WIDTH($bits(lpddr5_mc_host_feedback_t)),.DEPTH(DEPTH)) feedback_fifo (
     .wclk_i(hclk_i),.wrst_ni(hrst_ni),.w_enable_i(h_enable_i),.w_rearm_i(h_rearm_i),
     .wvalid_i(h_feedback_valid_i),.wready_o(h_feedback_ready_o),.wdata_i(h_feedback_i),.w_fault_o(h_faults[2]),
-    .w_rearm_ready_o(h_reset_ready[2]), .r_rearm_ready_o(c_reset_ready[2]),
+    .w_pending_o(unused_pending[2]), .w_rearm_ready_o(h_reset_ready[2]), .r_rearm_ready_o(c_reset_ready[2]),
     .rclk_i(cclk_i),.rrst_ni(crst_ni),.r_enable_i(c_enable_i),.r_rearm_i(c_rearm_i),
     .rvalid_o(c_feedback_valid_o),.rready_i(c_feedback_ready_i),.rdata_o(c_feedback_o),.r_fault_o(c_faults[2])
   );

@@ -14,6 +14,7 @@ module lpddr5_mc_async_fifo #(
   output logic w_rearm_ready_o,
   input  logic wvalid_i,
   output logic wready_o,
+  output logic w_pending_o,
   input  logic [WIDTH-1:0] wdata_i,
   output logic w_fault_o,
   input  logic rclk_i,
@@ -46,6 +47,9 @@ module lpddr5_mc_async_fifo #(
   // cannot establish that a one-cycle rearm will reach this transport.
   assign w_rearm_ready_o = w_reset_n;
   assign r_rearm_ready_o = r_reset_n;
+  // Writer-local drain witness includes every accepted entry until actual
+  // reader consumption crosses back. A reset explicitly aborts this transport.
+  assign w_pending_o = wgray_q != rgray_w2;
   assign wready_o = w_run && w_enable_i && !full_q;
   // Disabling new exposure cannot retract an already exposed stalled head.
   assign rvalid_o = r_run && (r_enable_i || exposed_q) && !empty_q;

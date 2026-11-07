@@ -20,7 +20,7 @@ module lpddr5_mc_cdc_tb #(
   int unsigned pushed = 0, popped = 0, mailed = 0, received = 0;
   int unsigned aborted_fifo = 0, aborted_mailbox = 0;
   int unsigned stage = 0;
-  logic w_reset_ready, r_reset_ready, s_reset_ready, d_reset_ready;
+  logic w_reset_ready, r_reset_ready, s_reset_ready, d_reset_ready, w_pending;
   logic [31:0] random_state = 32'd2095;
 
   always #(W_HALF) wclk = ~wclk;
@@ -33,7 +33,7 @@ module lpddr5_mc_cdc_tb #(
   end
   lpddr5_mc_async_fifo #(.WIDTH(WIDTH), .DEPTH(DEPTH)) fifo (
     .wclk_i(wclk), .wrst_ni(wrst_n), .w_enable_i(w_enable), .w_rearm_i(w_rearm),
-    .w_rearm_ready_o(w_reset_ready), .r_rearm_ready_o(r_reset_ready),
+    .w_pending_o(w_pending), .w_rearm_ready_o(w_reset_ready), .r_rearm_ready_o(r_reset_ready),
     .wvalid_i(wvalid), .wready_o(wready), .wdata_i(wdata), .w_fault_o(w_fault),
     .rclk_i(rclk), .rrst_ni(rrst_n), .r_enable_i(r_enable), .r_rearm_i(r_rearm),
     .rvalid_o(rvalid), .rready_i(rready), .rdata_o(rdata), .r_fault_o(r_fault)
@@ -131,7 +131,7 @@ module lpddr5_mc_cdc_tb #(
     dready = 1;
     while (fifo_expected.size() != 0 || mailbox_expected.size() != 0) @(negedge rclk);
     repeat (8) @(negedge rclk);
-    assert (!rvalid && !dvalid) else $fatal(1, "duplicate output after drain");
+    assert (!rvalid && !dvalid && !w_pending) else $fatal(1, "duplicate or pending output after drain");
   endtask
 
   initial begin
@@ -149,7 +149,7 @@ module lpddr5_mc_cdc_tb #(
     r_enable = 0;
     for (int unsigned i = 0; i < DEPTH; i++) send_fifo(i);
     repeat (8) @(negedge wclk);
-    assert (!wready && !rvalid) else $fatal(1, "FIFO full/enable handling");
+    assert (!wready && !rvalid && w_pending) else $fatal(1, "FIFO full/enable/pending handling");
     r_enable = 1;
     stage = 11;
     while (!rvalid) @(negedge rclk);

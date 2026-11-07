@@ -29,6 +29,28 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     records = []
+    paths: set[Path] = {Path(__file__).resolve(), repo / "ips/lpddr5_mc/dv/host/axi/lpddr5_mc_axi_bridge_tb.sv"}
+
+    def include_list(relative: str) -> None:
+        path = repo / relative
+        if path in paths:
+            return
+        paths.add(path)
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("-f "):
+                include_list(line[3:].strip())
+            elif line.endswith(".sv"):
+                paths.add(repo / line)
+            else:
+                raise ValueError(f"Unsupported source-list entry: {relative}: {line}")
+
+    include_list("ips/lpddr5_mc/rtl/host/axi-files.f")
+    manifest = {str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(paths)}
+    source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    source_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True))
 
     def run(argv: list[str], label: str) -> str:
         start = time.monotonic()
@@ -94,31 +116,28 @@ def main() -> None:
         if "AXI_BRIDGE_PASS" not in output:
             raise SystemExit("Missing actual RTL completion witness")
         observed.append(output)
-    paths = list((repo / "ips/lpddr5_mc/rtl/host").glob("lpddr5_mc_axi*.sv"))
-    paths += [
-        repo / "ips/lpddr5_mc/rtl/host/axi-files.f",
-        Path(__file__).resolve(),
-        repo / "ips/lpddr5_mc/dv/host/axi/lpddr5_mc_axi_bridge_tb.sv",
-    ]
-    paths += list((repo / "ips/lpddr5_mc/rtl/cdc").glob("*.sv"))
-    paths += [
-        repo / "ips/lpddr5_mc/rtl/host/lpddr5_mc_host_pkg.sv",
-        repo / "ips/lpddr5_mc/rtl/contracts/lpddr5_mc_contract_pkg.sv",
-    ]
+    source_changed = any(
+        hashlib.sha256((repo / path).read_bytes()).hexdigest() != digest for path, digest in manifest.items()
+    )
     report = {
-        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
-        "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True)),
-        "source_sha256": {str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},
+        "source_commit": source_commit,
+        "source_dirty": source_dirty,
+        "source_sha256": manifest,
+        "source_changed_during_run": source_changed,
+        "result": "failed" if source_changed else "passed",
         "simulator": version,
         "commands": records,
         "observed": observed,
         "limitations": [
             "The memory-facing fixture is an independent transport consumer, not controller throughput.",
-            "Serialized preaccept admission is measured at AXI400/core800; final memory benchmark remains pending.",
+            "Lease admission is measured at AXI400/core800 with separate steady and startup/drain windows; "
+            "the final memory benchmark remains pending.",
             "Digital simulation does not establish physical CDC/metastability qualification.",
         ],
     }
     args.report.write_text(json.dumps(report, indent=2) + "\n")
+    if source_changed:
+        raise SystemExit("Source changed during AXI regression")
 
 
 if __name__ == "__main__":

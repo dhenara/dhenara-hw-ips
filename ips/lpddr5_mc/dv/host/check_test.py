@@ -77,6 +77,7 @@ class AggregateTests(unittest.TestCase):
                 "core-128-16-early",
                 "axi",
                 "assembly",
+                "lease",
                 "host-lint-minimum",
                 "host-lint-default",
                 "host-lint-maximum",

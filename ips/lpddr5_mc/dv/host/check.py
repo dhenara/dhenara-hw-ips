@@ -143,6 +143,21 @@ def phases(report: Path, build_name: str, storage: Path) -> list[Phase]:
             evidence / "assembly.json",
         )
     )
+    result.append(
+        Phase(
+            "lease",
+            [
+                sys.executable,
+                str(IP / "dv/host/lease_run.py"),
+                "--report",
+                str(evidence / "lease.json"),
+                "--build-subdir",
+                build_name + "-lease",
+            ],
+            900,
+            evidence / "lease.json",
+        )
+    )
     for name, parameters in (
         (
             "minimum",

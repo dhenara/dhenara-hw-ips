@@ -16,6 +16,7 @@ module adapter_link_tb #(
   end
   logic hrst_n = 0, crst_n = 0;
   logic h_enable = 1, c_enable = 1, h_rearm = 0, c_rearm = 0, h_fault, c_fault;
+  logic h_rearm_ready, c_rearm_ready;
   logic h_request_valid = 0, h_request_ready, c_request_valid, c_request_ready = 0;
   lpddr5_mc_granule_t h_request = '0, c_request;
   logic [31:0] h_boot = 0, h_config = 0, c_boot, c_config;
@@ -40,7 +41,8 @@ module adapter_link_tb #(
   lpddr5_mc_host_channel_link #(.DEPTH(DEPTH)) dut (
     .hclk_i(hclk), .hrst_ni(hrst_n), .h_enable_i(h_enable), .h_rearm_i(h_rearm),
     .cclk_i(cclk), .crst_ni(crst_n), .c_enable_i(c_enable), .c_rearm_i(c_rearm),
-    .h_fault_o(h_fault), .c_fault_o(c_fault), .h_rearm_ready_o(), .c_rearm_ready_o(),
+    .h_fault_o(h_fault), .c_fault_o(c_fault),
+    .h_rearm_ready_o(h_rearm_ready), .c_rearm_ready_o(c_rearm_ready),
     .h_request_valid_i(h_request_valid), .h_request_ready_o(h_request_ready), .h_request_i(h_request),
     .h_boot_epoch_i(h_boot), .h_config_epoch_i(h_config),
     .c_request_valid_o(c_request_valid), .c_request_ready_i(c_request_ready), .c_request_o(c_request),
@@ -172,10 +174,10 @@ module adapter_link_tb #(
   end
 
   task automatic rearm_both();
-    repeat(5) @(negedge hclk);
+    do @(negedge hclk); while(!h_rearm_ready);
     h_rearm = 1;
     @(negedge hclk); h_rearm = 0;
-    repeat(5) @(negedge cclk);
+    do @(negedge cclk); while(!c_rearm_ready);
     c_rearm = 1;
     @(negedge cclk); c_rearm = 0;
     wait(!h_fault && !c_fault && h_request_ready && c_completion_ready && h_feedback_ready);
@@ -213,9 +215,11 @@ module adapter_link_tb #(
     end
     repeat(6) @(negedge hclk);
     if (reset_host) begin
-      @(negedge cclk); c_rearm = 1;
+      do @(negedge cclk); while(!c_rearm_ready);
+      c_rearm = 1;
       @(negedge cclk); c_rearm = 0;
     end else begin
+      do @(negedge hclk); while(!h_rearm_ready);
       h_rearm = 1;
       @(negedge hclk); h_rearm = 0;
     end
@@ -223,10 +227,12 @@ module adapter_link_tb #(
     check((reset_host ? h_fault : c_fault) && !h_request_ready && !c_completion_ready && !h_feedback_ready,
         "one-sided rearm resumed transport");
     if (reset_host) begin
+      do @(negedge hclk); while(!h_rearm_ready);
       h_rearm = 1;
       @(negedge hclk); h_rearm = 0;
     end else begin
-      @(negedge cclk); c_rearm = 1;
+      do @(negedge cclk); while(!c_rearm_ready);
+      c_rearm = 1;
       @(negedge cclk); c_rearm = 0;
     end
     wait(!h_fault && !c_fault && h_request_ready && c_completion_ready && h_feedback_ready);

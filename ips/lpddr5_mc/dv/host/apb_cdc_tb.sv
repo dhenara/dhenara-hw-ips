@@ -9,6 +9,7 @@ module apb_cdc_tb;
   end
   logic arst_n = 0, crst_n = 0;
   logic a_rearm = 0, c_rearm = 0;
+  logic a_rearm_ready, c_rearm_ready;
   logic a_enable = 1, c_enable = 1, a_fault, c_fault;
   logic a_config_valid = 0, a_config_ready, c_config_valid, c_config_ready = 0;
   lpddr5_mc_configuration_payload_t a_config, c_config, expected_config;
@@ -19,7 +20,8 @@ module apb_cdc_tb;
   int checks = 0;
 
   lpddr5_mc_control_link dut (
-    .aclk_i(aclk), .arst_ni(arst_n), .a_enable_i(a_enable), .a_rearm_i(a_rearm), .a_fault_o(a_fault), .a_rearm_ready_o(), .c_rearm_ready_o(),
+    .aclk_i(aclk), .arst_ni(arst_n), .a_enable_i(a_enable), .a_rearm_i(a_rearm), .a_fault_o(a_fault),
+    .a_rearm_ready_o(a_rearm_ready), .c_rearm_ready_o(c_rearm_ready),
     .cclk_i(cclk), .crst_ni(crst_n), .c_enable_i(c_enable), .c_rearm_i(c_rearm), .c_fault_o(c_fault),
     .a_config_valid_i(a_config_valid), .a_config_ready_o(a_config_ready), .a_config_i(a_config),
     .c_config_valid_o(c_config_valid), .c_config_ready_i(c_config_ready), .c_config_o(c_config),
@@ -34,10 +36,10 @@ module apb_cdc_tb;
     checks++;
   endtask
   task automatic rearm();
-    repeat(4) @(negedge aclk);
+    do @(negedge aclk); while(!a_rearm_ready);
     a_rearm = 1;
     @(negedge aclk); a_rearm = 0;
-    repeat(4) @(negedge cclk);
+    do @(negedge cclk); while(!c_rearm_ready);
     c_rearm = 1;
     @(negedge cclk); c_rearm = 0;
     wait(!a_fault && !c_fault && a_config_ready && c_ack_ready && c_status_ready);

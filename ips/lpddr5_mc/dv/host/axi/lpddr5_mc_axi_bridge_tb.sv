@@ -33,7 +33,12 @@ module lpddr5_mc_axi_bridge_tb #(
   logic [1:0] retirevalid,retireready,eventvalid,eventready=3;
   lpddr5_mc_host_response_event_t [1:0] retire,event_data;
   logic [63:0] accepted_addresses,grant_cycles;
-  logic automatic_responses=1;
+  logic automatic_responses=1, allow_address_imports=1, manual_retirement=0;
+  lpddr5_mc_host_response_event_t injected_retire='0;
+  lpddr5_mc_axi_read_t duplicate_read='0;
+  logic[5:0] duplicate_slot=0;
+  logic[15:0] duplicate_generation=0;
+  int injected_retirements_consumed=0;
   int stage=0;
   always #0.625 core_clk=~core_clk;
   always #1.25 if(axi_clock_run0)axi_clk0=~axi_clk0;
@@ -62,7 +67,8 @@ module lpddr5_mc_axi_bridge_tb #(
     logic [8:0] wcount,rindex;
   } model_t;
   model_t [1:0][DEPTH-1:0] model_w,model_r;
-  typedef struct packed {logic port_index,write_access;logic [15:0] id;} admission_t;
+  typedef struct packed {logic port_index,write_access;logic [15:0] id;lpddr5_mc_axi_address_t payload;logic [31:0] seq;} admission_t;
+  int unsigned source_seq[2]='{default:0};
   admission_t actual_order[$];
   lpddr5_mc_axi_address_t expected_w0[$],expected_w1[$],expected_r0[$],expected_r1[$];
   int unsigned rindex0=0,rindex1=0, source_writes=0,source_reads=0,source_b=0,source_r=0;
@@ -99,12 +105,12 @@ module lpddr5_mc_axi_bridge_tb #(
           w_fifo_full_axi+=64'(wvalid[p]&&dut.ports[p].endpoint.w_owner>=0&&!dut.ports[p].endpoint.w_local_ready);
         end
         if(awvalid[p]&&awready[p]) begin
-          x.port_index=1'(p);x.write_access=1;x.id=aw[p].id;actual_order.push_back(x);source_writes++;
+          x.port_index=1'(p);x.write_access=1;x.id=aw[p].id;x.payload=aw[p];x.seq=source_seq[p];source_seq[p]++;actual_order.push_back(x);source_writes++;
           if(p==0) expected_w0.push_back(aw[p]);else expected_w1.push_back(aw[p]);
           if(first_accept==0) first_accept=$realtime;last_accept=$realtime;
         end
         if(arvalid[p]&&arready[p]) begin
-          x.port_index=1'(p);x.write_access=0;x.id=ar[p].id;actual_order.push_back(x);source_reads++;
+          x.port_index=1'(p);x.write_access=0;x.id=ar[p].id;x.payload=ar[p];x.seq=source_seq[p];source_seq[p]++;actual_order.push_back(x);source_reads++;
           if(p==0) expected_r0.push_back(ar[p]);else expected_r1.push_back(ar[p]);
           if(first_accept==0) first_accept=$realtime;last_accept=$realtime;
         end
@@ -136,16 +142,20 @@ module lpddr5_mc_axi_bridge_tb #(
       int occupancy;
       occupancy=dut.ports[0].endpoint.write_count+dut.ports[0].endpoint.read_count
         +dut.ports[1].endpoint.write_count+dut.ports[1].endpoint.read_count;
-      measured_ck++;idle_ck+=64'(dut.state_q==0);grant_ck+=64'(dut.state_q==1);
-      accept_ck+=64'(dut.state_q==2);proposal_ck+=64'(|dut.proposal_valid);
-      await_source_ck+=64'(dut.state_q==2&&!dut.accepted_valid[dut.selected_q]);
-      import_stall_ck+=64'(dut.state_q==2&&dut.accepted_valid[dut.selected_q]&&!dut.accepted_ready[dut.selected_q]);
+      measured_ck++;idle_ck+=64'(dut.state_q==0);grant_ck+=64'(dut.state_q==3);
+      accept_ck+=64'(dut.state_q==4);proposal_ck+=64'(|dut.proposal_valid);
+      await_source_ck+=64'(dut.state_q==4&&!dut.ack_received_q[dut.selected_q]);
+      import_stall_ck+=64'((|(dut.accepted_valid & ~dut.accepted_ready)));
       if(64'(occupancy)>max_local_occupancy)max_local_occupancy=64'(occupancy);
     end
   end
+  always @(posedge axi_clk0)
+    if(dut.ports[0].endpoint.retire_local_valid&&dut.ports[0].endpoint.retire_local_ready
+        &&dut.ports[0].endpoint.retire_local==injected_retire&&injected_retire.response!=0)
+      injected_retirements_consumed++;
   always_comb begin
     slot_available='0;core_settled=1;retirevalid=0;retire='0;cwready=0;
-    cawready={2{enable||admission_busy}};carready={2{enable||admission_busy}};
+    cawready={2{(enable||admission_busy)&&allow_address_imports}};carready={2{(enable||admission_busy)&&allow_address_imports}};
     for(int p=0;p<2;p++)begin
       if(int'(cw[p].slot)<DEPTH)cwready[p]=model_w[p][$clog2(DEPTH)'(cw[p].slot)].valid
         &&model_w[p][$clog2(DEPTH)'(cw[p].slot)].address.generation==cw[p].generation;
@@ -160,6 +170,7 @@ module lpddr5_mc_axi_bridge_tb #(
         end
       end
     end
+    if(manual_retirement)begin retirevalid[0]=1;retire[0]=injected_retire;end
   end
   always @(posedge core_clk or negedge core_rst_n)begin
     if(!core_rst_n)begin
@@ -173,9 +184,25 @@ module lpddr5_mc_axi_bridge_tb #(
           logic write_access;
           write_access=cawvalid[p];a=write_access?caw[p]:car[p];
           assert(actual_order.size()>0)else $fatal(1,"core imported before source acceptance");
-          expected=actual_order.pop_front();
-          assert(expected.port_index==1'(p)&&expected.write_access==write_access&&expected.id==a.axi.id)
-            else $fatal(1,"global source acceptance order not preserved");
+          begin
+            int found;
+            found=-1;
+            for(int i=0;i<actual_order.size();i++)
+              if(found<0&&actual_order[i].port_index==1'(p))found=i;
+            assert(found>=0)else $fatal(1,"source import without same-port acceptance");
+            expected=actual_order[found];
+            assert(expected.write_access==write_access&&expected.payload==a.axi&&expected.seq==a.sequence_number)
+              else $fatal(1,"per-source payload/sequence order not preserved");
+            for(int i=0;i<found;i++)begin
+              // Independent exact byte intervals, not the implementation's
+              // hash mask. All fixture requests here are aligned INCR.
+              assert(41'(actual_order[i].payload.address)+(41'(actual_order[i].payload.len)+1)*(41'd1<<actual_order[i].payload.size)
+                  <=41'(a.axi.address)
+                  ||41'(a.axi.address)+(41'(a.axi.len)+1)*(41'd1<<a.axi.size)<=41'(actual_order[i].payload.address))
+                else $fatal(1,"overlapping cross-port source acceptance order violated");
+            end
+            actual_order.delete(found);
+          end
           assert(slot_available[p][write_access?0:1][$clog2(DEPTH)'(a.slot)])else $fatal(1,"core credit not reserved");
           if(write_access)begin model_w[p][$clog2(DEPTH)'(a.slot)]<='0;model_w[p][$clog2(DEPTH)'(a.slot)].valid<=1;model_w[p][$clog2(DEPTH)'(a.slot)].address<=a;end
           else begin model_r[p][$clog2(DEPTH)'(a.slot)]<='0;model_r[p][$clog2(DEPTH)'(a.slot)].valid<=1;model_r[p][$clog2(DEPTH)'(a.slot)].address<=a;end
@@ -218,7 +245,7 @@ module lpddr5_mc_axi_bridge_tb #(
             else model_r[p][$clog2(DEPTH)'(event_data[p].slot)].acknowledged<=1;
           end
         end
-        if(retirevalid[p]&&retireready[p])begin
+        if(retirevalid[p]&&retireready[p]&&!(manual_retirement&&p==0))begin
           if(retire[p].write_response)model_w[p][$clog2(DEPTH)'(retire[p].slot)].valid<=0;
           else model_r[p][$clog2(DEPTH)'(retire[p].slot)].valid<=0;
         end
@@ -288,14 +315,27 @@ module lpddr5_mc_axi_bridge_tb #(
   endtask
   task automatic show_measurement;
     measure_window=0;
-    $display("AXI_SATURATED_STATS CK=%0d idle=%0d grant=%0d accept=%0d proposal_present=%0d awaiting_source_CK=%0d import_stall_CK=%0d AXI_edges=%0d AWVALID=%0d AWREADY=%0d ARVALID=%0d ARREADY=%0d WVALID=%0d WREADY=%0d precheck_AXI=%0d awaitgrant_AXI=%0d acceptfifo_full_AXI=%0d Wfifo_full_AXI=%0d max_ledger_occupancy=%0d",
+    $display("AXI_SATURATED_STATS CK=%0d idle=%0d grant_send=%0d grant_ack_wait=%0d proposal_present=%0d awaiting_source_CK=%0d import_stall_CK=%0d AXI_edges=%0d AWVALID=%0d AWREADY=%0d ARVALID=%0d ARREADY=%0d WVALID=%0d WREADY=%0d precheck_AXI=%0d awaitgrant_AXI=%0d acceptfifo_full_AXI=%0d Wfifo_full_AXI=%0d max_ledger_occupancy=%0d",
       measured_ck,idle_ck,grant_ck,accept_ck,proposal_ck,await_source_ck,import_stall_ck,measured_axi,awvalid_ck,awready_ck,arvalid_ck,arready_ck,wvalid_ck,wready_ck,precheck_axi,await_grant_axi,accept_fifo_full_axi,w_fifo_full_axi,max_local_occupancy);
+  endtask
+  task automatic send_stale_retirement(input logic write_response,input logic[5:0] slot,input logic[15:0] generation);
+    int consumed_before;
+    consumed_before=injected_retirements_consumed;
+    @(negedge core_clk);
+    injected_retire='0;injected_retire.write_response=write_response;injected_retire.slot=slot;
+    injected_retire.generation=generation^16'h8000;injected_retire.response=2;
+    injected_retire.exposed=!write_response;injected_retire.handshaken=!write_response;
+    manual_retirement=1;
+    do @(posedge core_clk);while(!retireready[0]);
+    @(negedge core_clk);manual_retirement=0;
+    while(injected_retirements_consumed==consumed_before)@(negedge axi_clk0);
+    repeat(2)@(negedge axi_clk0);
   endtask
   task automatic recover(input logic fresh);
     aborted_imports+=int'(actual_order.size());actual_order.delete();
     enable=0;fatal=0;core_rst_n=0;
     repeat(8)@(negedge core_clk);
-    if(fresh)cfg.boot_epoch++;
+    if(fresh)begin cfg.boot_epoch++;source_seq[0]=0;source_seq[1]=0;end
     core_rst_n=1;
     while(!rearm_ready)@(negedge core_clk);
     rearm=1;@(negedge core_clk);rearm=0;
@@ -308,7 +348,7 @@ module lpddr5_mc_axi_bridge_tb #(
       else $fatal(1,"ledger settled before actual host responses");
   endtask
   initial begin
-    realtime start_time,end_time;
+    realtime start_time,end_time,benchmark_start;
     int baseline,first_count,last_count;
     lpddr5_mc_axi_read_t held_read;
     lpddr5_mc_axi_b_t held_b;
@@ -346,43 +386,142 @@ module lpddr5_mc_axi_bridge_tb #(
     @(negedge axi_clk1);axi_clock_run1=0;
     @(negedge core_clk);enable=1;
     @(negedge core_clk);enable=0;
-    #0.001;assert(admission_busy)else $fatal(1,"enable fall exposed stale idle before disable publication");
+    #0.001;assert(admission_busy&&!rearm_ready)else $fatal(1,"enable fall exposed stale idle/rearm readiness");
+    rearm=1;@(negedge core_clk);rearm=0;
+    assert(initialized)else $fatal(1,"unready enable-fall pulse started recovery");
     repeat(20)@(negedge core_clk);
     assert(admission_busy)else $fatal(1,"stopped source falsely acknowledged new disable generation");
+    @(negedge core_clk);enable=1;
+    @(negedge core_clk);enable=0;
+    repeat(20)@(negedge core_clk);
+    assert(admission_busy&&!rearm_ready)
+      else $fatal(1,"second stopped-source disable aliased an old acknowledgement");
     axi_clock_run0=1;axi_clock_run1=1;
     while(admission_busy)@(negedge core_clk);
     enable=1;
+    // Established rights can accept locally while the core cannot import.
+    // A fresh disable ACK must wait for the actual acceptance FIFO reader,
+    // even though the candidate and lease-control coordinator are both idle.
+    allow_address_imports=0;
+    send_ar(0,9,384,4);
+    while(!carvalid[0])@(negedge core_clk);
+    @(negedge core_clk);enable=0;
+    repeat(40)@(negedge core_clk);
+    assert(admission_busy&&carvalid[0]&&source_writes+source_reads==imports+1)
+      else $fatal(1,"disable dropped accepted but unimported descriptor");
+    allow_address_imports=1;
+    while(admission_busy)@(negedge core_clk);
+    assert(source_writes+source_reads==imports)else $fatal(1,"disable acknowledged before reader consumption");
+    wait_drained();enable=1;
 
-    baseline=int'(source_b);
+    baseline=int'(source_b);benchmark_start=$realtime;
     fork
-      begin stream_aw(0,256,100);end
-      begin stream_aw(1,256,400);end
-      begin stream_w(0,256);end
-      begin stream_w(1,256);end
+      begin stream_aw(0,512,100);end
+      begin stream_aw(1,512,700);end
+      begin stream_w(0,512);end
+      begin stream_w(1,512);end
       begin
-        while(int'(source_b)<baseline+40)@(negedge core_clk);
+        while(int'(source_b)<baseline+128)@(negedge core_clk);
         first_count=int'(source_b);start_time=$realtime;start_measurement();
-        while(int'(source_b)<baseline+480)@(negedge core_clk);
+        while(int'(source_b)<baseline+960)@(negedge core_clk);
         last_count=int'(source_b);end_time=$realtime;show_measurement();
         $display("AXI_SATURATED_PERF direction=write completed_bytes=%0d elapsed_ns=%0.3f GBps=%0.6f AXI_MHz=400 core_MHz=800",
           (last_count-first_count)*64,end_time-start_time,real'((last_count-first_count)*64)/(end_time-start_time));
       end
     join
-    wait_drained();baseline=int'(source_r);
+    wait_drained();
+    $display("AXI_STARTUP_AND_DRAIN direction=write completed_bytes=%0d elapsed_ns=%0.3f GBps=%0.6f warmup_transactions=128 measurement_transactions=832",
+      (int'(source_b)-baseline)*64,$realtime-benchmark_start,real'((int'(source_b)-baseline)*64)/($realtime-benchmark_start));
+    baseline=int'(source_r);benchmark_start=$realtime;
     fork
-      begin stream_ar(0,256,800);end
-      begin stream_ar(1,256,1200);end
+      begin stream_ar(0,512,1300);end
+      begin stream_ar(1,512,1900);end
       begin
-        while(int'(source_r)<baseline+40*(64/(DATA_BITS/8)))@(negedge core_clk);
+        while(int'(source_r)<baseline+128*(64/(DATA_BITS/8)))@(negedge core_clk);
         first_count=int'(source_r);start_time=$realtime;start_measurement();
-        while(int'(source_r)<baseline+480*(64/(DATA_BITS/8)))@(negedge core_clk);
+        while(int'(source_r)<baseline+960*(64/(DATA_BITS/8)))@(negedge core_clk);
         last_count=int'(source_r);end_time=$realtime;show_measurement();
         $display("AXI_SATURATED_PERF direction=read completed_bytes=%0d elapsed_ns=%0.3f GBps=%0.6f AXI_MHz=400 core_MHz=800",
           (last_count-first_count)*(DATA_BITS/8),end_time-start_time,real'((last_count-first_count)*(DATA_BITS/8))/(end_time-start_time));
       end
     join
     wait_drained();
+    $display("AXI_STARTUP_AND_DRAIN direction=read completed_bytes=%0d elapsed_ns=%0.3f GBps=%0.6f warmup_transactions=128 measurement_transactions=832",
+      (int'(source_r)-baseline)*(DATA_BITS/8),$realtime-benchmark_start,real'((int'(source_r)-baseline)*(DATA_BITS/8))/($realtime-benchmark_start));
     stage=3;
+    // Inject real stale retirement FIFO entries with a live same-slot owner.
+    // Both the error and retirement state must ignore the wrong generation;
+    // malformed feedback flags on that stale read record cannot fault it.
+    bready[0]=0;send_aw(0,2400,0,4);send_w(0,4);
+    while(!bvalid[0])@(negedge axi_clk0);
+    send_stale_retirement(1,dut.ports[0].endpoint.b_held_q.slot,dut.ports[0].endpoint.b_held_q.generation);
+    assert(!fault&&dut.ports[0].endpoint.writes[$clog2(DEPTH)'(dut.ports[0].endpoint.b_held_q.slot)].error==0
+        &&!dut.ports[0].endpoint.writes[$clog2(DEPTH)'(dut.ports[0].endpoint.b_held_q.slot)].retired)
+      else $fatal(1,"stale write retirement changed live owner");
+    bready[0]=1;wait_drained();
+    rready[0]=0;send_ar(0,2401,0,4);
+    while(!rvalid[0])@(negedge axi_clk0);
+    send_stale_retirement(0,dut.ports[0].endpoint.r_held_q.slot,dut.ports[0].endpoint.r_held_q.generation);
+    assert(!fault&&dut.ports[0].endpoint.reads[$clog2(DEPTH)'(dut.ports[0].endpoint.r_held_q.slot)].error==0
+        &&!dut.ports[0].endpoint.reads[$clog2(DEPTH)'(dut.ports[0].endpoint.r_held_q.slot)].retired)
+      else $fatal(1,"stale read retirement changed live owner");
+    rready[0]=1;wait_drained();
+
+    // A healthy boot change must not reset slot generations while an old
+    // retirement is still in transport. Force only the consumer's READY;
+    // actual B feedback and the core's retirement FIFO handshake still occur.
+    force dut.ports[0].endpoint.retire_local_ready=0;
+    baseline=int'(source_b);
+    send_aw(0,2500,0,4);send_w(0,4);
+    while(int'(source_b)==baseline||!core_settled)@(negedge core_clk);
+    assert(dut.ports[0].endpoint.write_count>0)else $fatal(1,"delayed retirement was not exercised");
+    enable=0;while(admission_busy)@(negedge core_clk);
+    cfg.boot_epoch++;cfg.config_epoch++;
+    while(!rearm_ready)@(negedge core_clk);
+    rearm=1;@(negedge core_clk);rearm=0;
+    repeat(20)@(negedge axi_clk0);
+    assert(!initialized&&!fault&&dut.ports[0].endpoint.config_q.boot_epoch!=cfg.boot_epoch
+        &&dut.ports[0].endpoint.write_count>0)
+      else $fatal(1,"healthy boot change init=%b fault=%b boot=%0d/%0d count=%0d valid=%b ready=%b sourcefault=%b drained=%b",
+        initialized,fault,dut.ports[0].endpoint.config_q.boot_epoch,cfg.boot_epoch,
+        dut.ports[0].endpoint.write_count,dut.ports[0].endpoint.retire_local_valid,
+        dut.ports[0].endpoint.retire_local_ready,dut.ports[0].endpoint.fault_q,dut.ports[0].endpoint.revoke_drained);
+    // Releasing a forced variable retains its last value until its procedural
+    // driver next executes. Restore the legitimate constant READY first; the
+    // simulator may optimize that constant driver to startup evaluation only.
+    force dut.ports[0].endpoint.retire_local_ready=1;
+    @(negedge axi_clk0);release dut.ports[0].endpoint.retire_local_ready;
+    #0.001;assert(dut.ports[0].endpoint.retire_local_ready)
+      else $fatal(1,"retirement consumer READY did not restore");
+    while(!initialized)@(negedge core_clk);
+    source_seq[0]=0;source_seq[1]=0;enable=1;
+    send_ar(0,2501,0,4);wait_drained();
+    assert(dut.ports[0].endpoint.write_count==0&&!fault)
+      else $fatal(1,"old retirement leaked into new generation");
+
+    // The elastic R register may replace a consumed final with another
+    // transaction, but a duplicate of the consumed identity must fault. Queue
+    // the duplicate through the real core response FIFO before releasing R.
+    rready[0]=0;send_ar(0,2510,0,1);
+    while(!rvalid[0])@(negedge axi_clk0);
+    duplicate_read=r[0];duplicate_slot=dut.ports[0].endpoint.r_held_q.slot;
+    duplicate_generation=dut.ports[0].endpoint.r_held_q.generation;
+    @(negedge core_clk);
+    force cr[0]=duplicate_read;force crslot[0]=duplicate_slot;
+    force crgen[0]=duplicate_generation;force crvalid[0]=1;
+    do @(posedge core_clk);while(!crready[0]);
+    @(negedge core_clk);
+    force crvalid[0]=0;
+    release cr[0];release crslot[0];release crgen[0];release crvalid[0];
+    while(!dut.ports[0].endpoint.r_local_valid)@(negedge axi_clk0);
+    assert(dut.ports[0].endpoint.r_local.axi==duplicate_read)
+      else $fatal(1,"duplicate final was not queued through actual FIFO");
+    baseline=int'(source_r);@(negedge axi_clk0);rready[0]=1;
+    @(posedge axi_clk0);@(negedge axi_clk0);
+    assert(!rvalid[0]&&dut.ports[0].endpoint.fault_q&&int'(source_r)==baseline+1)
+      else $fatal(1,"same-edge duplicate final R escaped identity fence");
+    while(!fault)@(negedge core_clk);
+    recover(1);
 
     // B was consumed, but its actual exposure/handshake feedback cannot leave
     // the event transport yet. The surviving exposed ledger owns late error.

@@ -27,9 +27,12 @@ module lpddr5_mc_axi_endpoint #(
   output logic proposal_valid_o,
   input logic proposal_ready_i,
   output lpddr5_mc_axi_pkg::lpddr5_mc_axi_proposal_t proposal_o,
-  input logic grant_valid_i,
-  output logic grant_ready_o,
-  input lpddr5_mc_axi_pkg::lpddr5_mc_axi_proposal_t grant_i,
+  input logic lease_valid_i,
+  output logic lease_ready_o,
+  input lpddr5_mc_axi_pkg::lpddr5_mc_axi_lease_command_t lease_i,
+  output logic lease_ack_valid_o,
+  input logic lease_ack_ready_i,
+  output lpddr5_mc_axi_pkg::lpddr5_mc_axi_lease_ack_t lease_ack_o,
   output logic accepted_valid_o,
   input logic accepted_ready_i,
   output lpddr5_mc_axi_pkg::lpddr5_mc_axi_proposal_t accepted_o,
@@ -69,17 +72,28 @@ module lpddr5_mc_axi_endpoint #(
   (* ASYNC_REG = "TRUE" *) logic [1:0] quiesce_request_sync_q, quiesce_ack_sync_q;
   logic source_settled_q, source_abort_settled_q, source_admission_idle_q, source_quiesce_ack_q;
   logic axi_reset_n, source_link_reset_n, quiesce_reset_n;
-  logic [8:0] local_faults, remote_faults;
-  logic [8:0] local_reset_ready, remote_reset_ready;
+  logic [9:0] local_faults, remote_faults;
+  logic [9:0] local_reset_ready, remote_reset_ready;
+  // Other queue occupancies do not own address-import settlement. Their
+  // owning payload/response protocols retain their separate drain contracts.
+  logic [9:0] unused_pending;
+  assign unused_pending[2] = 0;
   logic operational, candidate_valid_q, candidate_checked_q, candidate_sent_q, granted_q;
-  logic [8:0] checking_beat_q;
   logic [1:0] candidate_error_q;
   lpddr5_mc_axi_proposal_t candidate_q;
   int free_write, free_read, w_owner, synthetic_b, synthetic_r;
   int write_count, read_count;
-  logic proposal_local_valid, proposal_local_ready, grant_local_valid, grant_local_ready;
-  lpddr5_mc_axi_proposal_t grant_local;
-  logic accepted_local_valid, accepted_local_ready, w_local_valid, w_local_ready;
+  logic proposal_local_valid, proposal_local_ready;
+  logic lease_local_valid, lease_local_ready, lease_ack_local_valid, lease_ack_local_ready;
+  logic revoke_active_q, lease_ack_pending_q, lease_frozen_q, request_pending_q;
+  logic [63:0] owned_mask_q;
+  logic [31:0] lease_token_q;
+  lpddr5_mc_axi_lease_command_t lease_local, revoke_q;
+  lpddr5_mc_axi_lease_ack_t lease_ack_q;
+  lpddr5_mc_axi_proposal_t selected_address, acceptance;
+  logic selected_valid, selected_mapped, selected_lease_hit, revoke_drained;
+  logic [1:0] acceptance_error;
+  logic accepted_local_valid, accepted_local_ready, acceptance_pending, w_local_valid, w_local_ready;
   lpddr5_mc_host_write_t w_local;
   logic b_local_valid, b_local_ready, r_local_valid, r_local_ready;
   lpddr5_mc_axi_b_packet_t b_local, b_held_q;
@@ -160,7 +174,8 @@ module lpddr5_mc_axi_endpoint #(
     end else begin
       source_settled_q <= source_settled;
       source_abort_settled_q <= fault_q && source_settled;
-      source_admission_idle_q <= enable_sync_q == 0 && !candidate_valid_q;
+      source_admission_idle_q <= enable_sync_q == 0 && !candidate_valid_q && !acceptance_pending
+        && !request_pending_q && !revoke_active_q && !lease_ack_pending_q && !lease_local_valid;
     end
   end
   // A new disable generation needs a new acknowledgement even if an old idle
@@ -174,7 +189,8 @@ module lpddr5_mc_axi_endpoint #(
       quiesce_request_sync_q <= 0; source_quiesce_ack_q <= 0;
     end else begin
       quiesce_request_sync_q <= {quiesce_request_sync_q[0],core_quiesce_request_i};
-      if (enable_sync_q == 0 && !candidate_valid_q)
+      if (enable_sync_q == 0 && !candidate_valid_q && !acceptance_pending && !request_pending_q
+          && !revoke_active_q && !lease_ack_pending_q && !lease_local_valid)
         source_quiesce_ack_q <= quiesce_request_sync_q[1];
     end
   end
@@ -201,15 +217,18 @@ module lpddr5_mc_axi_endpoint #(
   assign fresh_epoch = !ever_epoch_q || recovery_config_q.boot_epoch > config_q.boot_epoch
     || (!fault_q && recovery_config_q.boot_epoch == config_q.boot_epoch
         && recovery_config_q.config_epoch > config_q.config_epoch);
+  // Healthy epoch replacement must consume every old retirement before slot
+  // generations can restart. After a fault, transport reset has discarded that
+  // retirement queue, so the surviving host-handshake ledger owns settlement.
   assign source_rearm = source_link_reset_n && recovery_sync_q[1] != recovery_seen_q
-    && (&local_reset_ready) && source_settled && fresh_epoch
+    && (&local_reset_ready) && source_settled && (fault_q || revoke_drained) && fresh_epoch
     && configuration_valid(recovery_config_q,CHANNELS,RANKS,ADDRESS_BITS);
   assign operational = epoch_valid_q && !fault_q && !(|local_faults) && source_link_reset_n;
 
-`define AXI_L2C(NAME, INDEX, TYPE, SIZE, SV, SR, SD, DV, DR, DD) \
+`define AXI_L2C(NAME, INDEX, TYPE, SIZE, SV, SR, SD, DV, DR, DD, WP) \
   lpddr5_mc_async_fifo #(.WIDTH($bits(TYPE)),.DEPTH(SIZE)) NAME ( \
     .wclk_i(axi_clk_i),.wrst_ni(axi_reset_n),.w_enable_i(1'b1),.w_rearm_i(source_rearm), \
-    .w_rearm_ready_o(local_reset_ready[INDEX]), \
+    .w_rearm_ready_o(local_reset_ready[INDEX]),.w_pending_o(WP), \
     .wvalid_i(SV),.wready_o(SR),.wdata_i(SD),.w_fault_o(local_faults[INDEX]), \
     .rclk_i(core_clk_i),.rrst_ni(core_link_rst_ni),.r_enable_i(1'b1),.r_rearm_i(core_rearm_i), \
     .r_rearm_ready_o(remote_reset_ready[INDEX]), \
@@ -218,20 +237,20 @@ module lpddr5_mc_axi_endpoint #(
 `define AXI_C2L(NAME, INDEX, TYPE, SIZE, SV, SR, SD, DV, DR, DD) \
   lpddr5_mc_async_fifo #(.WIDTH($bits(TYPE)),.DEPTH(SIZE)) NAME ( \
     .wclk_i(core_clk_i),.wrst_ni(core_link_rst_ni),.w_enable_i(1'b1),.w_rearm_i(core_rearm_i), \
-    .w_rearm_ready_o(remote_reset_ready[INDEX]), \
+    .w_rearm_ready_o(remote_reset_ready[INDEX]),.w_pending_o(unused_pending[INDEX]), \
     .wvalid_i(SV),.wready_o(SR),.wdata_i(SD),.w_fault_o(remote_faults[INDEX]), \
     .rclk_i(axi_clk_i),.rrst_ni(axi_reset_n),.r_enable_i(1'b1),.r_rearm_i(source_rearm), \
     .r_rearm_ready_o(local_reset_ready[INDEX]), \
     .rvalid_o(DV),.rready_i(DR),.rdata_o(DD),.r_fault_o(local_faults[INDEX]) \
   );
   `AXI_L2C(proposals,0,lpddr5_mc_axi_proposal_t,2,proposal_local_valid,proposal_local_ready,candidate_q,
-    proposal_valid_o,proposal_ready_i,proposal_o)
-  `AXI_C2L(grants,1,lpddr5_mc_axi_proposal_t,2,grant_valid_i,grant_ready_o,grant_i,
-    grant_local_valid,grant_local_ready,grant_local)
-  `AXI_L2C(acceptances,2,lpddr5_mc_axi_proposal_t,2,accepted_local_valid,accepted_local_ready,candidate_q,
-    accepted_valid_o,accepted_ready_i,accepted_o)
+    proposal_valid_o,proposal_ready_i,proposal_o,unused_pending[0])
+  `AXI_C2L(lease_commands,1,lpddr5_mc_axi_lease_command_t,2,lease_valid_i,lease_ready_o,lease_i,
+    lease_local_valid,lease_local_ready,lease_local)
+  `AXI_L2C(acceptances,2,lpddr5_mc_axi_proposal_t,2,accepted_local_valid,accepted_local_ready,acceptance,
+    accepted_valid_o,accepted_ready_i,accepted_o,acceptance_pending)
   `AXI_L2C(write_data,3,lpddr5_mc_host_write_t,16,w_local_valid,w_local_ready,w_local,
-    core_wvalid_o,core_wready_i,core_w_o)
+    core_wvalid_o,core_wready_i,core_w_o,unused_pending[3])
   `AXI_C2L(write_responses,4,lpddr5_mc_axi_b_packet_t,DEPTH,core_bvalid_i,core_bready_o,core_b_i,
     b_local_valid,b_local_ready,b_local)
   `AXI_C2L(read_responses,5,lpddr5_mc_axi_r_packet_t,DEPTH,core_rvalid_i,core_rready_o,core_r_i,
@@ -239,9 +258,11 @@ module lpddr5_mc_axi_endpoint #(
   `AXI_C2L(retirements,6,lpddr5_mc_host_response_event_t,DEPTH,core_retire_valid_i,core_retire_ready_o,core_retire_i,
     retire_local_valid,retire_local_ready,retire_local)
   `AXI_L2C(b_events,7,lpddr5_mc_host_response_event_t,DEPTH,b_event_local_valid,b_event_local_ready,b_event_local,
-    b_event_remote_valid,b_event_remote_ready,b_event_remote)
+    b_event_remote_valid,b_event_remote_ready,b_event_remote,unused_pending[7])
   `AXI_L2C(r_events,8,lpddr5_mc_host_response_event_t,DEPTH,r_event_local_valid,r_event_local_ready,r_event_local,
-    r_event_remote_valid,r_event_remote_ready,r_event_remote)
+    r_event_remote_valid,r_event_remote_ready,r_event_remote,unused_pending[8])
+  `AXI_L2C(lease_acks,9,lpddr5_mc_axi_lease_ack_t,2,lease_ack_local_valid,lease_ack_local_ready,lease_ack_q,
+    lease_ack_valid_o,lease_ack_ready_i,lease_ack_o,unused_pending[9])
 `undef AXI_L2C
 `undef AXI_C2L
 
@@ -266,12 +287,43 @@ module lpddr5_mc_axi_endpoint #(
           synthetic_r = i;
       end
     end
-    proposal_local_valid = candidate_valid_q && candidate_checked_q && !candidate_sent_q && operational && enable_sync_q[1];
-    grant_local_ready = operational && !granted_q;
-    accepted_local_valid = candidate_valid_q && granted_q && operational
-      && (candidate_q.write_access ? awvalid_i : arvalid_i);
-    awready_o = accepted_local_valid && candidate_q.write_access && accepted_local_ready;
-    arready_o = accepted_local_valid && !candidate_q.write_access && accepted_local_ready;
+    selected_address = '0;
+    selected_valid = 0;
+    if (awvalid_i && free_write >= 0 && write_count < int'(config_q.write_limit[PORT_INDEX])) begin
+      selected_address.address.axi = aw_i;
+      selected_address.address.slot = 6'(free_write);
+      selected_address.address.generation = w_generation[free_write];
+      selected_address.write_access = 1;
+      selected_valid = 1;
+    end else if (arvalid_i && free_read >= 0 && read_count < int'(config_q.read_limit[PORT_INDEX])) begin
+      selected_address.address.axi = ar_i;
+      selected_address.address.slot = 6'(free_read);
+      selected_address.address.generation = r_generation[free_read];
+      selected_valid = 1;
+    end
+    selected_address.address.sequence_number = sequence_q;
+    selected_address.boot_epoch = config_q.boot_epoch;
+    selected_address.config_epoch = config_q.config_epoch;
+    selected_mapped = burst_mapped(selected_address.address.axi,config_q,DATA_BITS,ID_BITS,ADDRESS_BITS);
+    selected_address.footprint = burst_footprint(selected_address.address.axi,selected_mapped);
+    selected_lease_hit = !lease_frozen_q
+      && (selected_address.footprint & owned_mask_q) == selected_address.footprint;
+    // An exposed revoke fences READY on its consumption edge as well. W and
+    // response traffic keep draining until every old acceptance is retired.
+    lease_local_ready = operational && !revoke_active_q && !lease_ack_pending_q;
+    lease_ack_local_valid = operational && lease_ack_pending_q;
+    revoke_drained = !b_active_q && !r_active_q;
+    for (int i=0;i<DEPTH;i++) revoke_drained &= !writes[i].valid && !reads[i].valid;
+    proposal_local_valid = candidate_valid_q && !candidate_sent_q && operational && enable_sync_q[1];
+    acceptance = candidate_valid_q ? candidate_q : selected_address;
+    acceptance_error = candidate_valid_q ? candidate_error_q : (selected_mapped ? 2'b00 : 2'b11);
+    accepted_local_valid = operational && sequence_q != 32'hffffffff
+      && !(lease_local_valid && lease_local.revoke)
+      && !lease_frozen_q
+      && (candidate_valid_q ? (granted_q && (candidate_q.write_access ? awvalid_i : arvalid_i))
+                            : (enable_sync_q[1] && selected_valid && selected_lease_hit));
+    awready_o = accepted_local_valid && acceptance.write_access && accepted_local_ready;
+    arready_o = accepted_local_valid && !acceptance.write_access && accepted_local_ready;
     w_local = '0;
     wready_o = 0;
     if (w_owner >= 0) begin
@@ -284,7 +336,7 @@ module lpddr5_mc_axi_endpoint #(
     bvalid_o = b_active_q; b_o = b_held_q.axi;
     rvalid_o = r_active_q; r_o = r_held_q.axi;
     b_local_ready = !b_active_q && !b_event_pending_q && b_event_local_ready;
-    r_local_ready = !r_active_q && !r_event_pending_q && r_event_local_ready;
+    r_local_ready = (!r_active_q || rready_i) && !r_event_pending_q && r_event_local_ready;
     if (!operational) begin b_local_ready = 1; r_local_ready = 1; end
     retire_local_ready = 1;
 
@@ -311,17 +363,31 @@ module lpddr5_mc_axi_endpoint #(
     r_event_remote_ready = core_event_ready_i && choose_read_event;
   end
 
+  // Control entries are immutable until their actual FIFO handshake. Reset
+  // and fatal fencing explicitly abort an old transport generation.
+  assert property (@(posedge axi_clk_i) disable iff (!operational)
+    lease_ack_local_valid && !lease_ack_local_ready |=> lease_ack_local_valid && $stable(lease_ack_q));
+  assert property (@(posedge axi_clk_i) disable iff (!operational)
+    lease_local_valid && !lease_local_ready |=> lease_local_valid && $stable(lease_local));
+  assert property (@(posedge core_clk_i) disable iff (!core_initialized_o)
+    lease_ack_valid_o && !lease_ack_ready_i |=> lease_ack_valid_o && $stable(lease_ack_o));
+
   always_ff @(posedge axi_clk_i or negedge axi_reset_n) begin : ledger
     if (!axi_reset_n) begin
       for (int i=0;i<DEPTH;i++) begin writes[i] <= '0; reads[i] <= '0; w_generation[i] <= 0; r_generation[i] <= 0; end
       config_q <= '0; epoch_valid_q <= 0; ever_epoch_q <= 0; fault_q <= 1; sequence_q <= 0; late_error_o <= 0;
       candidate_valid_q <= 0; candidate_checked_q <= 0; candidate_sent_q <= 0; granted_q <= 0;
-      candidate_q <= '0; checking_beat_q <= 0; candidate_error_q <= 0;
+      candidate_q <= '0; candidate_error_q <= 0;
+      owned_mask_q <= 0; lease_token_q <= 0; lease_frozen_q <= 1; request_pending_q <= 0;
+      revoke_active_q <= 0; revoke_q <= '0; lease_ack_pending_q <= 0; lease_ack_q <= '0;
       b_active_q <= 0; r_active_q <= 0; b_exposed_q <= 0;
       b_held_q <= '0; r_held_q <= '0;
       b_event_pending_q <= 0; r_event_pending_q <= 0; b_event_q <= '0; r_event_q <= '0;
     end else begin
-      if (fault_q) begin candidate_valid_q <= 0; granted_q <= 0; end
+      if (fault_q) begin
+        candidate_valid_q <= 0; granted_q <= 0; request_pending_q <= 0;
+        owned_mask_q <= 0; lease_frozen_q <= 1; revoke_active_q <= 0; lease_ack_pending_q <= 0;
+      end
       if (!enable_sync_q[1] && candidate_valid_q && !candidate_sent_q)
         candidate_valid_q <= 0;
       if (epoch_valid_q && (|local_faults)) begin
@@ -339,6 +405,8 @@ module lpddr5_mc_axi_endpoint #(
       if (source_rearm) begin
         config_q <= recovery_config_q; epoch_valid_q <= 1; ever_epoch_q <= 1; fault_q <= 0;
         candidate_valid_q <= 0; granted_q <= 0; candidate_sent_q <= 0;
+        owned_mask_q <= 0; lease_token_q <= 0; lease_frozen_q <= 1; request_pending_q <= 0;
+        revoke_active_q <= 0; lease_ack_pending_q <= 0;
         b_event_pending_q <= 0; r_event_pending_q <= 0;
         if (!ever_epoch_q || recovery_config_q.boot_epoch > config_q.boot_epoch) begin
           sequence_q <= 0;
@@ -349,70 +417,74 @@ module lpddr5_mc_axi_endpoint #(
       // A fresh boot epoch resets the counters only after real host settlement.
       if (operational && enable_sync_q[1] && sequence_q == 32'hffffffff && (awvalid_i || arvalid_i))
         fault_q <= 1;
-      if (operational && enable_sync_q[1] && !candidate_valid_q && sequence_q != 32'hffffffff) begin
-        if ((awvalid_i && free_write >= 0 && write_count < int'(config_q.write_limit[PORT_INDEX]))
-            || (arvalid_i && free_read >= 0 && read_count < int'(config_q.read_limit[PORT_INDEX]))) begin
-          lpddr5_mc_axi_address_t a;
-          logic write_access;
-          logic [5:0] slot;
-          write_access = awvalid_i && free_write >= 0 && write_count < int'(config_q.write_limit[PORT_INDEX]);
-          a = write_access ? aw_i : ar_i; slot = 6'(write_access ? free_write : free_read);
-          candidate_q.address.axi <= a; candidate_q.address.slot <= 6'(slot);
-          candidate_q.address.generation <= write_access ? w_generation[$clog2(DEPTH)'(slot)] : r_generation[$clog2(DEPTH)'(slot)];
-          candidate_q.address.sequence_number <= sequence_q; candidate_q.write_access <= write_access;
-          candidate_valid_q <= 1; candidate_checked_q <= 0; candidate_sent_q <= 0; checking_beat_q <= 0;
-          candidate_error_q <= address_form_valid(a,DATA_BITS,ID_BITS,ADDRESS_BITS) ? 0 : 2'b11;
+      if (operational && enable_sync_q[1] && !candidate_valid_q && selected_valid
+          && !selected_lease_hit && sequence_q != 32'hffffffff) begin
+        candidate_q <= selected_address;
+        candidate_valid_q <= 1; candidate_checked_q <= 1; candidate_sent_q <= 0; granted_q <= 0;
+        candidate_error_q <= selected_mapped ? 2'b00 : 2'b11;
+      end
+      if (proposal_local_valid && proposal_local_ready) begin
+        candidate_sent_q <= 1; request_pending_q <= 1;
+      end
+      if (lease_ack_pending_q && lease_ack_local_ready) lease_ack_pending_q <= 0;
+      if (lease_local_valid && lease_local_ready) begin
+        if (lease_local.boot_epoch != config_q.boot_epoch || lease_local.config_epoch != config_q.config_epoch
+            || lease_token_q == 32'hffffffff || lease_local.token != lease_token_q+1) fault_q <= 1;
+        else begin
+          lease_token_q <= lease_local.token;
+          if (lease_local.revoke) begin
+            owned_mask_q <= 0; lease_frozen_q <= 1;
+            revoke_q <= lease_local; revoke_active_q <= 1;
+          end else if (lease_local.mask == 0 || !candidate_valid_q || !candidate_sent_q
+              || (lease_local.mask & candidate_q.footprint) != candidate_q.footprint) fault_q <= 1;
+          else begin
+            owned_mask_q <= lease_local.mask; lease_frozen_q <= 0; granted_q <= 1;
+            lease_ack_q.command <= lease_local; lease_ack_q.accepted_next_sequence <= sequence_q;
+            lease_ack_pending_q <= 1;
+          end
         end
       end
-      if (candidate_valid_q && !candidate_checked_q && operational) begin
-        logic mapped;
-        logic [40:0] at, limit;
-        lpddr5_mc_host_decode_t decoded;
-        logic unused_decode;
-        at = beat_address(candidate_q.address.axi,checking_beat_q);
-        limit = beat_limit(candidate_q.address.axi,checking_beat_q); mapped = 1;
-        for (int lane=0;lane<DATA_BITS/8;lane++) if (at+41'(lane)<limit) begin
-          decoded = decode_address(config_q,40'(at+41'(lane)),CHANNELS,RANKS);
-          unused_decode = ^decoded;
-          mapped &= decoded.valid;
-        end
-        if (!mapped) candidate_error_q <= 2'b11;
-        if (checking_beat_q == {1'b0,candidate_q.address.axi.len} || candidate_error_q != 0) candidate_checked_q <= 1;
-        else checking_beat_q <= checking_beat_q+1;
-      end
-      if (proposal_local_valid && proposal_local_ready) candidate_sent_q <= 1;
-      if (grant_local_valid && grant_local_ready) begin
-        if (candidate_valid_q && candidate_sent_q && grant_local == candidate_q) granted_q <= 1;
-        else fault_q <= 1;
+      if (revoke_active_q && revoke_drained) begin
+        lease_ack_q.command <= revoke_q; lease_ack_q.accepted_next_sequence <= sequence_q;
+        lease_ack_pending_q <= 1; revoke_active_q <= 0;
       end
       if (candidate_valid_q && operational
           && ((candidate_q.write_access && awvalid_i && aw_i != candidate_q.address.axi)
               || (!candidate_q.write_access && arvalid_i && ar_i != candidate_q.address.axi))) fault_q <= 1;
       if (awready_o || arready_o) begin
         ledger_t entry;
-        entry = '0; entry.valid = 1; entry.address = candidate_q.address.axi;
-        entry.generation = candidate_q.address.generation; entry.sequence_number = sequence_q; entry.error = candidate_error_q;
-        if (awready_o) writes[$clog2(DEPTH)'(candidate_q.address.slot)] <= entry;
-        else reads[$clog2(DEPTH)'(candidate_q.address.slot)] <= entry;
+        entry = '0; entry.valid = 1; entry.address = acceptance.address.axi;
+        entry.generation = acceptance.address.generation; entry.sequence_number = sequence_q; entry.error = acceptance_error;
+        if (awready_o) writes[$clog2(DEPTH)'(acceptance.address.slot)] <= entry;
+        else reads[$clog2(DEPTH)'(acceptance.address.slot)] <= entry;
         sequence_q <= sequence_q+1;
-        candidate_valid_q <= 0; candidate_sent_q <= 0; granted_q <= 0;
+        candidate_valid_q <= 0; candidate_sent_q <= 0; granted_q <= 0; request_pending_q <= 0;
       end
       if (wvalid_i && wready_o && w_owner >= 0) begin
         writes[w_owner].w_received <= writes[w_owner].w_received+1;
         if (w_i.last != (writes[w_owner].w_received == {1'b0,writes[w_owner].address.len}) && writes[w_owner].error == 0)
           writes[w_owner].error <= 2'b10;
       end
-      if (retire_local_valid && operational) begin
-        if (retire_local.exposed || retire_local.handshaken) fault_q <= 1;
-        if (int'(retire_local.slot)<DEPTH) begin
-          if (retire_local.write_response && writes[$clog2(DEPTH)'(retire_local.slot)].valid
-              && writes[$clog2(DEPTH)'(retire_local.slot)].generation == retire_local.generation) writes[$clog2(DEPTH)'(retire_local.slot)].retired <= 1;
-          if (!retire_local.write_response && reads[$clog2(DEPTH)'(retire_local.slot)].valid
-              && reads[$clog2(DEPTH)'(retire_local.slot)].generation == retire_local.generation) reads[$clog2(DEPTH)'(retire_local.slot)].retired <= 1;
-          if (retire_local.response != 0 && retire_local.write_response && writes[$clog2(DEPTH)'(retire_local.slot)].error == 0)
-            writes[$clog2(DEPTH)'(retire_local.slot)].error <= retire_local.response;
-          if (retire_local.response != 0 && !retire_local.write_response && reads[$clog2(DEPTH)'(retire_local.slot)].error == 0)
-            reads[$clog2(DEPTH)'(retire_local.slot)].error <= retire_local.response;
+      if (retire_local_valid && retire_local_ready && operational && int'(retire_local.slot)<DEPTH) begin
+        // Every effect, including a reported error, belongs to this exact live
+        // generation. A stale same-slot retirement cannot modify a new owner.
+        if (retire_local.write_response && writes[$clog2(DEPTH)'(retire_local.slot)].valid
+            && writes[$clog2(DEPTH)'(retire_local.slot)].generation == retire_local.generation) begin
+          if (retire_local.exposed || retire_local.handshaken) fault_q <= 1;
+          else begin
+            writes[$clog2(DEPTH)'(retire_local.slot)].retired <= 1;
+            if (retire_local.response != 0 && writes[$clog2(DEPTH)'(retire_local.slot)].error == 0)
+              writes[$clog2(DEPTH)'(retire_local.slot)].error <= retire_local.response;
+          end
+        end
+        if (!retire_local.write_response && reads[$clog2(DEPTH)'(retire_local.slot)].valid
+            && reads[$clog2(DEPTH)'(retire_local.slot)].generation == retire_local.generation) begin
+          if (retire_local.exposed || retire_local.handshaken) fault_q <= 1;
+          else begin
+            reads[$clog2(DEPTH)'(retire_local.slot)].retired <= 1;
+            if (retire_local.response != 0 && reads[$clog2(DEPTH)'(retire_local.slot)].error == 0)
+              reads[$clog2(DEPTH)'(retire_local.slot)].error <= retire_local.response;
+          end
         end
       end
       for (int i=0;i<DEPTH;i++) begin
@@ -469,10 +541,15 @@ module lpddr5_mc_axi_endpoint #(
           b_active_q <= 1; b_exposed_q <= 0;
         end
       end
-      if (!r_active_q) begin
+      // Elastic replacement observes the old ledger on this edge. Exclude
+      // the just-consumed final identity explicitly; its acknowledged bit is
+      // not visible until the nonblocking updates below this edge commit.
+      if (!r_active_q || (rready_i && operational)) begin
         if (operational && r_local_valid && r_local_ready) begin
           if (int'(r_local.slot)<DEPTH && reads[$clog2(DEPTH)'(r_local.slot)].valid
-              && reads[$clog2(DEPTH)'(r_local.slot)].generation == r_local.generation && !reads[$clog2(DEPTH)'(r_local.slot)].acknowledged) begin
+              && reads[$clog2(DEPTH)'(r_local.slot)].generation == r_local.generation && !reads[$clog2(DEPTH)'(r_local.slot)].acknowledged
+              && !(r_active_q && rready_i && r_held_q.axi.last
+                   && r_local.slot == r_held_q.slot && r_local.generation == r_held_q.generation)) begin
             r_held_q <= r_local; r_active_q <= 1;
             if (r_local.axi.response != 0) reads[$clog2(DEPTH)'(r_local.slot)].error <= r_local.axi.response;
           end else fault_q <= 1;

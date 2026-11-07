@@ -63,6 +63,8 @@ module lpddr5_mc_apb #(
   int unsigned timer_q, timer_d, hash_index_q, hash_index_d;
   logic [CHANNELS-1:0][31:0] crc_q, crc_d;
   logic [CHANNELS-1:0] sent_q, sent_d, acked_q, acked_d;
+  logic [CHANNELS-1:0] declined_q, declined_d;
+  logic prior_valid_q, prior_valid_d;
   logic [CHANNELS-1:0] first_error_q, first_error_d;
   logic [CHANNELS-1:0][12:0] first_events_q, first_events_d;
   logic [31:0] sequence_q, sequence_d, epoch_q, epoch_d, boot_q, boot_d;
@@ -187,6 +189,8 @@ module lpddr5_mc_apb #(
     crc_d = crc_q;
     sent_d = sent_q;
     acked_d = acked_q;
+    declined_d = declined_q;
+    prior_valid_d = prior_valid_q;
     first_error_d = first_error_q;
     first_events_d = first_events_q;
     sequence_d = sequence_q;
@@ -283,6 +287,8 @@ module lpddr5_mc_apb #(
         frozen_d = staging_q;
         boot_d = current_boot;
         sequence_d = sequence_q + 1;
+        prior_valid_d = valid_q;
+        declined_d = 0;
         valid_d = 1'b0;
         state_d = HASH_IMAGE;
         hash_index_d = 0;
@@ -373,18 +379,34 @@ module lpddr5_mc_apb #(
             if ((!sent_q[c] && !(config_valid_o[c] && config_ready_i[c])) || acked_q[c] ||
                 config_ack_i[c].sequence_number != sequence_q ||
                 config_ack_i[c].boot_epoch != boot_q ||
-                config_ack_i[c].phase != (state_q == PREPARE ? LPDDR5_MC_CONFIG_PREPARE :
-                    state_q == COMMIT ? LPDDR5_MC_CONFIG_COMMIT : LPDDR5_MC_CONFIG_ABORT) ||
-                !config_ack_i[c].accepted) bad_ack = 1'b1;
-            else ack_seen[c] = 1'b1;
+                !((state_q == PREPARE && config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE
+                    && !config_ack_i[c].accepted) ||
+                  (config_ack_i[c].phase == (state_q == PREPARE ? LPDDR5_MC_CONFIG_PREPARE :
+                    state_q == COMMIT ? LPDDR5_MC_CONFIG_COMMIT : LPDDR5_MC_CONFIG_ABORT)
+                    && config_ack_i[c].accepted))) bad_ack = 1'b1;
+            else begin
+              ack_seen[c] = 1'b1;
+              if (state_q == PREPARE) declined_d[c] = config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE;
+            end
           end
         end
         acked_d = ack_seen;
         if (&ack_seen) begin
           if (state_q == PREPARE) begin
-            state_d = COMMIT;
-            sent_d = 0;
-            acked_d = 0;
+            if (|declined_d) begin
+              // Only a unanimous decline attests that every destination kept
+              // the old operating point and discarded its prepared image.
+              // A mixed outcome may have changed physical state: never resume
+              // it as though rollback had been established.
+              if ((&declined_d) && prior_valid_q && !fault_q) begin
+                valid_d = 1'b1;
+                state_d = IDLE;
+              end else bad_ack = 1'b1;
+            end else begin
+              state_d = COMMIT;
+              sent_d = 0;
+              acked_d = 0;
+            end
           end else if (state_q == COMMIT) begin
             active_d = frozen_q;
             epoch_d = sequence_q;
@@ -451,6 +473,8 @@ module lpddr5_mc_apb #(
       crc_q <= '0;
       sent_q <= '0;
       acked_q <= '0;
+      declined_q <= '0;
+      prior_valid_q <= 0;
       first_error_q <= '0;
       first_events_q <= '0;
       sequence_q <= 0;
@@ -477,6 +501,8 @@ module lpddr5_mc_apb #(
       crc_q <= crc_d;
       sent_q <= sent_d;
       acked_q <= acked_d;
+      declined_q <= declined_d;
+      prior_valid_q <= prior_valid_d;
       first_error_q <= first_error_d;
       first_events_q <= first_events_d;
       sequence_q <= sequence_d;

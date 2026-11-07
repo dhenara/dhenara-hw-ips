@@ -2,7 +2,10 @@ package lpddr5_mc_apb_pkg;
   import lpddr5_mc_apb_metadata_pkg::*;
 
   typedef enum logic [1:0] {
-    LPDDR5_MC_CONFIG_PREPARE, LPDDR5_MC_CONFIG_COMMIT, LPDDR5_MC_CONFIG_ABORT
+    LPDDR5_MC_CONFIG_PREPARE, LPDDR5_MC_CONFIG_COMMIT, LPDDR5_MC_CONFIG_ABORT,
+    // A terminal normal FSP decline: old profile retained, prepared image
+    // discarded. It is valid only in response to this exact PREPARE.
+    LPDDR5_MC_CONFIG_DECLINE
   } lpddr5_mc_publication_phase_t;
 
   typedef struct packed {
@@ -31,6 +34,10 @@ package lpddr5_mc_apb_pkg;
 
   typedef struct packed {
     lpddr5_mc_register_image_t image;
+    // Exactly-once event/error notification, not a repeated sticky CK image.
+    // Ordinary status snapshots use events=0 and error_valid=0. Each CE/UE
+    // notification increments the APB-owned counter once; its immutable error
+    // detail lets APB retain/rearm the first uncleared software-visible error.
     logic [12:0] events;
     logic error_valid;
     // Only a response to PERF_SNAPSHOT may replace the held counter image.

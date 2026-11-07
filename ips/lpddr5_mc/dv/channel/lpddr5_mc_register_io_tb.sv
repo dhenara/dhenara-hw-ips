@@ -47,7 +47,7 @@ module lpddr5_mc_register_io_tb;
         case(ca.address[6:0])
           44: assert(mrr_at<0) else $fatal(1,"sync after MRR");
           24: begin assert(ca.address[13:7]==address && mrr_at<0) else $fatal(1,"MRR address"); mrr_at=cycle; end
-          12: assert(mrr_at>=0) else $fatal(1,"WS_OFF origin");
+          124: assert(mrr_at>=0 && ca.address[13:7]==0) else $fatal(1,"WS_OFF encoding/origin");
           112: begin assert(request_zq && ca.address[13:7]==6) else $fatal(1,"MPC ZQ opcode"); zq_at=cycle; end
           default: $fatal(1,"unexpected register CA %h",ca.address);
         endcase

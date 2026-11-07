@@ -93,8 +93,8 @@ module apb_tb;
     ack_valid = 0;
   endtask
 
-  task automatic publish(input logic [31:0] boot_epoch = 0);
-    write_reg(18'h20, 1);
+  task automatic publish(input logic [31:0] boot_epoch = 0,input bit dvfs_go=0);
+    if(dvfs_go) write_reg(18'h30,32'h100,2);else write_reg(18'h20, 1);
     wait(cfg[0].prepare);
     #1;
     check(cfg[1].epoch == cfg[0].epoch && cfg[1].prepare && cfg[1].destinations == cfg[0].destinations &&
@@ -102,6 +102,7 @@ module apb_tb;
     held_sequence = cfg[0].epoch;
     held_crc = cfg[0].payload_crc;
     held_image = cfg_image[0];
+    if(dvfs_go) check(held_image[INDEX_DVFS]==2 && !cmd_valid,"DVFS GO lost merged target or queued a second owner");
     check(cfg_boot == boot_epoch && !cfg_good, "prepare epoch/admission fence");
     repeat(4) @(negedge pclk);
     write_reg(18'h10000, 32'h7777, 15, 1);
@@ -266,9 +267,8 @@ module apb_tb;
     write_reg(18'h30, 32'h100, 2, 1);
     write_reg(18'h30, 2);
     cmd_ready = 0;
-    write_reg(18'h30, 32'h100, 2);
-    check(cmd_valid && cmd.register_index == 10'(INDEX_DVFS) && cmd.write_data == 32'h102,
-        "DVFS command lost unstroked staging FSP payload");
+    write_reg(18'h30, 32'h100, 2, 1);
+    check(!cmd_valid && !busy,"DVFS GO bypassed complete-image validation");
     cmd_ready = 1;
     repeat(3) @(negedge pclk);
 
@@ -292,6 +292,7 @@ module apb_tb;
     read_reg(18'h10258, read_data);
     check(read_data == 2, "CE count did not continue");
     status[0].image[INDEX_BOOT_EPOCH] = 6;
+    status[0].events = 0; status[0].error_valid = 0;
     @(negedge pclk); status_valid = 1;
     @(negedge pclk); status_valid = 0;
     read_reg(18'h10258, read_data);
@@ -353,6 +354,8 @@ module apb_tb;
     write_reg(18'h20, 1, 15, 1);
     settled = 1;
     publish(7);
+    write_reg(18'h30,2);publish(7,1);
+    write_reg(18'h30,0);
     check_decline();
     write_reg(18'h10008, 2); // bad AGE_STEP rejects before publication
     write_reg(18'h20, 1, 15, 1);

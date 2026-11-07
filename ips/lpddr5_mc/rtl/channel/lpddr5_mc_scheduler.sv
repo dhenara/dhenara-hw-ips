@@ -27,7 +27,7 @@ module lpddr5_mc_scheduler #(
   output logic stop_requested_o,
   output logic maintenance_ready_o,
   output logic pages_closed_o, rows_closed_o,
-  output logic [63:0] accepted_o, issued_o, replayed_o
+  output logic [63:0] accepted_o, issued_o, replayed_o, max_wait_o
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_channel_pkg::*;
@@ -36,7 +36,7 @@ module lpddr5_mc_scheduler #(
   typedef enum logic [1:0] {PAIR_NONE, PAIR_ACT, PAIR_ACCESS} pair_t;
   typedef struct packed {
     logic valid;
-    logic [63:0] order_number;
+    logic [63:0] order_number, accepted_ck;
     logic [15:0] age;
     lpddr5_mc_granule_t granule;
   } entry_t;
@@ -55,10 +55,12 @@ module lpddr5_mc_scheduler #(
   logic [31:0] has_masked_q;
   logic [63:0] refresh_ready_q[2], read_ready_q[2][4], write_ready_q;
   logic [63:0] opened_at_q[32], precharge_ready_q;
+  logic [63:0] last_access_q[32];
   logic direction_q;
-  logic [7:0] batch_q;
-  logic preferred, best_preferred;
-  int expiry_bank;
+  logic [15:0] batch_q, hit_run_q;
+  logic preferred, best_preferred, policy_direction, capped_miss, best_capped_miss;
+  logic [15:0] batch_target;
+  int expiry_bank,idle_bank,close_bank,write_occupancy;
   logic [1023:0] dq_calendar_q;
   logic pick_q;
   int pick_index_q;
@@ -73,7 +75,12 @@ module lpddr5_mc_scheduler #(
   next_t selected_operation, live_operation;
   logic selected, legal, free_found, hazard, hit, urgent, best_urgent;
   logic masked, opposite_eligible;
-  logic candidate_eligible, candidate_cap;
+  logic candidate_eligible, candidate_cap, candidate_better;
+  logic policy_waiting, capped_miss_waiting;
+  logic miss_lock_q,miss_locked,locked_candidate,best_locked;
+  int miss_index_q;
+  lpddr5_mc_tag_t miss_tag_q;
+  logic [15:0] miss_generation_q;
   logic do_act1, do_act2, do_pre, do_access, do_sync, do_refresh, do_maint_pre, do_expiry_pre, maint_pre_all;
   logic [63:0] best_order;
   logic [15:0] best_age;
@@ -94,6 +101,17 @@ module lpddr5_mc_scheduler #(
     logic [4:0] b;
     b=5'(bank_number(g));
     return !open_q[b] ? OP_ACT : rows_q[b]==g.row ? OP_ACCESS : OP_PRE;
+  endfunction
+  function automatic logic overlap_blocked(input int index_value);
+    for(int j=0;j<TOTAL;j++) begin
+      if(entries_q[j].valid && entries_q[j].order_number<entries_q[index_value].order_number
+          && entries_q[j].granule.rank_index==entries_q[index_value].granule.rank_index
+          && entries_q[j].granule.bank_group==entries_q[index_value].granule.bank_group
+          && entries_q[j].granule.bank==entries_q[index_value].granule.bank
+          && entries_q[j].granule.row==entries_q[index_value].granule.row
+          && entries_q[j].granule.column[5:1]==entries_q[index_value].granule.column[5:1]) return 1;
+    end
+    return 0;
   endfunction
   function automatic logic [1023:0] dq_mask(input lpddr5_mc_granule_t g, input int lead);
     logic [1023:0] mask_value;
@@ -141,14 +159,18 @@ module lpddr5_mc_scheduler #(
   endfunction
 
   assign pair_pending_o=pair_q!=PAIR_NONE;
+  assign miss_locked=miss_lock_q && entries_q[miss_index_q].valid
+    && entries_q[miss_index_q].granule.tag==miss_tag_q && entries_q[miss_index_q].granule.generation==miss_generation_q;
   assign rows_closed_o=open_q==0;
   assign launch_o=pair_q!=PAIR_NONE ? pair_granule_q : entries_q[pick_index_q].granule;
   always_comb begin
-    expiry_bank=-1;drained_o=pair_q==PAIR_NONE;pages_closed_o=open_q==0;
+    expiry_bank=-1;idle_bank=-1;drained_o=pair_q==PAIR_NONE;pages_closed_o=open_q==0;
     for(int b=0;b<32;b++) begin
       if(ck_q<act_ready_q[b]) pages_closed_o=0;
       if(open_q[b] && ck_q+64'(config_i.profile.wl_ck)+64'(config_i.profile.dram_ck_twr)+32>=opened_at_q[b]+64'(config_i.profile.dram_ck_tras_max)
           && expiry_bank<0) expiry_bank=b;
+      if(open_q[b] && config_i.page_idle_ck!=0 && ck_q-last_access_q[b]>=64'(config_i.page_idle_ck)
+          && ck_q>=pre_ready_q[b] && idle_bank<0) idle_bank=b;
     end
     for(int i=0;i<TOTAL;i++) if(entries_q[i].valid) drained_o=0;
   end
@@ -157,59 +179,95 @@ module lpddr5_mc_scheduler #(
     read_used=current_cap_epoch==cap_epoch_q ? read_bytes_q : 33'd0;
     write_used=current_cap_epoch==cap_epoch_q ? write_bytes_q : 33'd0;
 
+    write_occupancy=0;
+    for(int i=QUEUE_DEPTH;i<TOTAL;i++) if(entries_q[i].valid) write_occupancy++;
+    batch_target=direction_q ? config_i.write_weight : config_i.read_weight;
+    if(batch_target<(direction_q ? 16'(config_i.write_batch_min) : 16'(config_i.read_batch_min)))
+      batch_target=(direction_q ? 16'(config_i.write_batch_min) : 16'(config_i.read_batch_min));
+    if(direction_q && config_i.write_batch_max!=0 && batch_target>16'(config_i.write_batch_max))
+      batch_target=16'(config_i.write_batch_max);
+
+    policy_direction=batch_q>=batch_target ? !direction_q : direction_q;
+    if(!direction_q && config_i.write_high!=0 && write_occupancy>=int'(config_i.write_high)
+        && batch_q>=16'(config_i.read_batch_min)) policy_direction=1;
+    if(direction_q && batch_q>=16'(config_i.write_batch_min)
+        && (write_occupancy<=int'(config_i.write_low)
+          || (config_i.write_batch_max!=0 && batch_q>=16'(config_i.write_batch_max)))) policy_direction=0;
+
     free_found=0;free_index=0;
-    preferred=0; best_preferred=0;
+    preferred=0; best_preferred=0;capped_miss=0;best_capped_miss=0;locked_candidate=0;best_locked=0;
     selected=0; selected_index=0; selected_operation=OP_ACT; best_order='1;
     best_urgent=0; best_age=0; best_qos=0;
     bank_index=0; rank_index=0; group_index=0; maintenance_bank=-1;
     hazard=0; hit=0; urgent=0; masked=0; opposite_eligible=0;
-    candidate_eligible=0; candidate_cap=0; live_operation=OP_ACT;
+    candidate_eligible=0; candidate_cap=0; candidate_better=0; live_operation=OP_ACT;
     bytes_used=0; cap=0; final_pin_ck=0;
     for (int i=0; i<TOTAL; i++) begin
       if (!entries_q[i].valid && (i/QUEUE_DEPTH)==int'(request_i.is_write) && !free_found) begin
         free_found=1; free_index=i;
       end
     end
-    // Work-conserving borrowing is permitted only without eligible opposite
-    // work. Eligibility includes live legality and older overlap hazards.
-    for (int i=0; i<TOTAL; i++) begin
-      if (entries_q[i].valid && entries_q[i].granule.is_write!=request_i.is_write
-          && command_legal(i,required_operation(entries_q[i].granule),1)) opposite_eligible=1;
+    // Reserve a requested turnaround while its timing matures. Continuing
+    // to issue the old direction would move that deadline forever. Empty,
+    // overlap-blocked or cap-disabled directions do not hold the batch.
+    policy_waiting=0;capped_miss_waiting=0;
+    for(int i=0;i<TOTAL;i++) if(entries_q[i].valid && !overlap_blocked(i)) begin
+      bytes_used=entries_q[i].granule.is_write ? write_used : read_used;
+      cap={1'b0,(entries_q[i].granule.is_write ? config_i.write_cap : config_i.read_cap)};
+      candidate_cap=!config_i.caps_enable || (bytes_used+33'(entries_q[i].granule.is_64_bytes ? 64 : 32)<=cap
+        && (!config_i.work_conserving || 34'(read_used)+34'(write_used)+34'(entries_q[i].granule.is_64_bytes ? 64 : 32)
+          <=34'(config_i.read_cap)+34'(config_i.write_cap)));
+      if(candidate_cap && (entries_q[i].granule.is_write ? config_i.write_weight!=0 : config_i.read_weight!=0)) begin
+        if(entries_q[i].granule.is_write==policy_direction) policy_waiting=1;
+        if(required_operation(entries_q[i].granule)!=OP_ACCESS && config_i.hit_cap!=0 && hit_run_q>=config_i.hit_cap)
+          capped_miss_waiting=1;
+      end
     end
     for (int i=0; i<TOTAL; i++) begin
       if (entries_q[i].valid) begin
-        hazard=0;
-        for (int j=0; j<TOTAL; j++) begin
-          if (entries_q[j].valid && entries_q[j].order_number<entries_q[i].order_number
-              && entries_q[j].granule.rank_index==entries_q[i].granule.rank_index
-              && entries_q[j].granule.bank_group==entries_q[i].granule.bank_group
-              && entries_q[j].granule.bank==entries_q[i].granule.bank
-              && entries_q[j].granule.row==entries_q[i].granule.row
-              && entries_q[j].granule.column[5:1]==entries_q[i].granule.column[5:1]) hazard=1;
-        end
+        hazard=overlap_blocked(i);
         live_operation=required_operation(entries_q[i].granule);
         bytes_used=entries_q[i].granule.is_write ? write_used : read_used;
         cap={1'b0,(entries_q[i].granule.is_write ? config_i.write_cap : config_i.read_cap)};
-        candidate_cap=!config_i.caps_enable || bytes_used+33'(entries_q[i].granule.is_64_bytes ? 64 : 32)<=cap;
+        candidate_cap=!config_i.caps_enable || (bytes_used+33'(entries_q[i].granule.is_64_bytes ? 64 : 32)<=cap
+        && (!config_i.work_conserving || 34'(read_used)+34'(write_used)+34'(entries_q[i].granule.is_64_bytes ? 64 : 32)
+          <=34'(config_i.read_cap)+34'(config_i.write_cap)));
         if (!candidate_cap && cap!=0 && config_i.work_conserving) begin
           opposite_eligible=0;
           for (int j=0; j<TOTAL; j++)
-            if (entries_q[j].valid && entries_q[j].granule.is_write!=entries_q[i].granule.is_write
+            if (entries_q[j].valid && !overlap_blocked(j) && entries_q[j].granule.is_write!=entries_q[i].granule.is_write
+                && (entries_q[j].granule.is_write ? config_i.write_cap!=0 : config_i.read_cap!=0)
                 && command_legal(j,required_operation(entries_q[j].granule),1)) opposite_eligible=1;
-          if (!opposite_eligible) candidate_cap=1;
+          if (!opposite_eligible && 34'(read_used)+34'(write_used)
+              +34'(entries_q[i].granule.is_64_bytes ? 64 : 32)
+              <=34'(config_i.read_cap)+34'(config_i.write_cap)) candidate_cap=1;
         end
-        candidate_eligible=!hazard && command_legal(i,live_operation,1) && candidate_cap;
-        urgent=entries_q[i].age>=config_i.urgent_age;
-        hit=live_operation==OP_ACCESS; preferred=entries_q[i].granule.is_write==direction_q;
-        if (candidate_eligible && (!selected || urgent>best_urgent
-            || (urgent==best_urgent && (urgent ? entries_q[i].age>best_age
-              || (entries_q[i].age==best_age && entries_q[i].order_number<best_order)
-            : preferred>best_preferred || (preferred==best_preferred && (entries_q[i].granule.qos_class>best_qos
-              || (entries_q[i].granule.qos_class==best_qos && (hit && selected_operation!=OP_ACCESS
-              || (hit==(selected_operation==OP_ACCESS) && entries_q[i].order_number<best_order))))))))) begin
+        urgent=entries_q[i].age>=(entries_q[i].granule.is_write ? config_i.write_urgent_age : config_i.read_urgent_age);
+        candidate_eligible=!hazard && command_legal(i,live_operation,1) && candidate_cap
+          && (urgent || ((entries_q[i].granule.is_write ? config_i.write_weight!=0 : config_i.read_weight!=0)
+            && (miss_locked ? i==miss_index_q : ((!policy_waiting || capped_miss_waiting || entries_q[i].granule.is_write==policy_direction)
+              && (!capped_miss_waiting || live_operation!=OP_ACCESS)))));
+        hit=live_operation==OP_ACCESS; preferred=entries_q[i].granule.is_write==policy_direction;
+        capped_miss=!hit && config_i.hit_cap!=0 && hit_run_q>=config_i.hit_cap;
+        locked_candidate=miss_locked && i==miss_index_q;
+        candidate_better=!selected;
+        if(selected) begin
+          if(urgent!=best_urgent) candidate_better=urgent;
+          else if(urgent) candidate_better=entries_q[i].age>best_age
+            || (entries_q[i].age==best_age && entries_q[i].order_number<best_order);
+          else if(locked_candidate!=best_locked) candidate_better=locked_candidate;
+          else if(capped_miss!=best_capped_miss) candidate_better=capped_miss;
+          else if(preferred!=best_preferred) candidate_better=preferred;
+          else if(entries_q[i].granule.qos_class!=best_qos) candidate_better=entries_q[i].granule.qos_class>best_qos;
+          else if(hit!=(selected_operation==OP_ACCESS)) candidate_better=hit;
+          else candidate_better=entries_q[i].order_number<best_order;
+        end
+        if(candidate_eligible && candidate_better) begin
           selected=1; selected_index=i; selected_operation=live_operation;
           best_urgent=urgent; best_age=entries_q[i].age; best_order=entries_q[i].order_number;
           best_qos=entries_q[i].granule.qos_class; best_preferred=preferred;
+          best_capped_miss=capped_miss;
+          best_locked=locked_candidate;
         end
       end
     end
@@ -221,7 +279,7 @@ module lpddr5_mc_scheduler #(
     ca_o='0; launch_valid_o=0; sync_o=0; sync_rank_o=0; sync_write_o=0;
     do_act1=0; do_act2=0; do_pre=0; do_access=0; do_sync=0; do_refresh=0; do_maint_pre=0; do_expiry_pre=0; maint_pre_all=close_i || maintenance_all_i; stop_requested_o=close_i || maintenance_valid_i;
     maintenance_ready_o=0;
-    issue_index=pick_index_q; legal=0; access_mask=0;
+    issue_index=pick_index_q; legal=0; access_mask=0;close_bank=expiry_bank;
     if (pair_q!=PAIR_NONE) begin
       issue_index=pair_index_q;
       if (pair_q==PAIR_ACT) begin do_act2=1; ca_o.address=ca_activate(pair_granule_q.row,{pair_granule_q.bank_group,pair_granule_q.bank},1); end
@@ -255,6 +313,11 @@ module lpddr5_mc_scheduler #(
       if(ck_q>=pre_ready_q[expiry_bank] && ck_q>=precharge_ready_q) begin
         do_expiry_pre=1; ca_o.cs=2'b1<<(expiry_bank/16); ca_o.address=ca_maintenance(1,0,0,4'(expiry_bank));
       end
+    end else if(command_enable_i && idle_bank>=0 && !selected && !pick_q && !fault_o && ck_q>=precharge_ready_q) begin
+      // Idle closure uses otherwise unused CA slots. Legal queued work and
+      // mandatory pairs retain priority; tRAS(max) closure above cannot wait.
+      do_expiry_pre=1;close_bank=idle_bank;
+      ca_o.cs=2'b1<<(idle_bank/16);ca_o.address=ca_maintenance(1,0,0,4'(idle_bank));
     end else if (pick_q && command_enable_i && issue_enable_i && !fault_o) begin
       legal=entries_q[pick_index_q].valid && entries_q[pick_index_q].granule.tag==pick_tag_q
         && entries_q[pick_index_q].granule.generation==pick_generation_q
@@ -265,11 +328,17 @@ module lpddr5_mc_scheduler #(
         cap={1'b0,(launch_o.is_write ? config_i.write_cap : config_i.read_cap)};
         opposite_eligible=0;
         for (int j=0; j<TOTAL; j++)
-          if (entries_q[j].valid && entries_q[j].granule.is_write!=launch_o.is_write
+          if (entries_q[j].valid && !overlap_blocked(j) && entries_q[j].granule.is_write!=launch_o.is_write
+              && (entries_q[j].granule.is_write ? config_i.write_cap!=0 : config_i.read_cap!=0)
               && command_legal(j,required_operation(entries_q[j].granule),0)) opposite_eligible=1;
         if (bytes_used+33'(launch_o.is_64_bytes ? 64 : 32)>cap
-            && !(config_i.work_conserving && cap!=0 && !opposite_eligible)) legal=0;
+            && !(config_i.work_conserving && cap!=0 && !opposite_eligible
+              && 34'(read_used)+34'(write_used)+34'(launch_o.is_64_bytes ? 64 : 32)
+                <=34'(config_i.read_cap)+34'(config_i.write_cap))) legal=0;
       end
+      if(legal && pick_operation_q==OP_ACCESS && config_i.caps_enable && config_i.work_conserving
+          && 34'(read_used)+34'(write_used)+34'(launch_o.is_64_bytes ? 64 : 32)
+            >34'(config_i.read_cap)+34'(config_i.write_cap)) legal=0;
       if (legal) begin
         ca_o.cs=2'b1<<launch_o.rank_index;
         if (pick_operation_q==OP_ACT) begin do_act1=1; ca_o.address=ca_activate(launch_o.row,{launch_o.bank_group,launch_o.bank},0); end
@@ -299,28 +368,31 @@ module lpddr5_mc_scheduler #(
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if (!rst_ni) begin
       ck_q<=0; order_q<=0; tick_q<=0; cap_epoch_q<=0; read_bytes_q<=0; write_bytes_q<=0;
-      phase_q<=0; open_q<=0; dq_calendar_q<=0; precharge_ready_q<=0; write_ready_q<=0; direction_q<=0; batch_q<=0;
+      phase_q<=0; open_q<=0; dq_calendar_q<=0; precharge_ready_q<=0; write_ready_q<=0; direction_q<=0; batch_q<=0;hit_run_q<=0;
       pick_q<=0; pick_index_q<=0; pick_tag_q<=0; pick_generation_q<=0; pick_operation_q<=OP_ACT;
       pair_q<=PAIR_NONE; pair_index_q<=0; pair_granule_q<='0; has_masked_q<=0;
-      fault_o<=0; accepted_o<=0; issued_o<=0; replayed_o<=0; event_o<='0;
+      miss_lock_q<=0;miss_index_q<=0;miss_tag_q<=0;miss_generation_q<=0;
+      fault_o<=0; max_wait_o<=0; accepted_o<=0; issued_o<=0; replayed_o<=0; event_o<='0;
       for (int i=0; i<TOTAL; i++) entries_q[i]<='0;
-      for (int b=0; b<32; b++) begin rows_q[b]<=0; act_ready_q[b]<=0; pre_ready_q[b]<=0; access_ready_q[b]<=0; last_masked_q[b]<=0; opened_at_q[b]<=0; end
+      for (int b=0; b<32; b++) begin rows_q[b]<=0; act_ready_q[b]<=0; pre_ready_q[b]<=0; access_ready_q[b]<=0; last_masked_q[b]<=0; opened_at_q[b]<=0;last_access_q[b]<=0; end
       for (int r=0; r<2; r++) begin
         rrd_ready_q[r]<=0; refresh_ready_q[r]<=0;
         for (int j=0; j<4; j++) begin faw_q[r][j]<=0; column_ready_q[r][j]<=0; read_ready_q[r][j]<=0; end
       end
     end else if (abort_i) begin
       ck_q<=0; order_q<=0; tick_q<=0; cap_epoch_q<=0; read_bytes_q<=0; write_bytes_q<=0;
-      phase_q<=0; open_q<=0; dq_calendar_q<=0; precharge_ready_q<=0; write_ready_q<=0; direction_q<=0; batch_q<=0; pick_q<=0; pair_q<=PAIR_NONE;
+      phase_q<=0; open_q<=0; dq_calendar_q<=0; precharge_ready_q<=0; write_ready_q<=0; direction_q<=0; batch_q<=0;hit_run_q<=0; pick_q<=0; pair_q<=PAIR_NONE;
       fault_o<=0; has_masked_q<=0; event_o<='0;
+      miss_lock_q<=0;miss_index_q<=0;miss_tag_q<=0;miss_generation_q<=0;
       for (int i=0; i<TOTAL; i++) entries_q[i]<='0;
-      for (int b=0; b<32; b++) begin rows_q[b]<=0; act_ready_q[b]<=0; pre_ready_q[b]<=0; access_ready_q[b]<=0; last_masked_q[b]<=0; opened_at_q[b]<=0; end
+      for (int b=0; b<32; b++) begin rows_q[b]<=0; act_ready_q[b]<=0; pre_ready_q[b]<=0; access_ready_q[b]<=0; last_masked_q[b]<=0; opened_at_q[b]<=0;last_access_q[b]<=0; end
       for (int r=0; r<2; r++) begin
         rrd_ready_q[r]<=0; refresh_ready_q[r]<=0;
         for (int j=0; j<4; j++) begin faw_q[r][j]<=0; column_ready_q[r][j]<=0; read_ready_q[r][j]<=0; end
       end
     end else begin
       ck_q<=ck_q+1; event_o<='0;
+      if(!miss_locked) miss_lock_q<=0;
       dq_calendar_q<=(dq_calendar_q | access_mask)>>(2*int'(config_i.profile.ratio));
       phase_q<=phase_q+1>=config_i.service_div ? 3'd0 : phase_q+1;
       tick_q<=tick_q+1>=32'(config_i.age_tick_div) ? 0 : tick_q+1;
@@ -328,7 +400,7 @@ module lpddr5_mc_scheduler #(
         if (entries_q[i].valid && tick_q+1>=32'(config_i.age_tick_div) && entries_q[i].age!='1) entries_q[i].age<=entries_q[i].age+1;
       if (request_valid_i && request_ready_o) begin
         entries_q[free_index].valid<=1; entries_q[free_index].order_number<=order_q;
-        entries_q[free_index].age<=0; entries_q[free_index].granule<=request_i;
+        entries_q[free_index].accepted_ck<=ck_q; entries_q[free_index].age<=0; entries_q[free_index].granule<=request_i;
         order_q<=order_q+1;
         if (accepted_o!='1) accepted_o<=accepted_o+1;
       end
@@ -343,8 +415,14 @@ module lpddr5_mc_scheduler #(
         pair_q<=do_act1 ? PAIR_ACT : PAIR_ACCESS; pair_index_q<=issue_index;
         pair_granule_q<=launch_o; pick_q<=0;
       end else if (pair_q!=PAIR_NONE) pair_q<=PAIR_NONE;
+      // Retain the chosen miss across PRE/ACT/access. Re-arbitrating after
+      // PRE would let high-QoS hits reopen the old row and defeat HIT_CAP.
+      if(!miss_locked && capped_miss_waiting && (do_pre || do_act1)) begin
+        miss_lock_q<=1;miss_index_q<=issue_index;miss_tag_q<=launch_o.tag;miss_generation_q<=launch_o.generation;
+      end
       if (do_act2) begin
         open_q[bank_index]<=1; rows_q[bank_index]<=launch_o.row; opened_at_q[bank_index]<=ck_q;
+        last_access_q[bank_index]<=ck_q;hit_run_q<=0;
         access_ready_q[bank_index]<=ck_q+64'(config_i.profile.dram_ck_trcd);
         pre_ready_q[bank_index]<=ck_q+64'(config_i.profile.dram_ck_tras_min);
         act_ready_q[bank_index]<=ck_q+64'(config_i.profile.dram_ck_trc);
@@ -357,12 +435,15 @@ module lpddr5_mc_scheduler #(
         if(act_ready_q[bank_index]<ck_q+64'(config_i.profile.dram_ck_trp_pb)) act_ready_q[bank_index]<=ck_q+64'(config_i.profile.dram_ck_trp_pb);
       end
       if (do_access) begin
+        if(miss_locked && issue_index==miss_index_q) miss_lock_q<=0;
         if (!launch_ready_i) fault_o<=1;
         entries_q[issue_index].valid<=0; pick_q<=0;
+        if(ck_q-entries_q[issue_index].accepted_ck>max_wait_o) max_wait_o<=ck_q-entries_q[issue_index].accepted_ck;
         if (issued_o!='1) issued_o<=issued_o+1;
         if(launch_o.is_write!=direction_q) begin direction_q<=launch_o.is_write; batch_q<=1; end
-        else if(batch_q+1>=(direction_q ? config_i.write_weight : config_i.read_weight)) begin direction_q<=!direction_q; batch_q<=0; end
-        else batch_q<=batch_q+1;
+        else if(batch_q!='1) batch_q<=batch_q+1;
+        last_access_q[bank_index]<=ck_q;
+        if(hit_run_q!='1) hit_run_q<=hit_run_q+1;
         cap_epoch_q<=current_cap_epoch;
         read_bytes_q<=read_used+(launch_o.is_write ? 33'd0 : 33'(launch_o.is_64_bytes ? 64 : 32));
         write_bytes_q<=write_used+(launch_o.is_write ? 33'(launch_o.is_64_bytes ? 64 : 32) : 33'd0);
@@ -373,7 +454,10 @@ module lpddr5_mc_scheduler #(
           if (pre_ready_q[bank_index]<final_pin_ck+64'(config_i.profile.dram_ck_twr)) pre_ready_q[bank_index]<=final_pin_ck+64'(config_i.profile.dram_ck_twr);
           if (masked) begin has_masked_q[bank_index]<=1; last_masked_q[bank_index]<=ck_q; end
         end else begin
-          write_ready_q<=final_pin_ck+2;
+          // A zero CSR keeps the derived pin-safe bound. Larger software
+          // minima extend turnaround from the read command's CK origin.
+          write_ready_q<=final_pin_ck+2 > ck_q+64'(config_i.read_to_write_min_ck)
+            ? final_pin_ck+2 : ck_q+64'(config_i.read_to_write_min_ck);
           if (pre_ready_q[bank_index]<final_pin_ck+64'(config_i.profile.dram_ck_trbtp)) pre_ready_q[bank_index]<=final_pin_ck+64'(config_i.profile.dram_ck_trbtp);
         end
         if (config_i.page_policy==1) begin
@@ -383,7 +467,7 @@ module lpddr5_mc_scheduler #(
       if (do_maint_pre || do_expiry_pre) begin
         precharge_ready_q<=ck_q+64'(config_i.profile.dram_ck_tppd);
         for(int b=0;b<32;b++) if((do_maint_pre && maint_pre_all && b/16==int'(maintenance_rank_i))
-            || b==(do_expiry_pre ? expiry_bank : maintenance_bank)) begin
+            || b==(do_expiry_pre ? close_bank : maintenance_bank)) begin
           open_q[b]<=0;
           if(act_ready_q[b]<ck_q+(do_maint_pre && maint_pre_all ? 64'(config_i.profile.dram_ck_trp_ab) : 64'(config_i.profile.dram_ck_trp_pb)))
             act_ready_q[b]<=ck_q+(do_maint_pre && maint_pre_all ? 64'(config_i.profile.dram_ck_trp_ab) : 64'(config_i.profile.dram_ck_trp_pb));

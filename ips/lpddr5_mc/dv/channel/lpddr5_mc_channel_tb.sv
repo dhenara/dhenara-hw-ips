@@ -37,7 +37,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   logic unused_debug;
   assign unused_debug=^{fsp_snapshot,notification_valid,notification_error_valid,notification_events,notification_boot,notification_epoch,notification_error,first_error_valid,first_error_version,first_error_boot,first_error_epoch,status_value,command_rejected,fsp_ready,fsp_declined,wck,prepared_epoch,committed_epoch,management_out};
   lpddr5_mc_channel #(.DEPTH(16),.PER_BANK_REFRESH(PER_BANK_REFRESH)) dut (
-    .clk_ck_i(clk),.rst_ni(rst_n),.request_valid_i(request_valid),.request_ready_o(request_ready),.request_i(request),.request_boot_epoch_i(request_boot),.request_config_epoch_i(request_epoch),
+    .clk_ck_i(clk),.rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(request_valid),.request_ready_o(request_ready),.request_i(request),.request_boot_epoch_i(request_boot),.request_config_epoch_i(request_epoch),
     .completion_valid_o(completion_valid),.completion_ready_i(completion_ready),.completion_o(completion),
     .feedback_valid_i(1'b0),.feedback_i(lpddr5_mc_channel_response_feedback_t'('0)),.host_settled_i(host_settled),.reset_confirmed_i(reset_confirmed),
     .command_valid_i(command_valid),.command_i(command),.command_ready_o(command_ready),.command_rejected_o(command_rejected),.train_ack_i(train_ack),.train_token_i(train_token),
@@ -151,18 +151,24 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     return g;
   endfunction
   task automatic stream(input logic writes,input int count);
-    int sent,received,n;
+    int sent,received,n,deadline,idle_ck,start_ck;
     logic [95:0] seen;
-    logic holding;
+    logic holding,progress;
     lpddr5_mc_granule_t expected;
     logic unused_expected;
-    sent=0;received=0;seen=0;holding=0;
-    for(int c=0;c<24000;c++) begin
+    sent=0;received=0;seen=0;holding=0;idle_ck=0;start_ck=cycles;
+    // Strict link epochs serialize MR43 and read-clear/WCK recovery for every
+    // physical half when the admitted drain reserve nearly fills the poll
+    // bound. REFpb adds complete rank/pair rounds. Scale the total deadline
+    // with that work, while independently rejecting a loss of host progress.
+    deadline=cfg.profile.write_link ? count*1024+4096 : 24000;
+    for(int c=0;c<deadline;c++) begin
+      progress=0;
       request=granule(sent,writes);request_valid=sent<count;completion_ready=c%11<7;
       #1;
       if(holding) assert(completion_valid && completion==held_completion) else $fatal(1,"stalled connected completion");
       holding=completion_valid && !completion_ready;held_completion=completion;
-      if(request_valid && request_ready) sent++;
+      if(request_valid && request_ready) begin sent++;progress=1;end
       if(completion_valid && completion_ready) begin
         n=int'(completion.identity.tag)-(writes ? 1000 : 2000);expected=granule(n,1);unused_expected=^expected;
         assert(n>=0 && n<count && !seen[n] && completion.identity.boot_epoch==request_boot && completion.identity.config_epoch==request_epoch
@@ -170,17 +176,30 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
           else $fatal(1,"connected completion identity/stage n=%0d",n);
         if(!writes) for(int b=0;b<64;b++)
           assert(completion.data[b*8+:8]==(expected.byte_enable[b] ? expected.data[b*8+:8] : 8'd0)) else $fatal(1,"memory byte n=%0d b=%0d got=%h",n,b,completion.data[b*8+:8]);
-        seen[n]=1;received++;
+        seen[n]=1;received++;progress=1;
       end
+      idle_ck=progress ? 0 : idle_ck+1;
+      assert(idle_ck<4096) else $fatal(1,"connected stream lost progress sent=%0d done=%0d idleCK=%0d",sent,received,idle_ck);
       step();if(received==count) break;
     end
     request_valid=0;completion_ready=1;step();
+    if(sent!=count || received!=count) begin
+      $display("stream stall writes=%0d link=%0d inline=%0d CK=%0d budget=%0d maint=%0d/%0d urgent=%0d reg=%0d reserve=%0d epoch=%0d/%0d WCK=%0d data=%0d pages=%0d",
+        writes,cfg.profile.write_link,cfg.inline_ecc,cycles,dut.refresh_budget,dut.maintenance_valid,dut.maintenance_ready,
+        dut.maintenance_urgent,dut.register_state_q,dut.backend.link_reserve_hold,dut.backend.epoch_drain,dut.backend.epoch_poll,
+        dut.wck_disabled,dut.backend.data_drained,dut.pages_closed);
+      $display("maintenance CK=%0d last=%0d/%0d pairs=%0d/%0d pending=%0d scheduler issued=%0d accepted=%0d MR43=%0d REF=%0d",
+        dut.maintenance.ck_q,dut.maintenance.last_refresh_q[0],dut.maintenance.last_refresh_q[1],
+        dut.maintenance.next_pair_q[0],dut.maintenance.next_pair_q[1],dut.maintenance.pending_q,dut.issued,dut.accepted_q,mr43_count,refresh_count);
+    end
     assert(sent==count && received==count) else $fatal(1,"connected stream progress sent=%0d done=%0d",sent,received);
+    $display("PASS stream progress writes=%0d count=%0d elapsedCK=%0d deadline=%0d",writes,count,cycles-start_ck,deadline);
   endtask
   task automatic run_case(input logic ratio_two,link_writes,inline_mode,input int divisor,input logic always_on=1);
+    logic [63:0] stale_before;
     rst_n=0;request_valid=0;command_valid=0;config_mailbox='0;management_in='0;request='0;tick();rst_n=1;cycles=0;
     cfg='0;cfg.profile=fixture_profile(ratio_two,0,link_writes,always_on,0,1);cfg.profile.ranks=2;cfg.inline_ecc=inline_mode;
-    cfg.service_div=3'(divisor);cfg.age_tick_div=8;cfg.urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
+    cfg.service_div=3'(divisor);cfg.age_tick_div=8;cfg.read_urgent_age=4;cfg.write_urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
     memory_profile=cfg.profile;
     request_boot=0;request_epoch=1;host_settled=1;reset_confirmed=0;report_valid=3;report_sr=0;phy_refresh_done=0;mr43=0;mr4=9;completion_ready=1;
     publish(1);boot();
@@ -190,7 +209,14 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     assert(mr4_count>=2 && zq_count>=2 && refresh_count>=2) else $fatal(1,"connected maintenance missing MR4=%0d ZQ=%0d REF=%0d",mr4_count,zq_count,refresh_count);
     if(link_writes) assert(mr43_count>2) else $fatal(1,"missing real MR43");
     // Epoch-fenced stale transport is consumed without side effects.
-    request=granule(90,1);request_epoch=0;request_valid=1;#1;assert(request_ready) else $fatal(1,"stale request drain");step();request_valid=0;request_epoch=1;
+    request=granule(90,1);request_epoch=0;request_valid=1;stale_before=dut.stale_q;
+    // REFpb may own a complete bounded maintenance round at this instant.
+    // Retain VALID/payload through that backpressure, then count one consume.
+    #1;
+    for(int c=0;c<3000 && !request_ready;c++) step();
+    assert(request_ready) else $fatal(1,"stale request drain deadline");
+    step();request_valid=0;request_epoch=1;
+    assert(dut.stale_q==stale_before+64'd1) else $fatal(1,"stale request consumed more or less than once");
     repeat(20) step();assert(!completion_valid) else $fatal(1,"stale request produced completion");
     host_settled=0;send_command(CH_CMD_QUIESCE);repeat(80) step();assert(status_value.state==3) else $fatal(1,"host settlement bypass");
     host_settled=1;wait_quiet();assert(status_value.drained) else $fatal(1,"true final drain");
@@ -240,7 +266,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     rst_n=0;request_valid=0;command_valid=0;config_mailbox='0;management_in='0;request='0;
     check_fsp=0;notification_ready=1;memory_reset=0;tick();rst_n=1;cycles=0;
     cfg='0;cfg.profile=fixture_profile(0,0,0,1,0,1);cfg.profile.ranks=2;
-    cfg.service_div=2;cfg.age_tick_div=8;cfg.urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
+    cfg.service_div=2;cfg.age_tick_div=8;cfg.read_urgent_age=4;cfg.write_urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
     memory_profile=cfg.profile;request_boot=0;request_epoch=1;host_settled=1;reset_confirmed=0;
     report_valid=3;report_sr=0;phy_refresh_done=0;train_ack=0;completion_ready=1;mr43=0;mr4=9;
     target_fsp=1;target_frequency=0;sre_count=0;srx_count=0;last_srx=0;

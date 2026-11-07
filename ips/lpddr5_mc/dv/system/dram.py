@@ -222,8 +222,10 @@ class DramModel:
         require(c.kind not in ("ACT2", "MRW2"), "orphan pair completion")
         if self.sync and self.sync[2] in (1, 2):
             start, target, kind = self.sync
+            # JESD209-5C Figure 195 (p340) explicitly uses CAS(WS_RD)
+            # immediately before MRR, whose data/preamble follow a read.
             require(
-                at == start + 1 and target == rank and c.kind in (("WR", "MWR") if kind == 1 else ("RD",)),
+                at == start + 1 and target == rank and c.kind in (("WR", "MWR") if kind == 1 else ("RD", "MRR")),
                 "CAS/access adjacency/direction/rank",
             )
             self.sync = None

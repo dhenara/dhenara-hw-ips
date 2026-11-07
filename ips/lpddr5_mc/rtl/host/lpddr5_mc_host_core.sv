@@ -508,12 +508,13 @@ module lpddr5_mc_host_core #(
             if (completion_i[c].failed || completion_i[c].response != 0) begin
               if (transactions[i].response == 0) transactions[i].response <= 2'b10;
               if (transactions[i].exposed && transactions[i].offered_response == 0) late_error_o <= 1;
-              if (completion_i[c].failed) begin
-                fault_o <= 1; config_valid_o <= 0; recovery_epoch_required_q <= 1;
-              end
+              // A correlated granule error is a transaction outcome. It must
+              // not invent ownership loss and prevent a protected full-word
+              // rewrite. Transport/ownership faults arrive through fatal_i.
             end
             if ((completion_i[c].integrity_done || transactions[i].chunk_integrity_done)
-                && (completion_i[c].physical_done || transactions[i].physical_done)) begin
+                && (completion_i[c].physical_done || transactions[i].physical_done
+                    || completion_i[c].failed || completion_i[c].response != 0)) begin
               logic last_chunk;
               last_chunk = transactions[i].chunk_first+transactions[i].chunk_beats
                 == 9'(transactions[i].address.len)+1;

@@ -10,9 +10,9 @@ module lpddr5_mc_scheduler_tb;
   logic sync,sync_write,sync_rank,wck_disabled=1,wck_reusable=0,wck_rank=0,wck_write=0;
   logic drained,pair_pending,fault,maintenance_valid=0,maintenance_rfm=0,maintenance_rank=0;
   logic maintenance_ready,pages_closed,rows_closed,stop_requested;
-  logic [63:0] accepted,issued,replayed;
+  logic [63:0] accepted,issued,replayed,max_wait;
   logic unused_debug;
-  assign unused_debug=^{event_value,pair_pending,accepted,issued,replayed,sync_rank,stop_requested,rows_closed};
+  assign unused_debug=^{event_value,pair_pending,accepted,issued,replayed,sync_rank,stop_requested,rows_closed,max_wait};
   lpddr5_mc_scheduler #(.QUEUE_DEPTH(16)) dut (
     .clk_ck_i(clk),.rst_ni(rst_n),.abort_i(abort_request),.config_i(cfg),.admission_i(admission),.issue_enable_i(issue_enable),.command_enable_i(1'b1),
     .request_valid_i(request_valid),.request_ready_o(request_ready),.request_i(request),
@@ -21,7 +21,7 @@ module lpddr5_mc_scheduler_tb;
     .wck_reusable_i(wck_reusable),.wck_rank_i(wck_rank),.wck_write_i(wck_write),
     .drained_o(drained),.pair_pending_o(pair_pending),.fault_o(fault),.maintenance_valid_i(maintenance_valid),
     .maintenance_all_i(1'b1),.maintenance_pair_i(3'd0),.activate_allowed_i('1),.close_i(1'b0),.stop_requested_o(stop_requested),.maintenance_rfm_i(maintenance_rfm),.maintenance_rank_i(maintenance_rank),.maintenance_ready_o(maintenance_ready),
-    .pages_closed_o(pages_closed),.rows_closed_o(rows_closed),.accepted_o(accepted),.issued_o(issued),.replayed_o(replayed));
+    .pages_closed_o(pages_closed),.rows_closed_o(rows_closed),.accepted_o(accepted),.issued_o(issued),.replayed_o(replayed),.max_wait_o(max_wait));
   task automatic tick;
     #1; clk=1; #1; clk=0; #1;
   endtask
@@ -38,7 +38,7 @@ module lpddr5_mc_scheduler_tb;
     logic [3:0] act_bank;
     rst_n=0; cfg='0; request='0; tick(); rst_n=1;
     cfg.profile=fixture_profile(0,0,0,1,0,0); cfg.profile.ranks=1;
-    cfg.service_div=3'(divisor_value); cfg.age_tick_div=8; cfg.urgent_age=2;
+    cfg.service_div=3'(divisor_value); cfg.age_tick_div=8; cfg.read_urgent_age=2;cfg.write_urgent_age=2;
     cfg.bw_window=64; cfg.caps_enable=1'(cap_on); cfg.read_cap=32'(cap_value); cfg.write_cap=32'(cap_value);
     cfg.work_conserving=1'(borrowing); cfg.read_weight=1; cfg.write_weight=1;
     admitted_count=0; issued_count=0; budget=0; window_number=0; act_count=0;
@@ -82,6 +82,7 @@ module lpddr5_mc_scheduler_tb;
         assert(ca.address[2:0]==(write_access==1 ? 4 : 5)) else $fatal(1,"access opcode");
         budget+=64;
         if (cap_on==1 && borrowing==0) assert(budget<=cap_value) else $fatal(1,"strict byte cap CK=%0d",cycle);
+        if (cap_on==1 && borrowing!=0) assert(budget<=2*cap_value) else $fatal(1,"borrowed combined byte cap CK=%0d bytes=%0d",cycle,budget);
         for (int beat=0;beat<32;beat++) begin
           int at_pin;
           at_pin=cycle*8+16+(write_access==1 ? 9*8+2 : 17*8+6)+beat+(beat>=16 ? 16 : 0);
@@ -122,7 +123,7 @@ module lpddr5_mc_scheduler_tb;
     assert(divisor_value inside {1,2,4}) else $fatal(1,"mixed divisor");
     rst_n=0;cfg='0;request='0;request_valid=0;issue_enable=0;launch_ready=0;tick();rst_n=1;
     cfg.profile=fixture_profile(0,0,0,1,0,0);
-    cfg.service_div=3'(divisor_value);cfg.age_tick_div=2;cfg.urgent_age=4;
+    cfg.service_div=3'(divisor_value);cfg.age_tick_div=2;cfg.read_urgent_age=4;cfg.write_urgent_age=4;
     cfg.bw_window=128;cfg.caps_enable=1'(cap_on);cfg.read_cap=128;cfg.write_cap=128;
     cfg.read_weight=1;cfg.write_weight=3;wck_disabled=1;wck_reusable=0;maintenance_valid=0;
     for(int n=0;n<32;n++) begin
@@ -164,6 +165,165 @@ module lpddr5_mc_scheduler_tb;
       else $fatal(1,"mixed urgent classes/ports/ranks or replay progress %0d",done_count);
     launch_ready=1;issue_enable=1;
   endtask
+  task automatic direction_age_case;
+    int done_count;
+    rst_n=0;request_valid=0;issue_enable=0;cfg='0;request='0;tick();rst_n=1;
+    cfg.profile=fixture_profile(0,0,0,1,0,0);cfg.profile.ranks=1;
+    cfg.service_div=1;cfg.age_tick_div=8;cfg.read_urgent_age=16'hffff;cfg.write_urgent_age=0;
+    cfg.read_weight=16'hffff;cfg.write_weight=16'hffff;cfg.bw_window=3000;
+    maintenance_valid=0;wck_disabled=1;wck_reusable=0;launch_ready=1;
+    for(int n=0;n<2;n++) begin
+      request='0;request.tag=64'(n)+1;request.generation=1;request.is_write=1'(n);
+      request.is_64_bytes=1;request.byte_enable='1;request.column=12'(n*2);
+      request.qos_class=n==0 ? 3 : 0;
+      request_valid=1;#1;assert(request_ready) else $fatal(1,"direction age admission");tick();
+    end
+    request_valid=0;issue_enable=1;done_count=0;
+    for(int cycle=0;cycle<1000;cycle++) begin
+      #1;
+      if(launch_valid) begin
+        if(done_count==0) assert(launch.is_write) else $fatal(1,"write age threshold ignored in favor of read QoS/direction");
+        done_count++;
+      end
+      tick();assert(!fault) else $fatal(1,"direction age fault");
+      if(done_count==2) break;
+    end
+    assert(done_count==2 && drained) else $fatal(1,"direction age progress");
+  endtask
+  task automatic turnaround_case(input int minimum_ck);
+    int read_ck,write_ck;
+    rst_n=0;request_valid=0;issue_enable=0;cfg='0;request='0;tick();rst_n=1;
+    cfg.profile=fixture_profile(0,0,0,1,0,0);cfg.profile.ranks=1;
+    cfg.read_to_write_min_ck=16'(minimum_ck);cfg.service_div=1;
+    cfg.age_tick_div=8;cfg.read_urgent_age=32;cfg.write_urgent_age=32;cfg.read_weight=1;cfg.write_weight=1;
+    cfg.bw_window=3000;maintenance_valid=0;wck_disabled=1;wck_reusable=0;launch_ready=1;
+    for(int n=0;n<2;n++) begin
+      request='0;request.tag=64'(n)+64'd1;request.generation=1;request.is_write=1'(n);
+      request.is_64_bytes=1;request.byte_enable='1;request.column=12'(n*2);
+      request_valid=1;#1;assert(request_ready) else $fatal(1,"turnaround admission");tick();
+    end
+    request_valid=0;issue_enable=1;read_ck=-1;write_ck=-1;
+    for(int cycle=0;cycle<1000;cycle++) begin
+      #1;
+      if(launch_valid) begin
+        if(launch.is_write) begin
+          assert(read_ck>=0 && cycle-read_ck>=minimum_ck) else $fatal(1,"programmed read/write turnaround bypassed");
+          write_ck=cycle;
+        end else read_ck=cycle;
+      end
+      tick();assert(!fault) else $fatal(1,"turnaround fault");
+      if(write_ck>=0) break;
+    end
+    assert(read_ck>=0 && write_ck>read_ck && drained) else $fatal(1,"turnaround progress");
+    if(minimum_ck==0) assert(write_ck-read_ck<256) else $fatal(1,"zero minimum blocked derived safe turnaround");
+  endtask
+  task automatic policy_setup;
+    rst_n=0;request_valid=0;issue_enable=0;cfg='0;request='0;tick();rst_n=1;
+    cfg.profile=fixture_profile(0,0,0,1,0,0);cfg.profile.ranks=1;
+    cfg.service_div=1;cfg.age_tick_div=8;cfg.read_urgent_age=16'hffff;cfg.write_urgent_age=16'hffff;
+    cfg.read_weight=16'hffff;cfg.write_weight=16'hffff;cfg.bw_window=3000;
+    maintenance_valid=0;wck_disabled=1;wck_reusable=0;launch_ready=1;
+  endtask
+  task automatic policy_admit(input int tag_value,column_value,row_value,qos_value,input bit write_value);
+    assert(column_value>=0 && column_value<64 && row_value>=0 && row_value<32768 && qos_value>=0 && qos_value<4)
+      else $fatal(1,"policy input bounds");
+    request='0;request.tag=64'(tag_value);request.generation=1;request.is_write=write_value;
+    request.is_64_bytes=1;request.byte_enable='1;request.column=12'(column_value);request.row=18'(row_value);request.qos_class=2'(qos_value);
+    request_valid=1;#1;assert(request_ready) else $fatal(1,"policy admission");tick();request_valid=0;
+  endtask
+  task automatic batch_policy_case(input int high_value,low_value,read_min,expected_reads,expected_writes);
+    int reads_before_write,writes_before_read,done_count;
+    bit saw_write,saw_read_again;
+    policy_setup();cfg.write_high=7'(high_value);cfg.write_low=7'(low_value);
+    cfg.read_batch_min=8'(read_min);cfg.write_batch_min=2;cfg.write_batch_max=4;
+    for(int n=0;n<8;n++) policy_admit(n+1,n*2,0,0,0);
+    for(int n=0;n<8;n++) policy_admit(n+9,n*2+16,0,0,1);
+    reads_before_write=0;writes_before_read=0;done_count=0;saw_write=0;saw_read_again=0;issue_enable=1;
+    for(int cycle=0;cycle<3000;cycle++) begin
+      #1;
+      if(launch_valid) begin
+        if(launch.is_write) begin saw_write=1;if(!saw_read_again) writes_before_read++;end
+        else if(!saw_write) reads_before_write++;
+        else saw_read_again=1;
+        done_count++;
+      end
+      tick();assert(!fault) else $fatal(1,"batch policy fault");
+      if(done_count==16) break;
+    end
+    assert(done_count==16 && drained && reads_before_write==expected_reads && writes_before_read==expected_writes)
+      else $fatal(1,"watermark/batch output order high%0d low%0d min%0d reads%0d writes%0d completed%0d",high_value,low_value,read_min,reads_before_write,writes_before_read,done_count);
+  endtask
+  task automatic idle_policy_case(input int idle_value);
+    int access_ck,pre_ck;
+    policy_setup();cfg.page_idle_ck=32'(idle_value);policy_admit(1,0,0,0,0);issue_enable=1;access_ck=-1;pre_ck=-1;
+    for(int cycle=0;cycle<250;cycle++) begin
+      #1;
+      if(launch_valid) access_ck=cycle;
+      if(ca.cs!=0 && ca.address[6:0]==120) begin pre_ck=cycle;break;end
+      tick();assert(!fault) else $fatal(1,"idle page fault");
+    end
+    assert(access_ck>=0) else $fatal(1,"idle page transfer missing");
+    if(idle_value==0) assert(pre_ck<0 && !rows_closed) else $fatal(1,"disabled page idle closed row");
+    else assert(pre_ck>=access_ck+idle_value && pre_ck<access_ck+idle_value+4) else $fatal(1,"page idle timeout bypassed or failed");
+  endtask
+  task automatic hit_policy_case(input int cap_value);
+    int done_count,miss_position;
+    policy_setup();cfg.hit_cap=16'(cap_value);policy_admit(1,0,0,3,0);issue_enable=1;
+    for(int cycle=0;cycle<200;cycle++) begin
+      #1;if(launch_valid) begin tick();break;end
+      tick();
+    end
+    issue_enable=0;repeat(80) tick();
+    for(int n=0;n<4;n++) policy_admit(n+2,n*2+2,0,3,0);
+    policy_admit(6,0,1,0,0);issue_enable=1;done_count=0;miss_position=-1;
+    for(int cycle=0;cycle<1000;cycle++) begin
+      #1;
+      if(launch_valid) begin
+        if(launch.tag==6) miss_position=done_count;
+        done_count++;
+      end
+      tick();assert(!fault) else $fatal(1,"hit cap fault");
+      if(done_count==5) break;
+    end
+    assert(done_count==5 && drained) else $fatal(1,"hit cap progress");
+    if(cap_value==0) assert(miss_position==4) else $fatal(1,"uncapped QoS/row preference changed");
+    else assert(miss_position<=cap_value) else $fatal(1,"hit cap failed to serve conflicting low-QoS row");
+  endtask
+  task automatic borrowed_arrival_case;
+    int done_count,bytes_used,last_window,window_now;
+    bit write_added;
+    policy_setup();cfg.caps_enable=1;cfg.work_conserving=1;
+    cfg.bw_window=512;cfg.read_cap=64;cfg.write_cap=64;
+    for(int n=0;n<4;n++) policy_admit(n+1,n*2,0,0,0);
+    done_count=0;bytes_used=0;last_window=0;write_added=0;issue_enable=1;
+    for(int cycle=0;cycle<2200;cycle++) begin
+      #1;window_now=int'(dut.ck_q)/512;
+      if(window_now!=last_window) begin last_window=window_now;bytes_used=0;end
+      if(launch_valid) begin
+        done_count++;bytes_used+=64;
+        assert(bytes_used<=128) else $fatal(1,"new opposite traffic overspent borrowed window");
+      end
+      tick();
+      if(done_count==2 && !write_added) begin
+        // The first two reads consumed both direction budgets. A write
+        // arriving now must wait, despite its own unused per-direction cap.
+        issue_enable=0;policy_admit(5,16,0,0,1);issue_enable=1;write_added=1;
+      end
+      assert(!fault) else $fatal(1,"borrowed arrival fault");
+      if(done_count==5) break;
+    end
+    assert(write_added && done_count==5 && drained) else $fatal(1,"borrowed arrival progress");
+  endtask
+  task automatic zero_weight_case;
+    int completed;
+    policy_setup();cfg.read_weight=0;cfg.read_urgent_age=4;policy_admit(1,0,0,0,0);issue_enable=1;completed=0;
+    for(int cycle=0;cycle<200;cycle++) begin
+      #1;
+      if(launch_valid) begin assert(cycle>=30) else $fatal(1,"zero weighted share issued before urgency");completed++;end
+      tick();if(completed!=0) break;
+    end
+    assert(completed==1 && drained && !fault) else $fatal(1,"zero weighted share lost urgent escape");
+  endtask
   initial begin
     cfg='0; request='0;
     for (int div=1;div<=4;div*=2) begin
@@ -171,6 +331,12 @@ module lpddr5_mc_scheduler_tb;
       mixed_case(div,0);mixed_case(div,1);
       run_case(div,0,1,64,0); run_case(div,0,1,0,0); run_case(div,0,1,0,1); run_case(div,0,1,64,1);
     end
+    batch_policy_case(4,1,2,2,4);batch_policy_case(4,7,2,2,2);
+    batch_policy_case(4,1,3,3,4);batch_policy_case(0,0,2,8,8);
+    idle_policy_case(0);idle_policy_case(100);
+    hit_policy_case(0);hit_policy_case(2);zero_weight_case();borrowed_arrival_case();
+    direction_age_case();
+    turnaround_case(0);turnaround_case(256);
     $display("PASS scheduler: CK/2/4 pairs, mixed directions/classes/ports/ranks, credit-stall replay/progress, finite queues, row changes, strict/zero/borrowed caps and maintenance with selection off");
     $finish;
   end

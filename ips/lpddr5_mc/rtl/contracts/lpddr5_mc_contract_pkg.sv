@@ -116,6 +116,8 @@ package lpddr5_mc_contract_pkg;
     lpddr5_mc_tag_t tag;
     logic port_index;
     logic channel_index;
+    logic rank_index;
+    lpddr5_mc_operation_t operation;
     logic [8:0] syndrome;
     logic correlated;
     logic uncorrectable;

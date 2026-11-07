@@ -22,7 +22,7 @@ module lpddr5_mc_config_tb;
   endtask
   task automatic load_config(input int index_value, sequence_value);
     set_profile(index_value); cfg='0; cfg.profile=profile; cfg.service_div=2;
-    cfg.age_tick_div=8; cfg.urgent_age=32; cfg.bw_window=3000;
+    cfg.age_tick_div=8; cfg.read_urgent_age=32;cfg.write_urgent_age=32; cfg.bw_window=3000;
     cfg.boot_epoch=boot_epoch; cfg.config_epoch=32'(sequence_value);
     config_mailbox='0; config_mailbox.destinations=1; config_mailbox.epoch=32'(sequence_value); config_mailbox.payload_crc=config_crc(cfg);
   endtask

@@ -243,6 +243,35 @@ class HostTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_sampled_power_down_exit_pulse(self):
+        for high_cycles in (1, 3):
+            with self.subTest(high_cycles=high_cycles):
+                phy = DigitalPhy(PROFILES[0])
+                phy.command(10, 1, 64)
+                for ck in range(11, 20):
+                    phy.command(ck, 0, 0)
+                for ck in range(20, 20 + high_cycles):
+                    phy.command(ck, 1, 0)
+                if high_cycles == 1:
+                    with self.assertRaisesRegex(Violation, "PDX CS pulse"):
+                        for ck in range(21, 26):
+                            phy.command(ck, 0, 0)
+                else:
+                    for ck in range(23, 28):
+                        phy.command(ck, 0, 0)
+                    self.assertIsNone(phy.dram.power[0])
+                    self.assertEqual(phy.dram.rank_ready[0], 29 + PROFILES[0]["dram_ck"]["txp"])
+
+    def test_mrr_read_synchronization(self):
+        m = DramModel(PROFILES[0])
+        m.command(0, 1, commands.cas("read"))
+        m.command(1, 1, commands.mode_read(4))
+        m.finish()
+        m = DramModel(PROFILES[0])
+        m.command(0, 1, commands.cas("write"))
+        with self.assertRaisesRegex(Violation, "adjacency/direction/rank"):
+            m.command(1, 1, commands.mode_read(4))
+
     def test_literal_ca_and_seeded_operands(self):
         rng = random.Random(2095)
         self.assertEqual(decode(0x58 | 4 << 7).kind, "MRW1")

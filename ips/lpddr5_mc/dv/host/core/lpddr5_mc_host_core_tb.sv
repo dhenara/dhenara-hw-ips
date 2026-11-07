@@ -382,6 +382,14 @@ module lpddr5_mc_host_core_tb #(parameter int DATA_BITS=128, parameter int QUEUE
     admit(0,10,0,a);receive_r(0,10,a,0);wait_settled();
     if(stale_count!=1)$fatal(1,"stale completion not rejected/count mismatch");
     stale_first=0;note("stale boot epoch cannot complete current request");
+    // A terminal correlated error has a known disposition. Keep configuration
+    // and unrelated admission live so software can rewrite a poisoned word.
+    fail_next=1;a=make_address('h16c0,64/BUS_BYTES,$clog2(BUS_BYTES),1,24);
+    admit(0,10,0,a);receive_r(0,10,a,2);wait_settled();
+    if(fault || !config_valid)$fatal(1,"correlated read error invented global ownership loss");
+    fail_next=0;admit(0,10,1,a);send_w(0,10,a);receive_b(0,10,0);
+    admit(0,10,0,a);receive_r(0,10,a,0);wait_settled();
+    note("correlated channel error settles locally and permits protected rewrite");
     // Fatal before W: all admitted beats are still consumed, one B is emitted.
     a=make_address('h1700,64/BUS_BYTES,$clog2(BUS_BYTES),1,15);admit(0,11,1,a);
     @(negedge clk);fatal=1;tick(3);send_w(0,11,a,-1,0);receive_b(0,11,2);wait_settled();

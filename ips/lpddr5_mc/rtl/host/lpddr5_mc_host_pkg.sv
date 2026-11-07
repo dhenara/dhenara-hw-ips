@@ -23,7 +23,8 @@ package lpddr5_mc_host_pkg;
     logic [31:0] boot_epoch, config_epoch;
   } lpddr5_mc_host_identity_t;
 
-  // Same field layout as the channel-local completion/feedback contracts.
+  // Host response subset. Project diagnostic-extended channel completions by
+  // named fields; a packed cast would shift data and completion flags.
   typedef struct packed {
     lpddr5_mc_host_identity_t identity;
     logic physical_done, integrity_done, failed, is_write;

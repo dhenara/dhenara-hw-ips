@@ -104,7 +104,13 @@ class Cap:
         if epoch != self.epoch:
             self.epoch = epoch
             self.used = [0, 0]
-        if self.used[direction] + amount <= self.limit[direction] or self.mode == "work_conserving" and not other_ready:
+        if self.limit[direction] == 0:
+            return False
+        if self.mode == "work_conserving" and sum(self.used) + amount > sum(self.limit):
+            return False
+        if self.used[direction] + amount <= self.limit[direction] or (
+            self.mode == "work_conserving" and not other_ready and sum(self.used) + amount <= sum(self.limit)
+        ):
             self.used[direction] += amount
             return True
         return False
@@ -139,7 +145,7 @@ class WeightedArbiter:
     used: int = 0
 
     def choose(self, ready: tuple[bool, bool]) -> int | None:
-        if any(type(w) is not int or not 0 <= w <= 255 for w in self.weights):
+        if any(type(w) is not int or not 0 <= w <= 65535 for w in self.weights):
             raise ValueError("weights")
         for _ in range(2):
             d = self.direction

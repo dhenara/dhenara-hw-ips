@@ -48,7 +48,7 @@ module lpddr5_mc_register_io (
     ca_o='0;
     if(state_q==SYNC) begin ca_o.cs=2'b1<<result_rank_o; ca_o.address=ca_cas(3'd2); end
     if(state_q==READ) begin ca_o.cs=2'b1<<result_rank_o; ca_o.address=ca_pack(7'd24,result_address_o); end
-    if(state_q==STOP && stop_ready) begin ca_o.cs=2'b1<<result_rank_o; ca_o.address=ca_cas(3'd0); end
+    if(state_q==STOP && stop_ready) begin ca_o.cs=2'b1<<result_rank_o; ca_o.address=ca_cas(3'd7); end
     // Table 303, OP[7:0]=0x86: ZQ CAL Latch, background mode only.
     if(state_q==ZQ) begin ca_o.cs=2'b1<<result_rank_o; ca_o.address=ca_pack(7'd112,7'd6); end
   end

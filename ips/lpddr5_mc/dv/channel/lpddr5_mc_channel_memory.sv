@@ -113,6 +113,8 @@ module lpddr5_mc_channel_memory (
         act_pending=1;act_rank=1'(rank_value);act_bank=4'(bank_value);act_row={ca_i.address[6:3],ca_i.address[13:11],11'b0};
       end else if(ca_i.address[3:0]==12) begin
         // Synchronization/WS_OFF are not memory data commands.
+        assert(ca_i.address[13:7]==0 && ca_i.address[6:4] inside {3'd1,3'd2,3'd4,3'd7})
+          else $fatal(1,"unsupported CAS synchronization/WS_OFF operand");
       end else if(ca_i.address[2:0] inside {1,2,4,5,6} || ca_i.address[6:0]==24) begin
         assert(command_count<1024) else $fatal(1,"fixture command capacity");
         commands[command_count]='0;commands[command_count].at_ck=ck;commands[command_count].rank_index=1'(rank_value);

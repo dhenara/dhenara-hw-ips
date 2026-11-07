@@ -42,7 +42,7 @@ module lpddr5_mc_lifecycle (
   typedef enum logic [4:0] {BOOT, BOOT_START, BOOT_EXIT, BOOT_WAIT,
     QUIET, RUN, DRAIN, LP_ACCEPT, LP_ENTER, LP_HOLD, LP_RELEASE,
     LP_UPDATE, LP_EXIT, LP_WAIT, UPDATE, FSP, MASTER_ENTER, MASTER_GUARD, MASTER,
-    MASTER_RETURN, MASTER_EXIT, MASTER_WAIT, FAILED} state_t;
+    MASTER_RETURN, MASTER_EXIT, MASTER_WAIT, FAILED, PD_LOW} state_t;
   state_t state_q;
   lpddr5_mc_channel_command_t operation_q;
   logic [31:0] elapsed_q, retired_epoch_q, master_age_q, master_elapsed_q, boot_profile_epoch_q;
@@ -53,14 +53,28 @@ module lpddr5_mc_lifecycle (
   logic [1:0][31:0] refresh_age_q;
   logic [1:0] active_ranks, boot_sr_q;
   logic drained, known_ranks;
-  logic [31:0] master_limit, wake_limit;
+  logic [31:0] master_limit, wake_limit, residency_limit;
+  // All admitted profiles keep CK at 800 MHz. JESD209-5C Figure 150 /
+  // Table 245 require tCSPD >= 10 ns + 1 CK, tCSH >= 3 ns and tCSL >=
+  // 4 ns; self-refresh requires at least 15 ns before exit. Round up in CK.
+  localparam int PD_RESIDENCY_CK=9, SR_RESIDENCY_CK=12;
+  localparam int PD_CS_HIGH_CK=3, PD_CS_LOW_CK=4;
   logic unused_payload;
   assign unused_payload=^{profile_i,management_i,update_busy_i,fsp_busy_i,master_choices_q,master_sel_q};
   assign active_ranks=2'b11>>(2-int'(profile_i.ranks));
   assign drained=host_settled_i && backend_drained_i && integrity_drained_i;
   assign known_ranks=(rank_report_valid_i & active_ranks)==active_ranks;
-  assign command_ready_o=state_q inside {QUIET,RUN,LP_HOLD,FAILED};
-  assign admission_o=state_q==RUN && trusted_o && profile_valid_i && !maintenance_urgent_i && !fault_i && !master_pending_q;
+  // An accepted WAKE must survive the minimum residency bound. Do not
+  // acknowledge the command in LP_HOLD until it can actually take effect.
+  assign command_ready_o=state_q inside {QUIET,RUN,FAILED}
+    || (state_q==LP_HOLD && elapsed_q+1>=residency_limit);
+  // The upstream host closes new source admission before requesting drain.
+  // Already accepted AXI work may still be in its CDC queues, so channel
+  // ingress must remain live until the actual host settlement witness. This
+  // applies to pending PHY-master entry too; blocking on master_pending_q in
+  // DRAIN would strand that work and prevent ownership transfer indefinitely.
+  assign admission_o=((state_q==RUN && !master_pending_q) || (state_q==DRAIN && !host_settled_i))
+    && trusted_o && profile_valid_i && !maintenance_urgent_i && !fault_i;
   assign issue_o=(state_q inside {RUN,DRAIN}) && trusted_o && !fault_i;
   assign maintenance_enable_o=state_q inside {QUIET,RUN,DRAIN};
   assign close_o=state_q==DRAIN && backend_drained_i && integrity_drained_i;
@@ -71,6 +85,9 @@ module lpddr5_mc_lifecycle (
   assign fsp_request_o=state_q==FSP && !op_started_q;
   assign fault_o=state_q==FAILED;
   always_comb begin
+    residency_limit=32'(profile_i.dram_ck_tcke);
+    if(operation_q==CH_CMD_POWER_DOWN && residency_limit<PD_RESIDENCY_CK) residency_limit=PD_RESIDENCY_CK;
+    if(operation_q==CH_CMD_SELF_REFRESH && residency_limit<SR_RESIDENCY_CK) residency_limit=SR_RESIDENCY_CK;
     case(master_type_q)
       0: master_limit=32'(profile_i.management_ck_tphymstr_type0);
       1: master_limit=32'(profile_i.management_ck_tphymstr_type1);
@@ -95,7 +112,7 @@ module lpddr5_mc_lifecycle (
     if(state_q==FAILED) state_o=5;
     owner_o=LPDDR5_MC_OWN_QUIESCING;
     if(state_q inside {BOOT,BOOT_START}) owner_o=LPDDR5_MC_OWN_PHY;
-    if(state_q inside {BOOT_EXIT,BOOT_WAIT,QUIET,RUN,LP_HOLD,LP_EXIT,LP_WAIT}) owner_o=LPDDR5_MC_OWN_CONTROLLER;
+    if(state_q inside {BOOT_EXIT,BOOT_WAIT,QUIET,RUN,LP_HOLD,LP_EXIT,PD_LOW,LP_WAIT}) owner_o=LPDDR5_MC_OWN_CONTROLLER;
     if(master_ack_o || state_q inside {UPDATE,FSP,LP_UPDATE}) owner_o=LPDDR5_MC_OWN_PHY;
     if(state_q==FAILED) owner_o=LPDDR5_MC_OWN_FAULT;
   end
@@ -205,7 +222,7 @@ module lpddr5_mc_lifecycle (
         LP_HOLD: begin
           if(!management_i.lp_ctrl_ack || !management_i.lp_data_ack) fail(8'd4);
           else if((command_valid_i && command_i==CH_CMD_WAKE) || (operation_q==CH_CMD_POWER_DOWN && refresh_budget_i<=wake_limit+32'(profile_i.dram_ck_txp)+8)) begin
-            if(elapsed_q+1>=32'(profile_i.dram_ck_tcke)) begin state_q<=LP_RELEASE; elapsed_q<=0; lp_ctrl_request_o<=0; lp_data_request_o<=0; end
+            if(elapsed_q+1>=residency_limit) begin state_q<=LP_RELEASE; elapsed_q<=0; lp_ctrl_request_o<=0; lp_data_request_o<=0; end
             else command_rejected_o<=command_valid_i;
           end else if(command_valid_i) command_rejected_o<=1;
         end
@@ -219,9 +236,11 @@ module lpddr5_mc_lifecycle (
           if(update_done_i) begin state_q<=LP_EXIT; op_started_q<=0; end
         end
         LP_EXIT: begin
-          if(operation_q==CH_CMD_SELF_REFRESH) self_refresh_exit_o<=active_ranks;
-          elapsed_q<=0; state_q<=LP_WAIT;
+          if(operation_q==CH_CMD_SELF_REFRESH) begin
+            self_refresh_exit_o<=active_ranks;elapsed_q<=0;state_q<=LP_WAIT;
+          end else if(elapsed_q+1>=PD_CS_HIGH_CK) begin elapsed_q<=0;state_q<=PD_LOW;end
         end
+        PD_LOW: if(elapsed_q+1>=PD_CS_LOW_CK) begin elapsed_q<=0;state_q<=LP_WAIT;end
         LP_WAIT: if(elapsed_q+1>=(operation_q==CH_CMD_SELF_REFRESH ? 32'(profile_i.dram_ck_txsr) : 32'(profile_i.dram_ck_txp))) state_q<=QUIET;
         MASTER_ENTER: begin
           self_refresh_enter_o<=chosen_sr_q; elapsed_q<=0; state_q<=MASTER_GUARD;

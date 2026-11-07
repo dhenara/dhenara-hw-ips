@@ -67,17 +67,22 @@ module lpddr5_mc_lifecycle_tb;
     boot(); send(CH_CMD_ENABLE); assert(admission) else $fatal(1,"enable");
     // Quiesce cannot use an empty command queue as a host handshake.
     host_settled=0; send(CH_CMD_QUIESCE); repeat(5) tick();
-    assert(!admission && close_pages && state_value==3) else $fatal(1,"response lifetime drain");
-    host_settled=1; tick(); assert(state_value==1) else $fatal(1,"quiesce");
+    assert(admission && issue_enable && close_pages && state_value==3) else $fatal(1,"accepted CDC work must enter during drain");
+    host_settled=1; #1; assert(!admission) else $fatal(1,"settled drain ingress fence");
+    tick(); assert(state_value==1 && !admission) else $fatal(1,"quiesce");
     send(CH_CMD_POWER_DOWN); wait_lp(); repeat(32) tick();
     assert(state_value==1 && !lp_ctrl && !fault) else $fatal(1,"normal LP decline");
     send(CH_CMD_POWER_DOWN);wait_lp();management.lp_ctrl_ack=1;management.lp_data_ack=1;tick();
     assert(ca.cs==3 && ca.address[6:0]==64) else $fatal(1,"power-down entry encoding");
-    tick();repeat(12) tick();send(CH_CMD_WAKE);
+    tick();
+    assert(!command_ready) else $fatal(1,"WAKE acknowledged before minimum low-power residency");
+    repeat(12) tick();send(CH_CMD_WAKE);
     assert(!lp_ctrl && !lp_data && !fault) else $fatal(1,"power-down wake request release");
     management.lp_ctrl_ack=0;management.lp_data_ack=0;tick();
     assert(ca.cs==3 && ca.address==0 && !update_request) else $fatal(1,"power-down exit ownership");
-    tick();repeat(10) tick();assert(state_value==1 && trusted && !fault) else $fatal(1,"power-down tXP return");
+    repeat(3) begin assert(ca.cs==3 && ca.address==0) else $fatal(1,"PDX high pulse width");tick();end
+    repeat(4) begin assert(ca.cs==0 && ca.address==0) else $fatal(1,"PDX low pulse width");tick();end
+    repeat(10) tick();assert(state_value==1 && trusted && !fault) else $fatal(1,"power-down tXP return");
     send(CH_CMD_SELF_REFRESH); wait_lp(); management.lp_ctrl_ack=1; management.lp_data_ack=1; tick();
     assert(ca.cs==3 && ca.address[6:0]==104) else $fatal(1,"SRE encoding");
     tick(); repeat(30) tick(); assert(state_value==4 && !fault) else $fatal(1,"self refresh hold");
@@ -108,8 +113,9 @@ module lpddr5_mc_lifecycle_tb;
     train_ack=1; token=1; tick(); train_ack=0; repeat(3) tick();
     assert(trusted && train_done && state_value==1 && first_fault==diagnostic) else $fatal(1,"fresh recovery boot");
     // All ranks must return with freshly reported, unchanged chosen states.
-    management.phymstr_req=1; management.phymstr_type=0; management.phymstr_cs_state=3; management.phymstr_state_sel=1;
-    repeat(7) tick(); assert(master_ack && !fault && owner==LPDDR5_MC_OWN_PHY) else $fatal(1,"master entry");
+    host_settled=0;management.phymstr_req=1; management.phymstr_type=0; management.phymstr_cs_state=3; management.phymstr_state_sel=1;
+    repeat(3) tick();assert(admission && issue_enable && !master_ack && state_value==3) else $fatal(1,"pending master stranded accepted host work");
+    host_settled=1;repeat(7) tick(); assert(master_ack && !admission && !fault && owner==LPDDR5_MC_OWN_PHY) else $fatal(1,"master entry");
     reports=0; tick();reports=3;rank_sr=0;
     budget=32'(profile.management_ck_tphymstr_rfsh)+8;tick();
     assert(refresh_request==3 && ca.cs==0 && master_ack && !fault) else $fatal(1,"master IDLE refresh request");

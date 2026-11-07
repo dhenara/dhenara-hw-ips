@@ -31,7 +31,7 @@ module lpddr5_mc_backend #(
   input lpddr5_mc_contract_pkg::lpddr5_mc_return4_t return_i,
   output lpddr5_mc_contract_pkg::lpddr5_mc_event_t event_o,
   output logic drained_o,pin_drained_o,integrity_drained_o,pages_closed_o,rows_closed_o,wck_disabled_o,fault_o,
-  output logic [63:0] accepted_o,issued_o,replayed_o
+  output logic [63:0] accepted_o,issued_o,replayed_o,max_wait_o
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_channel_pkg::*;
@@ -109,7 +109,7 @@ module lpddr5_mc_backend #(
     .maintenance_rank_i(maintenance_valid_i ? maintenance_rank_i : close_rank_q),.maintenance_rfm_i(maintenance_rfm_i),.maintenance_all_i(maintenance_all_i),.maintenance_pair_i(maintenance_pair_i),
     .activate_allowed_i(activate_allowed_i),.close_i(service_i && !fault_i && !fault_o && !register_owner_q && !maintenance_valid_i && (close_i || epoch_drain || register_valid_i)),
     .stop_requested_o(scheduler_stop),.maintenance_ready_o(maintenance_ready_o),.pages_closed_o(pages_closed_o),.rows_closed_o(rows_closed_o),
-    .accepted_o(accepted_o),.issued_o(issued_o),.replayed_o(replayed_o));
+    .accepted_o(accepted_o),.issued_o(issued_o),.replayed_o(replayed_o),.max_wait_o(max_wait_o));
   always_comb begin
     launch_identity='0;launch_identity.tag=launch.tag;launch_identity.generation=launch.generation;
     launch_identity.boot_epoch=config_i.boot_epoch;launch_identity.config_epoch=config_i.config_epoch;
@@ -123,7 +123,7 @@ module lpddr5_mc_backend #(
     emit_stop=(scheduler_stop || stop_i || epoch_drain || register_valid_i || maintenance_valid_i)
       && wck_stop_ready && data_drained && scheduler_ca.cs==0 && !register_owner_q && !pair_pending;
     ca_o=register_owner_q ? register_ca : scheduler_ca;
-    if(emit_stop) begin ca_o.cs=2'b1<<wck_rank;ca_o.address=ca_cas(0); end
+    if(emit_stop) begin ca_o.cs=2'b1<<wck_rank;ca_o.address=ca_cas(3'd7); end
     wck_o=register_owner_q ? register_wck : main_wck;
     read_request_o=register_owner_q ? register_read : main_read;
     main_return=register_owner_q ? lpddr5_mc_return4_t'('0) : return_i;

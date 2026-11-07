@@ -7,6 +7,7 @@ module lpddr5_mc_channel #(
   parameter int NOTIFICATION_DEPTH=16
 ) (
   input logic clk_ck_i,rst_ni,
+  input logic force_fault_i,
   input logic request_valid_i,
   output logic request_ready_o,
   input lpddr5_mc_contract_pkg::lpddr5_mc_granule_t request_i,
@@ -107,11 +108,17 @@ module lpddr5_mc_channel #(
   // Full caller identity is retained until its completion moves into host RAM.
   lpddr5_mc_granule_t ledger_q[DEPTH];
   logic [DEPTH-1:0] ledger_valid_q;
+  logic [63:0] ledger_accepted_ck_q[DEPTH];
+  lpddr5_mc_channel_performance_t performance_q;
+  logic [63:0] scheduler_max_wait;
+  function automatic logic [63:0] saturating_add(input logic [63:0] value,increment);
+    return value > 64'hffffffffffffffff-increment ? 64'hffffffffffffffff : value+increment;
+  endfunction
   int free_ledger,done_ledger;
   logic unused_debug;
   assign unused_debug=^{backend_accepted,stale_q,feedback_valid_i,feedback_i,first_fault,maintenance_diagnostic,thermal,
     register_result_value,register_result_rank,register_result_zq,register_result_address,frozen_target,fsp_clock_done,first_error,inline_corrected,inline_uncorrectable};
-  assign external_fault=config_fault || backend_fault || inline_fault || maintenance_fault || register_fault_q || notification_overflow;
+  assign external_fault=force_fault_i || config_fault || backend_fault || inline_fault || maintenance_fault || register_fault_q || notification_overflow;
   assign fsp_ready_o=fsp_target_ready;
   assign fsp_declined_o=fsp_declined;
   assign epochs_match=request_boot_epoch_i==boot_epoch && request_config_epoch_i==committed_epoch_o;
@@ -151,8 +158,11 @@ module lpddr5_mc_channel #(
     status_o.drained=quiescent;status_o.pin_drained=pin_drained && wck_disabled;
     status_o.ecc_drained=integrity_drained && inline_drained;
     status_o.boot_epoch=boot_epoch;status_o.config_epoch=committed_epoch_o;status_o.prepared_epoch=prepared_epoch_o;
+    status_o.power_policy=active.power_policy;status_o.power_down_idle_ck=active.power_down_idle_ck;
+    status_o.self_refresh_idle_ck=active.self_refresh_idle_ck;
     status_o.events=0;status_o.fault_code=fault_code;status_o.first_error=first_error.error;
     status_o.accepted=accepted_q;status_o.issued=issued;status_o.completed=completed_q;status_o.replayed=replayed;
+    status_o.performance=performance_q;status_o.performance.replays=replayed;status_o.performance.max_wait_ck=scheduler_max_wait;
   end
   always_comb begin
     free_ledger=-1;done_ledger=-1;
@@ -184,7 +194,7 @@ module lpddr5_mc_channel #(
     .register_result_failed_o(register_result_failed),.register_result_address_o(register_result_address),.register_result_value_o(register_result_value),
     .ca_o(backend_ca),.wck_o(wck_o),.write_o(write_o),.read_request_o(read_request_o),.return_i(return_i),.event_o(event_value),
     .drained_o(backend_drained),.pin_drained_o(pin_drained),.integrity_drained_o(integrity_drained),.pages_closed_o(pages_closed),.rows_closed_o(rows_closed),.wck_disabled_o(wck_disabled),.fault_o(backend_fault),
-    .accepted_o(backend_accepted),.issued_o(issued),.replayed_o(replayed));
+    .accepted_o(backend_accepted),.issued_o(issued),.replayed_o(replayed),.max_wait_o(scheduler_max_wait));
   lpddr5_mc_maintenance maintenance (
     .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.destructive_reset_i(destructive_reset),.start_i(maintenance_start),.profile_i(active.profile),.per_bank_i(PER_BANK_REFRESH),.event_i(event_value),
     .pins_idle_i(pin_drained && rows_closed && wck_disabled),
@@ -215,6 +225,28 @@ module lpddr5_mc_channel #(
     .self_refresh_enter_o(sr_enter),.self_refresh_exit_o(sr_exit),.external_refresh_o(external_refresh),.extra_service_o(extra_service),.ca_o(life_ca),
     .lp_ctrl_request_o(lp_ctrl_req),.lp_data_request_o(lp_data_req),.master_ack_o(master_ack),.syscs_state_o(syscs),.phy_refresh_request_o(phy_refresh_request),
     .state_o(life_state),.owner_o(owner),.fault_o(life_fault),.trusted_o(trusted),.train_request_o(train_request),.train_done_o(train_done),.boot_epoch_o(boot_epoch),.first_fault_o(first_fault),.fault_code_o(fault_code));
+  always_ff @(posedge clk_ck_i or negedge rst_ni) begin
+    if(!rst_ni) begin
+      performance_q<='0;
+      for(int s=0;s<DEPTH;s++) ledger_accepted_ck_q[s]<=0;
+    end else begin
+      performance_q.cycles<=saturating_add(performance_q.cycles,1);
+      if(ca_o.cs!=0) performance_q.commands<=saturating_add(performance_q.commands,1);
+      if(service && (maintenance_urgent || register_state_q!=REG_IDLE || maintenance_valid))
+        performance_q.maintenance_ck<=saturating_add(performance_q.maintenance_ck,1);
+      if(request_valid_i && request_ready_o && epochs_match && free_ledger>=0)
+        ledger_accepted_ck_q[free_ledger]<=performance_q.cycles;
+      if(completion_valid_o && completion_ready_i && done_ledger>=0) begin
+        if(performance_q.cycles-ledger_accepted_ck_q[done_ledger]>performance_q.max_latency_ck)
+          performance_q.max_latency_ck<=performance_q.cycles-ledger_accepted_ck_q[done_ledger];
+        if(!completion_o.failed && completion_o.response==0 && completion_o.physical_done && completion_o.integrity_done) begin
+          if(ledger_q[done_ledger].is_write)
+            performance_q.payload_write<=saturating_add(performance_q.payload_write,64'($countones(ledger_q[done_ledger].is_64_bytes ? ledger_q[done_ledger].byte_enable : {32'd0,ledger_q[done_ledger].byte_enable[31:0]})));
+          else performance_q.payload_read<=saturating_add(performance_q.payload_read,ledger_q[done_ledger].is_64_bytes ? 64'd64 : 64'd32);
+        end
+      end
+    end
+  end
   assign notification_events_o=notification.events;
   assign notification_error_valid_o=notification.error_valid;
   assign notification_error_o=notification.error;
@@ -241,6 +273,8 @@ module lpddr5_mc_channel #(
       occurrences[1].error.address=ledger_q[done_ledger].address;occurrences[1].error.axi_id=ledger_q[done_ledger].axi_id;
       occurrences[1].error.tag=ledger_q[done_ledger].tag;occurrences[1].error.port_index=ledger_q[done_ledger].port_index;
       occurrences[1].error.channel_index=1'(CHANNEL_INDEX);occurrences[1].error.correlated=1;
+      occurrences[1].error.rank_index=ledger_q[done_ledger].rank_index;
+      occurrences[1].error.operation=ledger_q[done_ledger].is_write ? LPDDR5_MC_WRITE : LPDDR5_MC_READ;
       occurrences[1].error.syndrome=completion_o.syndrome;occurrences[1].error.uncorrectable=completion_o.uncorrectable;
       occurrences[1].error.memory_trusted=trusted && !external_fault;
     end

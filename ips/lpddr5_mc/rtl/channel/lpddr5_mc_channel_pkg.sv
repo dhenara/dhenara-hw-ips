@@ -97,11 +97,18 @@ package lpddr5_mc_channel_pkg;
   typedef struct packed {
     lpddr5_mc_profile_t profile;
     logic [2:0] service_div;
+    // Software minimum from the read command CK; physical pin recovery also applies.
+    logic [15:0] read_to_write_min_ck;
     logic inline_ecc, posted, caps_enable, work_conserving;
     logic [31:0] bw_window, read_cap, write_cap;
-    logic [15:0] age_tick_div, urgent_age;
-    logic [7:0] read_weight, write_weight;
-    logic [1:0] page_policy;
+    logic [15:0] age_tick_div, read_urgent_age, write_urgent_age;
+    logic [15:0] read_weight, write_weight;
+    logic [6:0] write_high, write_low;
+    logic [7:0] read_batch_min, write_batch_min, write_batch_max;
+    logic [15:0] hit_cap;
+    logic [31:0] page_idle_ck;
+    logic [1:0] page_policy, power_policy;
+    logic [31:0] power_down_idle_ck, self_refresh_idle_ck;
     logic [31:0] boot_epoch, config_epoch;
   } lpddr5_mc_channel_config_t;
   typedef struct packed {
@@ -135,6 +142,10 @@ package lpddr5_mc_channel_pkg;
     logic [31:0] boot_epoch, config_epoch;
   } lpddr5_mc_channel_notification_t;
   typedef struct packed {
+    logic [63:0] payload_read, payload_write, commands, replays;
+    logic [63:0] maintenance_ck, max_latency_ck, max_wait_ck, cycles;
+  } lpddr5_mc_channel_performance_t;
+  typedef struct packed {
     logic [2:0] state;
     lpddr5_mc_ownership_t owner;
     logic fault, memory_trusted, train_request, train_done;
@@ -142,8 +153,11 @@ package lpddr5_mc_channel_pkg;
     logic [31:0] boot_epoch, config_epoch, prepared_epoch;
     logic [12:0] events;
     logic [7:0] fault_code;
+    logic [1:0] power_policy;
+    logic [31:0] power_down_idle_ck, self_refresh_idle_ck;
     lpddr5_mc_error_t first_error;
     logic [63:0] accepted, issued, completed, replayed;
+    lpddr5_mc_channel_performance_t performance;
   } lpddr5_mc_channel_status_t;
 
   function automatic logic [13:0] ca_pack(input logic [6:0] rise, fall);
@@ -1563,8 +1577,10 @@ package lpddr5_mc_channel_pkg;
 
   function automatic logic config_valid(input lpddr5_mc_channel_config_t c);
     logic unused_policy;
-    unused_policy=^{c.inline_ecc,c.posted,c.work_conserving,c.caps_enable,c.read_cap,c.write_cap,c.urgent_age,c.read_weight,c.write_weight,c.boot_epoch,c.config_epoch};
+    unused_policy=^{c.read_to_write_min_ck,c.inline_ecc,c.posted,c.work_conserving,c.caps_enable,c.read_cap,c.write_cap,c.read_urgent_age,c.write_urgent_age,c.read_weight,c.write_weight,c.hit_cap,c.page_idle_ck,c.boot_epoch,c.config_epoch,c.power_down_idle_ck,c.self_refresh_idle_ck};
     return profile_valid(c.profile) && c.service_div inside {1,2,4}
-      && c.age_tick_div!=0 && c.bw_window!=0 && c.page_policy<=2;
+      && c.age_tick_div!=0 && c.bw_window!=0 && c.page_policy<=2 && c.power_policy<=2
+      && c.write_low<=c.write_high && c.write_high<=64
+      && c.read_batch_min<=c.write_batch_max && c.write_batch_min<=c.write_batch_max;
   endfunction
 endpackage

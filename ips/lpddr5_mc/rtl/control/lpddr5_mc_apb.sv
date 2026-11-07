@@ -175,7 +175,8 @@ module lpddr5_mc_apb #(
     logic [CHANNELS-1:0] ack_seen;
     logic bad_ack;
     logic access_fire;
-    logic snapshot_ok;
+    logic snapshot_ok,publication_request;
+    lpddr5_mc_register_image_t [CHANNELS-1:0] candidate_image;
     state_d = state_q;
     staging_d = staging_q;
     frozen_d = frozen_q;
@@ -220,6 +221,7 @@ module lpddr5_mc_apb #(
     bad_ack = 1'b0;
     access_fire = 1'b0;
     snapshot_ok = 1'b1;
+    publication_request = 1'b0;candidate_image = staging_q;
     if (!shared_access) channel_index = int'(request_i.address[17:16]) - 1;
     for (int r = 0; r < REG_COUNT; r++) begin
       if (REG_SHARED[r] == shared_access && REG_OFFSET[r] == request_i.address[15:0]) register_index = r;
@@ -240,20 +242,25 @@ module lpddr5_mc_apb #(
       for (int bit_index = 0; bit_index < 32; bit_index++) begin
         if (command_mask[bit_index]) needed += shared_access ? 1 : (broadcast ? CHANNELS : 1);
       end
+      publication_request = command_mask != 0 && (register_index == INDEX_CONFIG_COMMIT || register_index == INDEX_DVFS);
+      for (int c = 0; c < CHANNELS; c++)
+        if (shared_access || c == channel_index || broadcast)
+          candidate_image[c][register_index] = command_payload & REG_RW[register_index];
+      if (publication_request) needed = 1;
       if (request_i.write) begin
         if (locked || state_q != IDLE ||
             (REG_RW[register_index] | REG_W1C[register_index] | REG_W1S[register_index]) == 0) bad_access = 1'b1;
-        if (64'(sequence_q) + 64'(needed) >= 64'h100000000 || count_q + needed > COMMAND_DEPTH) bad_access = 1'b1;
+        if (64'(sequence_q) + 64'(needed) >= 64'h100000000 || (!publication_request && count_q + needed > COMMAND_DEPTH)) bad_access = 1'b1;
         if (register_index == INDEX_DVFS && command_mask != 0 && command_payload[1:0] == 3)
           bad_access = 1'b1;
         if (register_index == INDEX_TRAIN_ACK && command_mask != 0 &&
             (!staging_q[0][INDEX_TRAIN_REQUEST][0] ||
              staging_q[0][INDEX_TRAIN_TOKEN] != current_boot)) bad_access = 1'b1;
-        if (register_index == INDEX_CONFIG_COMMIT && command_mask != 0) begin
+        if (publication_request) begin
           if (!host_settled_i || (enabled_i && !quiesced_i) || sequence_q == 32'hffffffff ||
               fault_q || link_fault_i) bad_access = 1'b1;
           for (int c = 0; c < CHANNELS; c++)
-            if (!image_valid(staging_q[c])) snapshot_ok = 1'b0;
+            if (!image_valid(candidate_image[c])) snapshot_ok = 1'b0;
           if (!snapshot_ok) bad_access = 1'b1;
         end
       end
@@ -283,8 +290,11 @@ module lpddr5_mc_apb #(
       if (register_index == INDEX_IRQ_MASK)
         for (int c = 0; c < CHANNELS; c++) staging_d[c][INDEX_IRQ_MASK][31:13] = 0;
       if (register_index == INDEX_IRQ_STATUS) clear_events = request_i.data[12:0] & byte_mask[12:0];
-      if (register_index == INDEX_CONFIG_COMMIT && command_mask != 0) begin
-        frozen_d = staging_q;
+      if (publication_request) begin
+        // GO and CONFIG_COMMIT share one atomic publication owner. The
+        // byte-strobed FSP target is merged before validation and freezing;
+        // no unhandled GO command can escape to a different coordinator.
+        frozen_d = candidate_image;
         boot_d = current_boot;
         sequence_d = sequence_q + 1;
         prior_valid_d = valid_q;
@@ -329,10 +339,16 @@ module lpddr5_mc_apb #(
     end
     for (int c = 0; c < CHANNELS; c++) begin
       if (|(clear_events & first_events_q[c])) first_error_d[c] = 1'b0;
-      if (status_valid_i[c] && status_i[c].image[INDEX_BOOT_EPOCH] == current_boot) begin
+      if (status_valid_i[c]) begin
+        // A retained occurrence keeps the boot/configuration of the event.
+        // Destructive recovery does not discard it. Only the live snapshot
+        // portion is freshness-gated; acknowledging an old event must still
+        // count/capture it without replacing the current hardware state.
         set_events |= status_i[c].events;
         for (int r = 0; r < REG_COUNT; r++) begin
-          if (!REG_SHARED[r] && REG_RO[r] != 0 &&
+          if (status_i[c].events == 0 && !status_i[c].error_valid &&
+              status_i[c].image[INDEX_BOOT_EPOCH] == current_boot &&
+              !REG_SHARED[r] && REG_RO[r] != 0 &&
               !(r >= INDEX_ERROR_ADDR_LO && r <= INDEX_UE_COUNT) &&
               (!(r >= INDEX_PERF_PAYLOAD_RD_0 && r <= INDEX_PERF_CYCLES_1) || status_i[c].perf_capture))
             staging_d[c][r] = status_i[c].image[r] & REG_RO[r];

@@ -86,10 +86,40 @@ class DigitalPhy:
         self.last_return = -1
         self.raw_writes: dict[int, dict[int, WireBeat]] = {}
         self.write_status: dict[int, list[str]] = {}
+        self.power_pulses: dict[int, dict[str, int]] = {}
 
     def command(self, dfi_ck: int, cs: int, ca: int) -> Burst | None:
         # Each CA sample is delayed into the DRAM clock domain by explicit CK.
-        return self.dram.command(dfi_ck + self.p["management_ck"]["tctrl_delay"], cs, ca)
+        at = dfi_ck + self.p["management_ck"]["tctrl_delay"]
+        exited = False
+        for rank, state in enumerate(self.dram.power):
+            if state is None or state[0] != "PDE":
+                continue
+            pulse = self.power_pulses.setdefault(rank, {"last": at - 1})
+            require(at == pulse["last"] + 1, "missing sampled power-down CK")
+            pulse["last"] = at
+            if ca == 0:
+                pulse.setdefault("ca_low", at)
+            else:
+                require("cs_high" not in pulse, "CA changed during PDX pulse")
+                pulse.pop("ca_low", None)
+            if cs & (1 << rank):
+                require(ca == 0 and "cs_low" not in pulse, "invalid PDX high pulse")
+                pulse.setdefault("cs_high", at)
+            elif "cs_high" in pulse:
+                pulse.setdefault("cs_low", at)
+                if (at - pulse["cs_low"]) * self.p["ck_ps"] >= 4000:
+                    self.dram.power_exit(
+                        at, rank, cs_high=pulse["cs_high"], cs_low=pulse["cs_low"], ca_low=pulse["ca_low"]
+                    )
+                    del self.power_pulses[rank]
+                    exited = True
+        # power_exit already sampled/advanced this exact CK. No command may
+        # share the required all-low pulse-completion edge.
+        if exited:
+            require(cs == 0 and ca == 0, "command on PDX pulse completion")
+            return None
+        return self.dram.command(at, cs, ca)
 
     def write_word(self, b: Burst, word: int, at_half_wck: int, value: int, mask: int = 0, parity: int = 0) -> None:
         require(

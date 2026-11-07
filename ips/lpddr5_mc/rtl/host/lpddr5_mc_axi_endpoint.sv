@@ -64,7 +64,16 @@ module lpddr5_mc_axi_endpoint #(
   ledger_t writes [DEPTH], reads [DEPTH];
   logic [15:0] w_generation [DEPTH], r_generation [DEPTH];
   logic [31:0] sequence_q;
-  lpddr5_mc_host_config_t config_q, recovery_config_q;
+  // Validate the complete mailbox image before admission. Retain only the
+  // source-side credit, mapping and identity fields; QoS/data-path policy is
+  // owned by the common host engine.
+  typedef struct packed {
+    logic [1:0][7:0] read_limit, write_limit;
+    logic [31:0] boot_epoch, config_epoch;
+    lpddr5_mc_host_region_t [7:0] regions;
+  } endpoint_config_t;
+  endpoint_config_t config_q;
+  lpddr5_mc_host_config_t recovery_config_q;
   logic epoch_valid_q, ever_epoch_q, fault_q, source_settled;
   logic recovery_request_q, recovery_seen_q, recovery_ack_q, source_rearm, recovery_inflight_q;
   (* ASYNC_REG = "TRUE" *) logic [1:0] recovery_sync_q, recovery_ack_sync_q, enable_sync_q;
@@ -78,7 +87,7 @@ module lpddr5_mc_axi_endpoint #(
   // owning payload/response protocols retain their separate drain contracts.
   logic [9:0] unused_pending;
   assign unused_pending[2] = 0;
-  logic operational, candidate_valid_q, candidate_checked_q, candidate_sent_q, granted_q;
+  logic operational, candidate_valid_q, candidate_sent_q, granted_q;
   logic [1:0] candidate_error_q;
   lpddr5_mc_axi_proposal_t candidate_q;
   int free_write, free_read, w_owner, synthetic_b, synthetic_r;
@@ -304,7 +313,7 @@ module lpddr5_mc_axi_endpoint #(
     selected_address.address.sequence_number = sequence_q;
     selected_address.boot_epoch = config_q.boot_epoch;
     selected_address.config_epoch = config_q.config_epoch;
-    selected_mapped = burst_mapped(selected_address.address.axi,config_q,DATA_BITS,ID_BITS,ADDRESS_BITS);
+    selected_mapped = burst_mapped(selected_address.address.axi,config_q.regions,DATA_BITS,ID_BITS,ADDRESS_BITS);
     selected_address.footprint = burst_footprint(selected_address.address.axi,selected_mapped);
     selected_lease_hit = !lease_frozen_q
       && (selected_address.footprint & owned_mask_q) == selected_address.footprint;
@@ -376,7 +385,7 @@ module lpddr5_mc_axi_endpoint #(
     if (!axi_reset_n) begin
       for (int i=0;i<DEPTH;i++) begin writes[i] <= '0; reads[i] <= '0; w_generation[i] <= 0; r_generation[i] <= 0; end
       config_q <= '0; epoch_valid_q <= 0; ever_epoch_q <= 0; fault_q <= 1; sequence_q <= 0; late_error_o <= 0;
-      candidate_valid_q <= 0; candidate_checked_q <= 0; candidate_sent_q <= 0; granted_q <= 0;
+      candidate_valid_q <= 0; candidate_sent_q <= 0; granted_q <= 0;
       candidate_q <= '0; candidate_error_q <= 0;
       owned_mask_q <= 0; lease_token_q <= 0; lease_frozen_q <= 1; request_pending_q <= 0;
       revoke_active_q <= 0; revoke_q <= '0; lease_ack_pending_q <= 0; lease_ack_q <= '0;
@@ -403,7 +412,10 @@ module lpddr5_mc_axi_endpoint #(
         if (b_active_q && b_held_q.axi.response == 0) late_error_o <= 1;
       end
       if (source_rearm) begin
-        config_q <= recovery_config_q; epoch_valid_q <= 1; ever_epoch_q <= 1; fault_q <= 0;
+        config_q <= '{read_limit: recovery_config_q.read_limit, write_limit: recovery_config_q.write_limit,
+          boot_epoch: recovery_config_q.boot_epoch, config_epoch: recovery_config_q.config_epoch,
+          regions: recovery_config_q.regions};
+        epoch_valid_q <= 1; ever_epoch_q <= 1; fault_q <= 0;
         candidate_valid_q <= 0; granted_q <= 0; candidate_sent_q <= 0;
         owned_mask_q <= 0; lease_token_q <= 0; lease_frozen_q <= 1; request_pending_q <= 0;
         revoke_active_q <= 0; lease_ack_pending_q <= 0;
@@ -420,7 +432,7 @@ module lpddr5_mc_axi_endpoint #(
       if (operational && enable_sync_q[1] && !candidate_valid_q && selected_valid
           && !selected_lease_hit && sequence_q != 32'hffffffff) begin
         candidate_q <= selected_address;
-        candidate_valid_q <= 1; candidate_checked_q <= 1; candidate_sent_q <= 0; granted_q <= 0;
+        candidate_valid_q <= 1; candidate_sent_q <= 0; granted_q <= 0;
         candidate_error_q <= selected_mapped ? 2'b00 : 2'b11;
       end
       if (proposal_local_valid && proposal_local_ready) begin

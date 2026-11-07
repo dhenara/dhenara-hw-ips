@@ -77,7 +77,7 @@ module lpddr5_mc_axi_bridge_tb #(
   logic measure_window=0;
   longint unsigned measured_ck=0,idle_ck=0,grant_ck=0,accept_ck=0,proposal_ck=0,await_source_ck=0,import_stall_ck=0;
   longint unsigned measured_axi=0,awvalid_ck=0,awready_ck=0,arvalid_ck=0,arready_ck=0,wvalid_ck=0,wready_ck=0;
-  longint unsigned precheck_axi=0,await_grant_axi=0,accept_fifo_full_axi=0,w_fifo_full_axi=0;
+  longint unsigned await_grant_axi=0,accept_fifo_full_axi=0,w_fifo_full_axi=0;
   longint unsigned max_local_occupancy=0;
 
   function automatic lpddr5_mc_axi_address_t address(input int unsigned id,input int unsigned at,input int unsigned beats);
@@ -99,8 +99,7 @@ module lpddr5_mc_axi_bridge_tb #(
           measured_axi++;awvalid_ck+=64'(awvalid[p]);awready_ck+=64'(awready[p]);
           arvalid_ck+=64'(arvalid[p]);arready_ck+=64'(arready[p]);
           wvalid_ck+=64'(wvalid[p]);wready_ck+=64'(wready[p]);
-          precheck_axi+=64'(dut.ports[p].endpoint.candidate_valid_q&&!dut.ports[p].endpoint.candidate_checked_q);
-          await_grant_axi+=64'(dut.ports[p].endpoint.candidate_valid_q&&dut.ports[p].endpoint.candidate_checked_q&&!dut.ports[p].endpoint.granted_q);
+          await_grant_axi+=64'(dut.ports[p].endpoint.candidate_valid_q&&!dut.ports[p].endpoint.granted_q);
           accept_fifo_full_axi+=64'(dut.ports[p].endpoint.granted_q&&!dut.ports[p].endpoint.accepted_local_ready);
           w_fifo_full_axi+=64'(wvalid[p]&&dut.ports[p].endpoint.w_owner>=0&&!dut.ports[p].endpoint.w_local_ready);
         end
@@ -310,13 +309,13 @@ module lpddr5_mc_axi_bridge_tb #(
   task automatic start_measurement;
     measured_ck=0;idle_ck=0;grant_ck=0;accept_ck=0;proposal_ck=0;await_source_ck=0;import_stall_ck=0;
     measured_axi=0;awvalid_ck=0;awready_ck=0;arvalid_ck=0;arready_ck=0;wvalid_ck=0;wready_ck=0;max_local_occupancy=0;
-    precheck_axi=0;await_grant_axi=0;accept_fifo_full_axi=0;w_fifo_full_axi=0;
+    await_grant_axi=0;accept_fifo_full_axi=0;w_fifo_full_axi=0;
     measure_window=1;
   endtask
   task automatic show_measurement;
     measure_window=0;
-    $display("AXI_SATURATED_STATS CK=%0d idle=%0d grant_send=%0d grant_ack_wait=%0d proposal_present=%0d awaiting_source_CK=%0d import_stall_CK=%0d AXI_edges=%0d AWVALID=%0d AWREADY=%0d ARVALID=%0d ARREADY=%0d WVALID=%0d WREADY=%0d precheck_AXI=%0d awaitgrant_AXI=%0d acceptfifo_full_AXI=%0d Wfifo_full_AXI=%0d max_ledger_occupancy=%0d",
-      measured_ck,idle_ck,grant_ck,accept_ck,proposal_ck,await_source_ck,import_stall_ck,measured_axi,awvalid_ck,awready_ck,arvalid_ck,arready_ck,wvalid_ck,wready_ck,precheck_axi,await_grant_axi,accept_fifo_full_axi,w_fifo_full_axi,max_local_occupancy);
+    $display("AXI_SATURATED_STATS CK=%0d idle=%0d grant_send=%0d grant_ack_wait=%0d proposal_present=%0d awaiting_source_CK=%0d import_stall_CK=%0d AXI_edges=%0d AWVALID=%0d AWREADY=%0d ARVALID=%0d ARREADY=%0d WVALID=%0d WREADY=%0d awaitgrant_AXI=%0d acceptfifo_full_AXI=%0d Wfifo_full_AXI=%0d max_ledger_occupancy=%0d",
+      measured_ck,idle_ck,grant_ck,accept_ck,proposal_ck,await_source_ck,import_stall_ck,measured_axi,awvalid_ck,awready_ck,arvalid_ck,arready_ck,wvalid_ck,wready_ck,await_grant_axi,accept_fifo_full_axi,w_fifo_full_axi,max_local_occupancy);
   endtask
   task automatic send_stale_retirement(input logic write_response,input logic[5:0] slot,input logic[15:0] generation);
     int consumed_before;

@@ -73,7 +73,7 @@ module lpddr5_mc_axi_bridge #(
   localparam int PORT_BITS = PORTS > 1 ? $clog2(PORTS) : 1;
   logic [PORT_BITS-1:0] selected_q, turn_q;
   int selected;
-  lpddr5_mc_axi_proposal_t request_q;
+  logic [63:0] request_footprint_q;
   logic was_active_q, rearming_q, protocol_fault_q;
   lpddr5_mc_reset_sync core_reset (
     .clk_i(core_clk_i),.arst_ni(core_rst_ni),.rst_no(core_reset_n)
@@ -111,7 +111,7 @@ module lpddr5_mc_axi_bridge #(
   end
   always_ff @(posedge core_clk_i or negedge link_reset_n) begin
     if (!link_reset_n) begin
-      state_q <= IDLE; selected_q <= 0; turn_q <= 0; request_q <= '0;
+      state_q <= IDLE; selected_q <= 0; turn_q <= 0; request_footprint_q <= '0;
       rearming_q <= 0; protocol_fault_q <= 0; accepted_addresses_o <= 0; grant_cycles_o <= 0;
       owner_mask_q <= 0; command_token_q <= 0; imported_next_q <= 0; revoke_watermark_q <= 0;
       command_pending_q <= 0; ack_received_q <= 0; revoke_targets_q <= 0; revoke_sent_q <= 0;
@@ -155,7 +155,7 @@ module lpddr5_mc_axi_bridge #(
           conflict = 0;
           for (int p=0;p<PORTS;p++) if (p != selected)
             conflict |= |(owner_mask_q[p] & proposal[selected].footprint);
-          request_q <= proposal[selected]; selected_q <= PORT_BITS'(selected);
+          request_footprint_q <= proposal[selected].footprint; selected_q <= PORT_BITS'(selected);
           turn_q <= selected == PORTS-1 ? PORT_BITS'(0) : PORT_BITS'(selected+1);
           if (proposal[selected].boot_epoch != cfg_i.boot_epoch
               || proposal[selected].config_epoch != cfg_i.config_epoch
@@ -170,7 +170,7 @@ module lpddr5_mc_axi_bridge #(
         end
         SEND_REVOKE: if ((revoke_sent_q & revoke_targets_q) == revoke_targets_q) state_q <= WAIT_DRAIN;
         WAIT_DRAIN: if (revoke_complete) begin
-          owner_mask_q <= 0; owner_mask_q[selected_q] <= request_q.footprint;
+          owner_mask_q <= 0; owner_mask_q[selected_q] <= request_footprint_q;
           state_q <= SEND_GRANT;
         end
         SEND_GRANT: if (lease_valid[selected_q] && lease_ready[selected_q]) state_q <= WAIT_GRANT_ACK;

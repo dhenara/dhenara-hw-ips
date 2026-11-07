@@ -22,7 +22,7 @@ package lpddr5_mc_axi_pkg;
   // are page aligned. Whole-burst containment is therefore bounded by the
   // eight regions rather than by the number of beats or active byte lanes.
   function automatic logic burst_mapped(
-      input lpddr5_mc_axi_address_t a, input lpddr5_mc_host_config_t cfg,
+      input lpddr5_mc_axi_address_t a, input lpddr5_mc_host_region_t [7:0] regions,
       input int data_bits, id_bits, address_bits);
     logic [40:0] first, limit, span;
     logic mapped;
@@ -35,8 +35,8 @@ package lpddr5_mc_axi_pkg;
     end
     mapped = 0;
     for (int i=0;i<8;i++)
-      mapped |= cfg.regions[i].enable && first >= 41'(cfg.regions[i].base)
-        && limit <= 41'(cfg.regions[i].base)+cfg.regions[i].size;
+      mapped |= regions[i].enable && first >= 41'(regions[i].base)
+        && limit <= 41'(regions[i].base)+regions[i].size;
     return address_form_valid(a,data_bits,id_bits,address_bits) && mapped;
   endfunction
 

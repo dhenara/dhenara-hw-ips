@@ -121,3 +121,76 @@ class ResponseScript:
 
     def samples(self, maximum: int) -> list[bool]:
         return [self.value(i) for i in range(maximum + 1)]
+
+
+class ManagementPort:
+    """Clocked bounded adapter for observed requests and driven PHY responses.
+
+    sample() consumes the pins before a CK edge; its returned level is driven
+    after that edge and observed on the next edge. Inputs are primitive port
+    signals, so no producer module name is required. The monitor checks the
+    *observed* returned pin rather than assuming its own drive reached the DUT.
+    """
+
+    def __init__(self, kind: str, script: ResponseScript, minimum: int = 4, maximum: int = 32):
+        require(kind in ("update", "training", "pm", "fsp", "master"), "management kind")
+        require(minimum >= 2 and maximum >= minimum + 2, "management bounds")
+        self.kind, self.script, self.minimum, self.maximum = kind, script, minimum, maximum
+        self.start: int | None = None
+        self.last = -1
+        self.samples: list[bool] = []
+        self.release: int | None = None
+        self.closed = False
+        self.saw_low = False
+
+    def sample(
+        self,
+        ck: int,
+        *,
+        request: bool,
+        response: bool,
+        traffic: bool = False,
+        drained: bool = True,
+        wck_disabled: bool = True,
+    ) -> bool:
+        require(ck == self.last + 1, "missing/repeated management sample")
+        self.last = ck
+        if self.start is None:
+            require(response == self.script.initial, "unsolicited management response")
+            if not request:
+                return self.script.initial
+            require(not self.closed and drained and wck_disabled and not traffic, "unsafe management admission")
+            self.start = ck
+        age = ck - self.start
+        self.samples.append(response)
+        require(not traffic or self.closed, "traffic during management ownership")
+        if self.kind == "update":
+            if not request and self.release is None:
+                from contracts.update import check_update
+
+                # Complete the observation horizon with low idle samples. Any
+                # real later reassertion is still rejected below.
+                padded = self.samples + [False] * max(0, self.maximum + 1 - len(self.samples))
+                result = check_update(self.minimum, self.maximum, padded)
+                require(result.fault is None and age == result.release + 1, "unsafe/late update request release")
+                self.release, self.closed = age, True
+            if self.closed:
+                require(not request and not response, "update reassertion after release")
+            else:
+                require(age <= self.maximum, "management timeout")
+        else:
+            # FSP/training complete starts high and must be observed low before
+            # a fresh high is completion. Optional PM may simply be declined.
+            active = response != self.script.initial
+            if active:
+                self.saw_low = True
+            if not request:
+                require(self.saw_low or self.kind == "pm", "stale management completion")
+                require(response == self.script.initial, "request release before management completion")
+                self.closed = True
+            require(self.closed or age <= self.maximum, "management timeout")
+        # The next pre-edge sample observes this after-edge drive.
+        return self.script.value(age + 1) if not self.closed else self.script.initial
+
+    def finish(self) -> None:
+        require(self.start is not None and self.closed, "unfinished management request")

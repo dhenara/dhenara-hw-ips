@@ -549,6 +549,108 @@
       "foundation_tests": [],
       "combined_status": "pending",
       "pending": "Runner executes Python, RTL fixture, negative B, trace replay and foundation. Reproduce exact clean commit; fresh-host setup, remote CI, formal/synthesis/physical and final combined coverage remain separate."
+    },
+    {
+      "key": "admitted_timing_recovery",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "admitted timing recovery",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.TimingCorrections.test_review_self_refresh_and_exit_boundary",
+        "test_corrections.TimingCorrections.test_review_pb_refresh_and_other_bank_act_boundaries",
+        "test_corrections.TimingCorrections.test_review_mrw_to_mrr_boundary",
+        "test_corrections.TimingCorrections.test_mrw_to_mrw_and_mrr_to_mrr_boundaries",
+        "test_corrections.TimingCorrections.test_precharge_refresh_and_act_origins",
+        "test_corrections.TimingCorrections.test_zq_boundary_and_unsupported_mpc",
+        "test_corrections.TimingCorrections.test_power_down_sampled_cs_exit",
+        "test_corrections.TimingCorrections.test_turnaround_uses_latency_and_full_effective_split",
+        "test_corrections.TimingCorrections.test_split_column_and_write_to_masked_boundaries",
+        "test_corrections.TimingCorrections.test_pdx_blocks_mr_and_mrr_needs_extra_recovery",
+        "test_corrections.TimingCorrections.test_mrr_data_period_and_power_entry_spacing"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "continuous_wck_cs",
+      "requirement": "lpddr_protocol",
+      "behaviors": [
+        "continuous wck cs",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.StreamCorrections.test_continuous_reused_wck_and_cs",
+        "test_corrections.StreamCorrections.test_continuous_holes_edges_and_rank_sensitivity",
+        "test_corrections.StreamCorrections.test_fresh_epoch_after_disable_and_reuse_expiry",
+        "test_corrections.StreamCorrections.test_continuous_profile_direction_matrix"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "physical_write_link",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "physical write link",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.IntegrityCorrections.test_write_link_correction_mask_dbi_into_physical_memory"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "merged_original_dependencies",
+      "requirement": "functional_controller",
+      "behaviors": [
+        "merged original dependencies",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.IntegrityCorrections.test_merge_originals_and_response_dependencies",
+        "test_corrections.IntegrityCorrections.test_merge_rejects_context_read_hazard_and_wrong_data"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "mr43_observed_phases",
+      "requirement": "ecc_reliability",
+      "behaviors": [
+        "mr43 observed phases",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.IntegrityCorrections.test_mr43_poll_result_guard_and_rank_independence",
+        "test_corrections.IntegrityCorrections.test_missing_unsolicited_and_early_mr43",
+        "test_corrections.IntegrityCorrections.test_mr43_return_and_clear_timing_boundaries"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
+    },
+    {
+      "key": "live_management_ports",
+      "requirement": "control_lifecycle",
+      "behaviors": [
+        "live management ports",
+        "legal and deliberately faulty observed fixtures"
+      ],
+      "environment_tests": [
+        "test_corrections.ManagementCorrections.test_live_update_decline_early_ack_registered_release",
+        "test_corrections.ManagementCorrections.test_live_update_late_stuck_reasserted_and_traffic",
+        "test_corrections.ManagementCorrections.test_live_fsp_training_pm_master_and_stale_completion"
+      ],
+      "foundation_tests": [],
+      "combined_status": "pending",
+      "pending": "Attach these qualified environment seams to actual producer observations and run combined controller cases during reconciliation/qualification."
     }
   ]
 }

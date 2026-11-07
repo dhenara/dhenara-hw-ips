@@ -136,6 +136,79 @@ def main() -> None:
         bad = run([binary, "+bad_stability"], "sensitivity.log", expected_failure=True)
         if "ready/valid payload changed while stalled" not in bad:
             raise ValueError("negative fixture failed for an unexpected reason")
+        stream_build = build / "stream"
+        run(
+            [
+                verilator,
+                "--binary",
+                "--timing",
+                "--assert",
+                "-Wall",
+                "-Wno-UNUSEDSIGNAL",
+                "-Wno-TIMESCALEMOD",
+                "--top-module",
+                "lpddr5_mc_stream_tb",
+                "--Mdir",
+                str(stream_build),
+                "-j",
+                "2",
+                "-f",
+                "ips/lpddr5_mc/dv/system/rtl/stream.f",
+            ],
+            "stream-compile.log",
+        )
+        stream_binary = str(stream_build / "Vlpddr5_mc_stream_tb")
+        for direction in ("read", "write"):
+            log = "stream-" + direction + ".log"
+            output = run([stream_binary, *(["+read_run"] if direction == "read" else [])], log)
+            if "STREAM_FIXTURE_PASS" not in output:
+                raise ValueError("stream fixture completion marker missing")
+            for divisor in (1, 2, 4):
+                run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "system.benchmark_trace",
+                        str(args.evidence / log),
+                        "--direction",
+                        direction,
+                        "--service",
+                        str(divisor),
+                        "--report",
+                        str(args.evidence / f"benchmark-{direction}-{divisor}.json"),
+                    ],
+                    f"benchmark-{direction}-{divisor}.log",
+                )
+        truncated = args.evidence / "stream-truncated.log"
+        truncated.write_text(
+            "\n".join(
+                line
+                for line in (args.evidence / "stream-read.log").read_text().splitlines()
+                if not line.startswith('{"kind":"end"')
+            )
+            + "\n"
+        )
+        rejected = run(
+            [
+                sys.executable,
+                "-m",
+                "system.benchmark_trace",
+                str(truncated),
+                "--direction",
+                "read",
+                "--service",
+                "2",
+                "--report",
+                str(args.evidence / "truncated.json"),
+            ],
+            "benchmark-sensitivity.log",
+            expected_failure=True,
+        )
+        if "missing/truncated 100-period observation" not in rejected:
+            raise ValueError("benchmark negative fixture failed for an unexpected reason")
+        varied = run([stream_binary, "+read_run", "+half1=1375", "+phase=911", "+reset_ps=9999"], "stream-varied.log")
+        if "STREAM_FIXTURE_PASS" not in varied:
+            raise ValueError("varied-clock fixture completion marker missing")
         run(["git", "merge-base", "--is-ancestor", FOUNDATION, "HEAD"], "foundation-ancestry.log")
         run(["git", "diff", "--check", FOUNDATION], "whitespace.log")
         if not args.skip_foundation:

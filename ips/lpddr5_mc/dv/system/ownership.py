@@ -33,7 +33,9 @@ class Record:
 
 
 class LifetimeMonitor:
-    def __init__(self, ranks: int = 2, host_credits: int = 64):
+    def __init__(self, ranks: int = 2, host_credits: int = 64, *, tmrr: int = 8, tmrw: int = 12):
+        require(tmrr > 0 and tmrw > 0, "MR43 timing profile")
+        self.tmrr, self.tmrw = tmrr, tmrw
         self.ranks, self.credits = ranks, host_credits
         self.live: dict[Identity, Record] = {}
         self.slots: dict[int, Identity] = {}
@@ -41,6 +43,9 @@ class LifetimeMonitor:
         self.first_write: list[int | None] = [None] * ranks
         self.late_errors: set[Identity] = set()
         self.boot, self.config = 0, 1
+        self.polling: list[int | None] = [None] * ranks
+        self.reopen = [0] * ranks
+        self.last_ck = -1
         self.faulted = False
 
     def allocate(self, key: Identity, rank: int, slot: int, *, posted: bool, link: bool, ck: int) -> None:
@@ -48,6 +53,7 @@ class LifetimeMonitor:
         require(key not in self.live and slot not in self.slots and 0 <= rank < self.ranks, "live slot/identity reuse")
         require(0 <= key.generation < 65536 and 0 <= key.tag < 1 << 64, "identity width")
         if link:
+            require(self.polling[rank] is None and ck >= self.reopen[rank], "write during MR43 poll/read-clear guard")
             require(len(self.epoch_members[rank]) < 16, "MR43 per-rank epoch exceeds sixteen writes")
             self.epoch_members[rank].add(key)
             if self.first_write[rank] is None:
@@ -99,12 +105,22 @@ class LifetimeMonitor:
         if record.integrity and record.handshaken:
             del self.live[key]
 
-    def mr43(self, rank: int, ck: int, failed: bool) -> None:
+    def poll(self, rank: int, ck: int) -> None:
         require(0 <= rank < self.ranks and self.first_write[rank] is not None, "MR43 without epoch")
+        require(self.polling[rank] is None and ck >= self.reopen[rank], "duplicate MR43/read-clear guard")
         require(ck - self.first_write[rank] <= 256, "late MR43 poll")
-        members = self.epoch_members[rank]
-        require(all(self.live[k].physical for k in members), "MR43 before final pin completion")
-        for key in list(members):
+        require(all(self.live[k].physical for k in self.epoch_members[rank]), "MR43 before final pin completion")
+        self.polling[rank] = ck
+
+    def result(self, rank: int, ck: int, failed: bool, *, read_clear_ck: int) -> None:
+        require(0 <= rank < self.ranks and self.polling[rank] is not None, "MR43 result without poll")
+        require(
+            ck >= self.polling[rank] + self.tmrr
+            and read_clear_ck >= self.polling[rank] + self.tmrr + self.tmrw
+            and read_clear_ck > ck,
+            "MR43 result/read-clear timing",
+        )
+        for key in list(self.epoch_members[rank]):
             record = self.live[key]
             record.integrity = True
             if failed:
@@ -113,8 +129,31 @@ class LifetimeMonitor:
                 elif not record.exposed:
                     record.response = 2
             self._retire(key)
-        members.clear()
+        self.epoch_members[rank].clear()
         self.first_write[rank] = None
+        self.polling[rank] = None
+        self.reopen[rank] = read_clear_ck
+
+    def mr43(self, rank: int, ck: int, failed: bool) -> None:
+        """Compatibility helper for old transaction fixtures, not pin binding.
+
+        Live adapters must call poll/result with their sampled times and the
+        qualified read-clear completion. This helper uses the configured tMRR
+        return and tMRR+tMRW guard for transaction-level fixtures.
+        """
+        self.poll(rank, ck)
+        self.result(rank, ck + self.tmrr, failed, read_clear_ck=ck + self.tmrr + self.tmrw)
+
+    def advance(self, ck: int) -> None:
+        require(ck >= self.last_ck, "lifetime time reversal")
+        self.last_ck = ck
+        require(
+            all(
+                first is None or self.polling[r] is not None or ck - first <= 256
+                for r, first in enumerate(self.first_write)
+            ),
+            "missing MR43 poll at bound",
+        )
 
     def ownership_loss(self) -> None:
         self.faulted = True
@@ -135,9 +174,17 @@ class LifetimeMonitor:
         for members in self.epoch_members:
             members.clear()
         self.first_write = [None] * self.ranks
+        self.polling = [None] * self.ranks
+        self.reopen = [0] * self.ranks
         self.boot += 1
         self.config = 0
         self.faulted = False
 
     def finish(self) -> None:
-        require(not self.live and not self.slots and not any(self.epoch_members), "unsettled lifetime/MR43 trace tail")
+        require(
+            not self.live
+            and not self.slots
+            and not any(self.epoch_members)
+            and not any(x is not None for x in self.polling),
+            "unsettled lifetime/MR43 trace tail",
+        )

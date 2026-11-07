@@ -49,6 +49,54 @@ module lpddr5_mc_axi_agent #(
     end while (!w_ready_i);
     @(negedge clk_i); w_valid_o=0;
   endtask
+  // A whole stream keeps VALID asserted between accepted beats. The next
+  // payload is installed on the immediately following falling edge.
+  task automatic stream_w(input lpddr5_mc_axi_write_t payloads[]);
+    int waited;
+    @(negedge clk_i);
+    for(int i=0;i<payloads.size();i++) begin
+      w_o=payloads[i]; w_valid_o=1; waited=0;
+      do begin
+        @(posedge clk_i); waited++;
+        assert(waited<TIMEOUT && rst_ni) else $fatal(1,"stream W timeout/reset");
+      end while(!w_ready_i);
+      @(negedge clk_i);
+    end
+    w_valid_o=0;
+  endtask
+  task automatic stream_address(input bit write_request, input lpddr5_mc_axi_address_t payloads[]);
+    int waited;
+    @(negedge clk_i);
+    for(int i=0;i<payloads.size();i++) begin
+      if(write_request) begin aw_o=payloads[i]; aw_valid_o=1; end
+      else begin ar_o=payloads[i]; ar_valid_o=1; end
+      waited=0;
+      do begin
+        @(posedge clk_i); waited++;
+        assert(waited<TIMEOUT && rst_ni) else $fatal(1,"stream address timeout/reset");
+      end while(!(write_request ? aw_ready_i : ar_ready_i));
+      @(negedge clk_i);
+    end
+    if(write_request) aw_valid_o=0; else ar_valid_o=0;
+  endtask
+  // Dedicated streaming response owner. Call once per run; it never drops
+  // READY between beats. Do not concurrently call the stalled-response API.
+  task automatic stream_responses(input bit write_request, input int count);
+    int accepted,waited;
+    accepted=0; waited=0;
+    @(negedge clk_i);
+    if(write_request) b_ready_o=1; else r_ready_o=1;
+    while(accepted<count) begin
+      @(posedge clk_i); waited++;
+      assert(waited<TIMEOUT && rst_ni) else $fatal(1,"stream response timeout/reset");
+      if(write_request ? b_valid_i : r_valid_i) begin
+        accepted++; waited=0;
+        assert((write_request ? b_i.response : r_i.response)==0) else $fatal(1,"stream response error");
+      end
+    end
+    @(negedge clk_i);
+    if(write_request) b_ready_o=0; else r_ready_o=0;
+  endtask
   task automatic response_b(input int hold_cycles, output lpddr5_mc_axi_b_t payload);
     int waited;
     waited=0;

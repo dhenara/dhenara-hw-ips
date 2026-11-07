@@ -10,11 +10,12 @@ from collections import deque
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from contracts.integrity import dbi_encode, transport
+from contracts.integrity import WireBeat, dbi_encode, transport
 from contracts.waveform_oracle import check, check_data_cs_sequence
 
 from system.dram import Burst, DramModel
 from system.host import require
+from system.write_link import receive
 
 
 class WaveCapture:
@@ -73,27 +74,62 @@ class DigitalPhy:
     def __init__(self, profile: dict, link_rows: dict | None = None):
         self.dram = DramModel(profile)
         self.p = profile
-        require(not profile["read_link"] or link_rows is not None, "read-link PHY needs the raw parity matrix")
+        require(
+            not (profile["read_link"] or profile["write_link"]) or link_rows is not None,
+            "read-link PHY needs the raw parity matrix",
+        )
         self.link_rows = link_rows
         self.pending: list[tuple[int, int, ReturnedSlice]] = []
         self.ready = [deque(), deque()]
         self.pointer = [0, 0]
         self.serial = 0
         self.last_return = -1
+        self.raw_writes: dict[int, dict[int, WireBeat]] = {}
+        self.write_status: dict[int, list[str]] = {}
 
     def command(self, dfi_ck: int, cs: int, ca: int) -> Burst | None:
         # Each CA sample is delayed into the DRAM clock domain by explicit CK.
         return self.dram.command(dfi_ck + self.p["management_ck"]["tctrl_delay"], cs, ca)
 
-    def write_word(self, b: Burst, word: int, at_half_wck: int, value: int, mask: int = 0) -> None:
+    def write_word(self, b: Burst, word: int, at_half_wck: int, value: int, mask: int = 0, parity: int = 0) -> None:
         require(
             b.write and 0 <= word < b.beats // 2 and 0 <= value < 1 << 32 and 0 <= mask < 16,
             "write word identity/width",
         )
         first = at_half_wck + self.p["phy_half_wck"]["write"]
         require(first == b.times[word * 2], "write serialization path")
-        for half in range(2):
-            self.dram.beat(b, word * 2 + half, first + half, value >> (half * 16) & 65535, mask >> (half * 2) & 3)
+        require(0 <= parity < 16, "raw write parity width")
+        if self.p["write_link"]:
+            require(self.p["ratio"] == 4, "write link ratio")
+            capture = self.raw_writes.setdefault(b.index, {})
+            require(word * 4 not in capture, "duplicate raw write word")
+            for half in range(2):
+                for lane in range(2):
+                    i = half * 2 + lane
+                    capture[word * 4 + i] = WireBeat(
+                        b.index, word * 2 + half, lane, value >> (8 * i) & 255, mask >> i & 1, parity >> i & 1
+                    )
+            if len(capture) == b.beats * 2:
+                data, enabled, status = receive(
+                    self.link_rows, list(capture.values()), dbi=self.p["write_dbi"], masked=b.masked
+                )
+                # Correction and mask interpretation precede physical memory.
+                # Pass logical bytes to the memory model without a second DBI
+                # transform. No partial effect survives an uncorrectable block.
+                for beat in range(b.beats):
+                    self.dram.logical_beat(
+                        b,
+                        beat,
+                        b.times[beat],
+                        int.from_bytes(data[beat * 2 : beat * 2 + 2], "little"),
+                        enabled >> (beat * 2) & 3,
+                    )
+                self.write_status[b.index] = status
+                del self.raw_writes[b.index]
+        else:
+            require(parity == 0, "parity without admitted write link")
+            for half in range(2):
+                self.dram.beat(b, word * 2 + half, first + half, value >> (half * 16) & 65535, mask >> (half * 2) & 3)
 
     def schedule_read(
         self, b: Burst, *, skew_ck: tuple[int, int] = (0, 0), gaps: int = 0, dnv: set[tuple[int, int]] | None = None
@@ -167,5 +203,6 @@ class DigitalPhy:
         self.pointer = [0, 0]
 
     def finish(self) -> None:
+        require(not self.raw_writes, "incomplete raw parity write")
         require(not self.pending and not any(self.ready), "unreturned words at trace end")
         self.dram.finish()

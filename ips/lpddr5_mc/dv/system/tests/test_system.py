@@ -868,7 +868,7 @@ class AdapterTests(unittest.TestCase):
         m.command(40, 1, commands.access(False, 16, 0, 0))
         m.command(42, 1, commands.access(False, 16, 4, 0))
         with self.assertRaisesRegex(Violation, "spacing"):
-            m.command(44, 1, commands.access(False, 16, 0, 0))
+            m.command(43, 1, commands.access(False, 16, 0, 0))
 
     def test_source_trace_sorts_true_ties_not_cdc_arrivals(self):
         from system.trace import source_order

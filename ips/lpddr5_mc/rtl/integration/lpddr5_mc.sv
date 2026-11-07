@@ -179,6 +179,7 @@ module lpddr5_mc #(
       global_d.quiesced,global_d.trained,global_d.profile_valid};
     global_image[INDEX_BOOT_EPOCH]=global_d.boot_epoch;
     global_image[INDEX_TRAIN_REQUEST]={31'b0,global_d.train_request};
+    global_image[INDEX_TRAIN_DONE]={31'b0,global_d.trained};
   end
   logic [2:0] last_protection;
   logic unused_global_ready;

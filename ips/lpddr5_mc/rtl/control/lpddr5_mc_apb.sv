@@ -332,6 +332,11 @@ module lpddr5_mc_apb #(
       current_boot = global_status_i[INDEX_BOOT_EPOCH];
       for (int c = 0; c < CHANNELS; c++) begin
         for (int r = 0; r < REG_COUNT; r++) begin
+          // Invalidate live channel observations with the boot, without
+          // erasing retained diagnostics or explicitly captured performance.
+          if (current_boot != staging_q[0][INDEX_BOOT_EPOCH] && !REG_SHARED[r] && REG_RO[r] != 0 &&
+              !(r >= INDEX_ERROR_ADDR_LO && r <= INDEX_PERF_CYCLES_1))
+            staging_d[c][r] = REG_RESET[r];
           if (REG_SHARED[r] && REG_RO[r] != 0 && r != INDEX_ID && r != INDEX_CONFIG && r != INDEX_CONFIG_EPOCH)
             staging_d[c][r] = global_status_i[r] & REG_RO[r];
         end
@@ -348,6 +353,7 @@ module lpddr5_mc_apb #(
         for (int r = 0; r < REG_COUNT; r++) begin
           if (status_i[c].events == 0 && !status_i[c].error_valid &&
               status_i[c].image[INDEX_BOOT_EPOCH] == current_boot &&
+              status_i[c].image[INDEX_CONFIG_EPOCH] == epoch_q &&
               !REG_SHARED[r] && REG_RO[r] != 0 &&
               !(r >= INDEX_ERROR_ADDR_LO && r <= INDEX_UE_COUNT) &&
               (!(r >= INDEX_PERF_PAYLOAD_RD_0 && r <= INDEX_PERF_CYCLES_1) || status_i[c].perf_capture))
@@ -464,6 +470,12 @@ module lpddr5_mc_apb #(
     end
     irq_d = (irq_q & ~clear_events) | set_events;
     for (int c = 0; c < CHANNELS; c++) begin
+      if (epoch_d != epoch_q) begin
+        for (int r = 0; r < REG_COUNT; r++)
+          if (!REG_SHARED[r] && REG_RO[r] != 0 &&
+              !(r >= INDEX_ERROR_ADDR_LO && r <= INDEX_PERF_CYCLES_1))
+            staging_d[c][r] = REG_RESET[r];
+      end
       staging_d[c][INDEX_CONFIG_EPOCH] = epoch_d;
       staging_d[c][INDEX_STATUS] = hardware_state_d;
       staging_d[c][INDEX_STATUS][0] = valid_d;

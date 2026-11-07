@@ -40,6 +40,7 @@ module controller_tb #(
   lpddr5_mc_channel_pkg::lpddr5_mc_channel_status_t [CHANNELS-1:0] status_value;
   lpddr5_mc_profile_t profile;
   logic memory_reset=1,finish_observations=0;
+  logic [CHANNELS-1:0][4:0] mr4_value;
   byte unsigned expected[65536];
   int b_count[PORTS],r_count[PORTS],checks=0,stage=0;
   int power_policy=0;
@@ -85,7 +86,7 @@ module controller_tb #(
     assign unused_counts=^{mr43_count,mr4_count,zq_count,refresh_count,rfm_count};
     lpddr5_mc_channel_memory memory_model (
       .profile_i(qualified[0]),.ca_i(ca[c]),.write_i(writes[c]),.read_i(reads[c]),.return_o(returns[c]),
-      .mr43_i(8'd0),.mr4_i(5'd9),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
+      .mr43_i(8'd0),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
     initial forever begin
       @(negedge clk);
       if(memory_reset) begin
@@ -187,12 +188,28 @@ module controller_tb #(
     repeat(4) @(negedge clk);
     for(int c=0;c<CHANNELS;c++) management[c].init_complete=1;
     wait_status(INDEX_TRAIN_REQUEST,1,1);
+    access(0,18'(REG_OFFSET[INDEX_TRAIN_DONE]),0);
+    check(read_data==0 && !enable,"training must remain incomplete before matching ACK");
     if(boot_value!=0) access(1,18'(REG_OFFSET[INDEX_TRAIN_ACK]),1,1);
     write_csr(INDEX_TRAIN_TOKEN,32'(boot_value));write_csr(INDEX_TRAIN_ACK,1);
+    wait_status(INDEX_TRAIN_DONE,1,1);
     wait_status(INDEX_STATUS,32'hb,32'hb);
+    check(!enable,"TRAIN_DONE must be observable before ENABLE");
+    for(int c=0;c<CHANNELS;c++) begin
+      expect_channel(c,INDEX_DEVICE_MR8,32'(qualified[0].mr8));
+      expect_channel(c,INDEX_DEVICE_MR27,32'(qualified[0].mr27));
+      expect_channel(c,INDEX_DEVICE_MR57,32'(qualified[0].mr57));
+    end
     write_csr(INDEX_CONTROL,1);
     for(int n=0;n<300;n++) begin @(negedge clk);if(enable) break;end
     check(enable && !host_fault,"APB ENABLE to actual source admission");
+  endtask
+  task automatic expect_channel(input int channel,index_value,input logic [31:0] expected_value);
+    for(int n=0;n<500;n++) begin
+      access(0,18'h10000+18'(channel)*18'h10000+18'(REG_OFFSET[index_value]),0);
+      if(read_data==expected_value) return;
+    end
+    $fatal(1,"stage%0d channel%0d CSR%0d actual%h expected%h",stage,channel,index_value,read_data,expected_value);
   endtask
   task automatic wait_settled;
     for(int n=0;n<3000;n++) begin @(negedge clk);if(settled) return;end
@@ -204,9 +221,12 @@ module controller_tb #(
     int stream,count,number,ranks,target;
     logic [31:0] word_value;
     management='0;aw='0;ar='0;wd='0;phy_refresh_done=0;
+    for(int c=0;c<CHANNELS;c++) mr4_value[c]=9;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
     for(int i=0;i<65536;i++) expected[i]=0;
-    expected_profile(PROFILE_NUMBER);profile.ranks=2'(RANKS);for(int f=0;f<3;f++) qualified[f]=profile;
+    expected_profile(PROFILE_NUMBER);profile.ranks=2'(RANKS);profile.mr57=3;
+    check(profile_valid(profile),"nonzero paired-bank MR57 descriptor must be valid");
+    for(int f=0;f<3;f++) qualified[f]=profile;
     check($value$plusargs("images=%s",path),"missing image vectors");stream=$fopen(path,"r");
     check(stream!=0 && $fscanf(stream,"%d",count)==1 && count==192,"image vector header");
     // The default fixture consumes profile0/rank1 and all three FSP banks.
@@ -229,6 +249,12 @@ module controller_tb #(
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;
     wait(dut.p_started_q && dut.c_started_q && settled);
     repeat(20) @(negedge pclk);
+    access(0,18'(REG_OFFSET[INDEX_STATUS]),0);check(read_data==0,"actual cold disabled STATUS");
+    access(0,18'(REG_OFFSET[INDEX_TRAIN_DONE]),0);check(read_data==0,"cold training readback");
+    for(int c=0;c<CHANNELS;c++) begin
+      expect_channel(c,INDEX_DEVICE_MR8,0);expect_channel(c,INDEX_DEVICE_MR27,0);
+      expect_channel(c,INDEX_DEVICE_MR57,0);expect_channel(c,INDEX_TEMP_MR4,0);
+    end
     for(int regindex=0;regindex<REG_COUNT;regindex++) if(REG_RW[regindex]!=0) begin
       if(REG_SHARED[regindex]) write_csr(regindex,staging_image[regindex]&REG_RW[regindex]);
       else for(int c=0;c<CHANNELS;c++) access(1,18'h10000+18'(c)*18'h10000+18'(REG_OFFSET[regindex]),staging_image[regindex]&REG_RW[regindex]);
@@ -265,6 +291,14 @@ module controller_tb #(
     send_ar(PORTS-1,6,12288,64/BYTES);read_result(PORTS-1,6,12288,64/BYTES);wait_settled();stage=5;
     check(!host_fault && dut.stale_completions==0,"clean traffic fault/stale completion");
     @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
+    // Observe actual returned MR4 data after the traffic trace is closed.
+    // Distinct channels and two changing values catch constant/substituted
+    // snapshots. The normal traffic oracle keeps its original thermal basis.
+    for(int c=0;c<CHANNELS;c++) mr4_value[c]=5'(9+c);
+    for(int c=0;c<CHANNELS;c++) expect_channel(c,INDEX_TEMP_MR4,32'(9+c));
+    for(int c=0;c<CHANNELS;c++) mr4_value[c]=5'(11+c);
+    for(int c=0;c<CHANNELS;c++) expect_channel(c,INDEX_TEMP_MR4,32'(11+c));
+    $display("ACTUAL_APB_STATUS_PASS boot=0 mr57=3 changing_mr4_channels=%0d",CHANNELS);
     stage=6;
     // Both source obligations are accepted before ownership is lost. AW has
     // no W yet; AR is still crossing CDC. Neither may disappear during reset.
@@ -288,10 +322,21 @@ module controller_tb #(
     memory_reset=0;for(int i=0;i<65536;i++) expected[i]=0;
     wait_status(INDEX_BOOT_EPOCH,32'hffffffff,1);
     repeat(30) @(negedge pclk);
+    access(0,18'(REG_OFFSET[INDEX_TRAIN_DONE]),0);check(read_data==0,"old training survived destructive recovery");
+    for(int c=0;c<CHANNELS;c++) begin
+      expect_channel(c,INDEX_DEVICE_MR8,0);expect_channel(c,INDEX_DEVICE_MR27,0);
+      expect_channel(c,INDEX_DEVICE_MR57,0);expect_channel(c,INDEX_TEMP_MR4,0);
+      mr4_value[c]=9;
+    end
+    // Fresh rediscovery may change capability facts only after invalidation.
+    for(int f=0;f<3;f++) qualified[f].mr57=2;
     publish_and_boot(1);stage=7;observe_recovery=1;
     before_b=b_count[0];send_aw(0,12,24576,64/BYTES);send_w(0,24576,64/BYTES);wait_b(0,12,before_b+1);
     send_ar(PORTS-1,13,24576,64/BYTES);read_result(PORTS-1,13,24576,64/BYTES);wait_settled();
     @(negedge clk);finish_recovery=1;repeat(2) @(negedge clk);
+    for(int c=0;c<CHANNELS;c++) expect_channel(c,INDEX_TEMP_MR4,9);
+    check(!host_fault,"fresh MR4 polling after recovery");
+    $display("ACTUAL_APB_STATUS_PASS boot=1 mr57=2 fresh_mr4=9");
     $display("CONTROLLER_INTEGRATION_PASS checks=%0d boot=%0d",checks,status_value[0].boot_epoch);$finish;
   end
   // Retain useful owner state even if a process deadline interrupts simulation.

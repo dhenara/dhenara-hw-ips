@@ -82,6 +82,7 @@ module lpddr5_mc_channel #(
   logic [31:0] refresh_budget,maintenance_diagnostic;
   logic [4:0] thermal,temperature;
   logic temperature_valid;
+  logic temperature_sampled_q;
   logic update_request,update_window,update_busy,update_done,update_fault,ctrl_request,phy_ack;
   logic fsp_request,fsp_busy,fsp_published,fsp_declined,fsp_fault,fsp_init_start,fsp_clock_done,fsp_target_ready;
   logic [1:0] fsp_value,fsp_ratio,active_fsp_q;
@@ -158,6 +159,13 @@ module lpddr5_mc_channel #(
     status_o.drained=quiescent;status_o.pin_drained=pin_drained && wck_disabled;
     status_o.ecc_drained=integrity_drained && inline_drained;
     status_o.boot_epoch=boot_epoch;status_o.config_epoch=committed_epoch_o;status_o.prepared_epoch=prepared_epoch_o;
+    // Publish committed capability facts, never a staged/prepared descriptor.
+    // The conservative reset temperature is an internal maintenance policy,
+    // not an MR4 observation. Clear its readback until a fresh poll completes.
+    status_o.device_mr8=active_valid ? active.profile.mr8 : 8'd0;
+    status_o.device_mr27=active_valid ? active.profile.mr27 : 8'd0;
+    status_o.device_mr57=active_valid ? active.profile.mr57 : 8'd0;
+    status_o.temperature_mr4=temperature_sampled_q ? {3'b0,temperature} : 8'd0;
     status_o.power_policy=active.power_policy;status_o.power_down_idle_ck=active.power_down_idle_ck;
     status_o.self_refresh_idle_ck=active.self_refresh_idle_ck;
     status_o.events=0;status_o.fault_code=fault_code;status_o.first_error=first_error.error;
@@ -314,12 +322,12 @@ module lpddr5_mc_channel #(
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if(!rst_ni) begin
       register_state_q<=REG_IDLE;register_rank_q<=0;register_zq_q<=0;register_fault_q<=0;hottest_q<=1;
-      temperature_valid<=0;temperature<=9;mr4_done<=0;zq_done<=0;active_fsp_q<=0;
+      temperature_valid<=0;temperature_sampled_q<=0;temperature<=9;mr4_done<=0;zq_done<=0;active_fsp_q<=0;
       accepted_q<=0;completed_q<=0;stale_q<=0;ledger_valid_q<=0;
       for(int s=0;s<DEPTH;s++) ledger_q[s]<='0;
     end else if(destructive_reset) begin
       register_state_q<=REG_IDLE;register_rank_q<=0;register_zq_q<=0;register_fault_q<=0;hottest_q<=1;
-      temperature_valid<=0;temperature<=9;mr4_done<=0;zq_done<=0;active_fsp_q<=0;ledger_valid_q<=0;
+      temperature_valid<=0;temperature_sampled_q<=0;temperature<=9;mr4_done<=0;zq_done<=0;active_fsp_q<=0;ledger_valid_q<=0;
     end else begin
       temperature_valid<=0;mr4_done<=0;zq_done<=0;
       if(fsp_published) active_fsp_q<=fsp_value;
@@ -349,7 +357,10 @@ module lpddr5_mc_channel #(
           else begin
             register_state_q<=REG_IDLE;
             if(register_zq_q) zq_done<=1;
-            else begin mr4_done<=1;temperature_valid<=1;temperature<=register_result_value[4:0]>hottest_q ? register_result_value[4:0] : hottest_q; end
+            else if(!register_fault_q && !register_result_failed && register_result_value[4:0] inside {[1:15]}) begin
+              mr4_done<=1;temperature_valid<=1;temperature_sampled_q<=1;
+              temperature<=register_result_value[4:0]>hottest_q ? register_result_value[4:0] : hottest_q;
+            end
           end
         end
         default: register_fault_q<=1;

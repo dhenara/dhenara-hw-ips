@@ -66,6 +66,16 @@ module lpddr5_mc_config_tb;
     end
     // Keep unsupported capabilities/profile boundaries closed even with a
     // correct mailbox CRC; transport integrity does not qualify a profile.
+    for(int value=0;value<256;value++) begin
+      reset();load_config(0,9);cfg.profile.mr57=8'(value);
+      assert(profile_valid(cfg.profile)==(value<8)) else $fatal(1,"MR57 paired-bank admission %0d",value);
+    end
+    reset();load_config(0,9);cfg.profile.mr27=1;
+    assert(!profile_valid(cfg.profile)) else $fatal(1,"zero mandatory RFM threshold");
+    cfg.profile.mr27=3;
+    assert(profile_valid(cfg.profile)) else $fatal(1,"nonzero discovered RFM threshold");
+    cfg.profile.mr8=0;
+    assert(!profile_valid(cfg.profile)) else $fatal(1,"unsupported discovered geometry");
     for(int bad=0;bad<12;bad++) begin
       reset();load_config(0,9);
       case(bad)

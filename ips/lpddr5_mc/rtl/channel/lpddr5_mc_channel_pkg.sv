@@ -151,6 +151,7 @@ package lpddr5_mc_channel_pkg;
     logic fault, memory_trusted, train_request, train_done;
     logic config_valid, drained, pin_drained, ecc_drained, late_error;
     logic [31:0] boot_epoch, config_epoch, prepared_epoch;
+    logic [7:0] device_mr8, device_mr27, device_mr57, temperature_mr4;
     logic [12:0] events;
     logic [7:0] fault_code;
     logic [1:0] power_policy;
@@ -1569,7 +1570,13 @@ package lpddr5_mc_channel_pkg;
     expected.raw_parity=p.raw_parity;
     expected.device_read_link=p.device_read_link;
     expected.device_write_link=p.device_write_link;
+    // Device RFM capabilities vary independently of the qualified PHY timing.
+    // Keep the same paired-bank admission as the canonical profile validator.
+    expected.mr27=p.mr27;
+    expected.mr57=p.mr57;
     return p.ratio inside {2,4} && p.ranks inside {1,2} && p==expected
+      && (!p.mr27[0] || p.mr27[5:1]!=0)
+      && p.mr57[7:4]==0 && p.mr57[3:2] inside {0,1}
       && (!(p.read_link || p.write_link) || (p.raw_parity && p.ratio==4))
       && (!p.read_link || p.device_read_link) && (!p.write_link || p.device_write_link)
       && !(p.read_link && p.read_dbi);

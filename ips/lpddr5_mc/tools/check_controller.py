@@ -85,6 +85,13 @@ def plan(evidence: Path, name: str, suite: str) -> list[dict]:
             1800,
         )
     if suite in ("all", "connected"):
+        report = evidence / "control-example/report.json"
+        add(
+            "control-example",
+            "dv/integration/control_example.py",
+            ["--report", str(report), "--build-name", name + "-control-example"],
+            report,
+        )
         cases = [
             (family, family, [])
             for family in (

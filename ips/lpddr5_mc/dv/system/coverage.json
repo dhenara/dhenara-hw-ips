@@ -614,7 +614,11 @@
       ],
       "environment_tests": [
         "test_corrections.IntegrityCorrections.test_merge_originals_and_response_dependencies",
-        "test_corrections.IntegrityCorrections.test_merge_rejects_context_read_hazard_and_wrong_data"
+        "test_corrections.IntegrityCorrections.test_merge_rejects_context_read_hazard_and_wrong_data",
+        "test_review.MergeReview.test_duplicate_overlapping_originals_and_physical_identity",
+        "test_review.MergeReview.test_disjoint_pending_groups_and_retired_new_originals",
+        "test_review.MergeReview.test_fault_reset_stale_completion_and_new_epoch_id_reuse",
+        "test_review.MergeReview.test_original_physical_effect_cannot_be_claimed_twice"
       ],
       "foundation_tests": [],
       "combined_status": "pending",
@@ -630,7 +634,12 @@
       "environment_tests": [
         "test_corrections.IntegrityCorrections.test_mr43_poll_result_guard_and_rank_independence",
         "test_corrections.IntegrityCorrections.test_missing_unsolicited_and_early_mr43",
-        "test_corrections.IntegrityCorrections.test_mr43_return_and_clear_timing_boundaries"
+        "test_corrections.IntegrityCorrections.test_mr43_return_and_clear_timing_boundaries",
+        "test_review.LifetimeReview.test_all_timestamped_apis_reject_reversal_and_invalid_time",
+        "test_review.LifetimeReview.test_epoch_poll_deadline_and_result_clear_boundaries",
+        "test_review.LifetimeReview.test_same_edge_independent_ranks_and_read_clear_future_guard",
+        "test_review.LifetimeReview.test_reset_preserves_simulation_time_and_rejects_stale_epoch",
+        "test_review.LifetimeReview.test_result_cannot_retroactively_settle_after_observed_time"
       ],
       "foundation_tests": [],
       "combined_status": "pending",
@@ -646,7 +655,13 @@
       "environment_tests": [
         "test_corrections.ManagementCorrections.test_live_update_decline_early_ack_registered_release",
         "test_corrections.ManagementCorrections.test_live_update_late_stuck_reasserted_and_traffic",
-        "test_corrections.ManagementCorrections.test_live_fsp_training_pm_master_and_stale_completion"
+        "test_corrections.ManagementCorrections.test_live_fsp_training_pm_master_and_stale_completion",
+        "test_review.ManagementReview.test_fsp_matches_accepted_oracle_boundaries_and_decline",
+        "test_review.ManagementReview.test_fsp_clock_target_stability_and_missing_witness",
+        "test_review.ManagementReview.test_pm_matches_low_power_release_wakeup_and_decline",
+        "test_review.ManagementReview.test_training_master_positive_and_fault_boundaries",
+        "test_review.ManagementReview.test_every_kind_holds_ownership_through_return_and_rejects_reassertion",
+        "test_review.ManagementReview.test_management_stale_unsolicited_samples_and_incomplete_tail"
       ],
       "foundation_tests": [],
       "combined_status": "pending",

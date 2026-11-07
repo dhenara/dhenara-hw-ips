@@ -49,6 +49,7 @@ class LifetimeMonitor:
         self.faulted = False
 
     def allocate(self, key: Identity, rank: int, slot: int, *, posted: bool, link: bool, ck: int) -> None:
+        self._time(ck)
         require(not self.faulted and (key.boot, key.config) == (self.boot, self.config), "stale allocation epoch")
         require(key not in self.live and slot not in self.slots and 0 <= rank < self.ranks, "live slot/identity reuse")
         require(0 <= key.generation < 65536 and 0 <= key.tag < 1 << 64, "identity width")
@@ -60,6 +61,7 @@ class LifetimeMonitor:
                 self.first_write[rank] = ck
         self.live[key] = Record(rank, slot, posted, link)
         self.slots[slot] = key
+        self.last_ck = ck
 
     def physical(self, key: Identity) -> None:
         require(key in self.live and not self.live[key].physical, "stale/duplicate physical witness")
@@ -106,16 +108,20 @@ class LifetimeMonitor:
             del self.live[key]
 
     def poll(self, rank: int, ck: int) -> None:
+        self._time(ck)
         require(0 <= rank < self.ranks and self.first_write[rank] is not None, "MR43 without epoch")
         require(self.polling[rank] is None and ck >= self.reopen[rank], "duplicate MR43/read-clear guard")
-        require(ck - self.first_write[rank] <= 256, "late MR43 poll")
+        require(0 <= ck - self.first_write[rank] <= 256, "late MR43 poll")
         require(all(self.live[k].physical for k in self.epoch_members[rank]), "MR43 before final pin completion")
         self.polling[rank] = ck
+        self.last_ck = ck
 
     def result(self, rank: int, ck: int, failed: bool, *, read_clear_ck: int) -> None:
+        self._time(ck)
         require(0 <= rank < self.ranks and self.polling[rank] is not None, "MR43 result without poll")
         require(
-            ck >= self.polling[rank] + self.tmrr
+            type(read_clear_ck) is int
+            and ck >= self.polling[rank] + self.tmrr
             and read_clear_ck >= self.polling[rank] + self.tmrr + self.tmrw
             and read_clear_ck > ck,
             "MR43 result/read-clear timing",
@@ -133,6 +139,7 @@ class LifetimeMonitor:
         self.first_write[rank] = None
         self.polling[rank] = None
         self.reopen[rank] = read_clear_ck
+        self.last_ck = ck
 
     def mr43(self, rank: int, ck: int, failed: bool) -> None:
         """Compatibility helper for old transaction fixtures, not pin binding.
@@ -144,9 +151,10 @@ class LifetimeMonitor:
         self.poll(rank, ck)
         self.result(rank, ck + self.tmrr, failed, read_clear_ck=ck + self.tmrr + self.tmrw)
 
-    def advance(self, ck: int) -> None:
-        require(ck >= self.last_ck, "lifetime time reversal")
-        self.last_ck = ck
+    def _time(self, ck: int) -> None:
+        # One simulation clock across ranks and APIs; equal-edge observations
+        # are legal. A future read-clear guard is not an observed event.
+        require(type(ck) is int and ck >= 0 and ck >= self.last_ck, "lifetime time reversal/invalid CK")
         require(
             all(
                 first is None or self.polling[r] is not None or ck - first <= 256
@@ -154,6 +162,10 @@ class LifetimeMonitor:
             ),
             "missing MR43 poll at bound",
         )
+
+    def advance(self, ck: int) -> None:
+        self._time(ck)
+        self.last_ck = ck
 
     def ownership_loss(self) -> None:
         self.faulted = True

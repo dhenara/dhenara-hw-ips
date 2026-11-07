@@ -15,13 +15,34 @@ from system.measurement import Benchmark
 
 
 def replay(events: list[dict], direction: str, service: int) -> dict:
+    kinds = ("update", "training", "pm", "fsp", "master", "fsp", "pm")
     management = [
-        ManagementPort(kind, ResponseScript(1, 3, initial=i in (1, 3)))
-        for i, kind in enumerate(("update", "training", "pm", "fsp", "master"))
+        ManagementPort(
+            kind,
+            ResponseScript(
+                None if i >= 5 else 1,
+                None if i >= 5 else 11 if kind == "fsp" else 6 if kind == "pm" else 3,
+                initial=kind in ("training", "fsp"),
+            ),
+            completion_limit=5,
+        )
+        for i, kind in enumerate(kinds)
     ]
     for e in events:
         if e["kind"] == "management":
-            management[e["lane"]].sample(e["edge"], request=e["request"], response=e["response"])
+            lane = e["lane"]
+            require(0 <= lane < len(management), "unknown management fixture lane")
+            fsp = {"clock_change_done": e["clock_done"], "target": (1, 2, 1)} if kinds[lane] == "fsp" else {}
+            management[lane].sample(
+                e["edge"],
+                request=e["request"],
+                response=e["response"],
+                traffic=e["traffic"],
+                drained=e["drained"],
+                wck_disabled=e["wck_disabled"],
+                returned_state_known=e["known"],
+                **fsp,
+            )
     for monitor in management:
         monitor.finish()
     benchmark = Benchmark(direction, service)
@@ -64,7 +85,8 @@ def replay(events: list[dict], direction: str, service: int) -> dict:
         startup.append((first_complete - first_admit) // 1250)
     report = benchmark.report(ends[0] // 1250)
     report["observed_until_ps"] = ends[0]
-    report["sampled_management_ports"] = 5
+    report["sampled_management_ports"] = len(management)
+    report["management_dispositions"] = [m.disposition for m in management]
     report["startup_latency_ck"] = startup
     report["kind"] = "rtl_stimulus_measurement"
     report["source"] = "sampled_fixture_AXI_edges"

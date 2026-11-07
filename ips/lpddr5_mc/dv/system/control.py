@@ -124,24 +124,41 @@ class ResponseScript:
 
 
 class ManagementPort:
-    """Clocked bounded adapter for observed requests and driven PHY responses.
+    """Sample primitive pins before each CK and drive the next response level.
 
-    sample() consumes the pins before a CK edge; its returned level is driven
-    after that edge and observed on the next edge. Inputs are primitive port
-    signals, so no producer module name is required. The monitor checks the
-    *observed* returned pin rather than assuming its own drive reached the DUT.
+    One instance observes one operation, including its idle tail. FSP and PM
+    release before completion; update, training and master release afterwards.
+    FSP target/clock witnesses are optional for pin-only replay, but when bound
+    they must be supplied consistently. No clock or target witness is inferred
+    from request release. Full rank/refresh/training checks remain separate.
     """
 
-    def __init__(self, kind: str, script: ResponseScript, minimum: int = 4, maximum: int = 32):
+    def __init__(
+        self,
+        kind: str,
+        script: ResponseScript,
+        minimum: int = 4,
+        maximum: int = 32,
+        *,
+        completion_limit: int | None = None,
+    ):
         require(kind in ("update", "training", "pm", "fsp", "master"), "management kind")
         require(minimum >= 2 and maximum >= minimum + 2, "management bounds")
+        require(script.initial == (kind in ("training", "fsp")), "management idle polarity")
         self.kind, self.script, self.minimum, self.maximum = kind, script, minimum, maximum
+        self.completion_limit = maximum if completion_limit is None else completion_limit
+        require(self.completion_limit > 0, "management completion bound")
         self.start: int | None = None
         self.last = -1
         self.samples: list[bool] = []
         self.release: int | None = None
+        self.accepted: int | None = None
+        self.returned: int | None = None
         self.closed = False
-        self.saw_low = False
+        self.disposition: str | None = None
+        self.target: tuple[int, int, int] | None = None
+        self.clock_bound: bool | None = None
+        self.previous_clock_done = False
 
     def sample(
         self,
@@ -152,6 +169,9 @@ class ManagementPort:
         traffic: bool = False,
         drained: bool = True,
         wck_disabled: bool = True,
+        clock_change_done: bool | None = None,
+        target: tuple[int, int, int] | None = None,
+        returned_state_known: bool = True,
     ) -> bool:
         require(ck == self.last + 1, "missing/repeated management sample")
         self.last = ck
@@ -161,36 +181,119 @@ class ManagementPort:
                 return self.script.initial
             require(not self.closed and drained and wck_disabled and not traffic, "unsafe management admission")
             self.start = ck
+            self.target = target
+            self.clock_bound = clock_change_done is not None
+        if self.closed:
+            require(not request and response == self.script.initial, "management reassertion after return")
+            if self.disposition == "declined" and self.kind == "fsp":
+                require(not clock_change_done, "clock change on declined FSP")
+            return self.script.initial
+        # Return/release edges are still owned: traffic can resume next CK.
+        require(drained and wck_disabled and not traffic, "unsafe management ownership/drain/WCK/traffic")
         age = ck - self.start
         self.samples.append(response)
-        require(not traffic or self.closed, "traffic during management ownership")
         if self.kind == "update":
-            if not request and self.release is None:
-                from contracts.update import check_update
-
-                # Complete the observation horizon with low idle samples. Any
-                # real later reassertion is still rejected below.
-                padded = self.samples + [False] * max(0, self.maximum + 1 - len(self.samples))
-                result = check_update(self.minimum, self.maximum, padded)
-                require(result.fault is None and age == result.release + 1, "unsafe/late update request release")
-                self.release, self.closed = age, True
-            if self.closed:
-                require(not request and not response, "update reassertion after release")
-            else:
-                require(age <= self.maximum, "management timeout")
+            self._update(age, request, response)
+        elif self.kind == "fsp":
+            self._fsp(age, request, response, clock_change_done, target)
+        elif self.kind == "pm":
+            self._pm(age, request, response)
         else:
-            # FSP/training complete starts high and must be observed low before
-            # a fresh high is completion. Optional PM may simply be declined.
-            active = response != self.script.initial
-            if active:
-                self.saw_low = True
-            if not request:
-                require(self.saw_low or self.kind == "pm", "stale management completion")
-                require(response == self.script.initial, "request release before management completion")
-                self.closed = True
-            require(self.closed or age <= self.maximum, "management timeout")
-        # The next pre-edge sample observes this after-edge drive.
+            self._pulse(age, request, response, returned_state_known)
+        # FSP/PM scripts must keep running after release until actual return.
         return self.script.value(age + 1) if not self.closed else self.script.initial
+
+    def _close(self, disposition: str) -> None:
+        self.closed, self.disposition = True, disposition
+
+    def _update(self, age: int, request: bool, response: bool) -> None:
+        if not request:
+            from contracts.update import check_update
+
+            padded = self.samples + [False] * max(0, self.maximum + 1 - len(self.samples))
+            result = check_update(self.minimum, self.maximum, padded)
+            require(result.fault is None and age == result.release + 1, "unsafe/late update request release")
+            self.release = age
+            self._close("acknowledged" if any(self.samples) else "declined")
+        else:
+            require(age <= self.maximum, "management timeout")
+
+    def _fsp(self, age, request, response, clock_done, target) -> None:
+        require((clock_done is not None) == self.clock_bound, "missing FSP clock witness")
+        if self.release is None:
+            require(target == self.target, "FSP target changed while requested")
+            if target is not None:
+                frequency, ratio, fsp = target
+                require(0 <= frequency <= 31 and ratio in (2, 4) and 0 <= fsp <= 2, "FSP target encoding")
+        if self.accepted is None and not response:
+            require(1 <= age < self.minimum and self.release is None, "late FSP acknowledgement")
+            self.accepted = age
+        require(self.accepted is not None or not clock_done, "clock change before FSP acceptance")
+        if self.release is None:
+            if self.accepted is not None:
+                require(not response, "FSP completion before release")
+            if not request:
+                self.release = age
+                if self.accepted is None:
+                    require(age == self.minimum and response, "invalid FSP decline release")
+                    self._close("declined")
+                else:
+                    require(age >= self.minimum, "early FSP request release")
+                    if self.clock_bound:
+                        require(self.previous_clock_done, "FSP released before registered clock change")
+            else:
+                require(age <= self.maximum, "FSP request timeout")
+        else:
+            require(not request, "FSP request reassertion")
+            require(age - self.release <= self.completion_limit, "FSP completion timeout")
+            if response:
+                self.returned = age
+                self._close("acknowledged")
+        self.previous_clock_done = bool(clock_done)
+
+    def _pm(self, age: int, request: bool, response: bool) -> None:
+        if self.accepted is None and response:
+            require(1 <= age <= self.minimum and self.release is None, "late PM acknowledgement")
+            self.accepted = age
+        if self.release is None:
+            if not request:
+                self.release = age
+                require(age >= self.minimum, "early PM request release")
+                if self.accepted is None:
+                    require(age == self.minimum, "invalid PM decline release")
+                    self._close("declined")
+                else:
+                    require(self.accepted < age, "PM acknowledgement at request release")
+            elif self.accepted is not None:
+                require(response, "PM completion before release")
+            require(age <= self.maximum, "PM request timeout")
+        else:
+            require(not request, "PM request reassertion")
+        if self.release is not None and not self.closed:
+            require(age - self.release <= self.completion_limit, "PM wakeup timeout")
+            if not response:
+                self.returned = age
+                self._close("acknowledged")
+
+    def _pulse(self, age: int, request: bool, response: bool, known: bool) -> None:
+        # Training completion has high idle polarity. Master response is an
+        # active-ownership pulse; rank-state/refresh checks use check_master.
+        active = response != self.script.initial
+        if self.accepted is None and active:
+            bound = self.minimum if self.kind == "master" else self.maximum
+            require(1 <= age <= bound, "late management acknowledgement")
+            self.accepted = age
+        if self.accepted is not None and not active and self.returned is None:
+            self.returned = age
+        require(self.returned is None or not active, "management response reassertion")
+        if not request:
+            require(self.returned is not None and age > self.returned, "stale/early management release")
+            require(known, "unknown management returned state")
+            self.release = age
+            self._close("acknowledged")
+        require(age <= self.maximum, "management timeout")
+        if self.kind == "master" and self.accepted is None:
+            require(age <= self.minimum, "master acknowledgement timeout")
 
     def finish(self) -> None:
         require(self.start is not None and self.closed, "unfinished management request")

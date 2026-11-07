@@ -580,8 +580,8 @@ class LifetimeTests(unittest.TestCase):
     def test_two_rank_epochs_and_posted_history_after_reuse(self):
         m = LifetimeMonitor()
         keys = []
-        for rank in range(2):
-            for i in range(16):
+        for i in range(16):
+            for rank in range(2):
                 key = Identity(rank * 16 + i, i, 0, 1)
                 m.allocate(key, rank, rank, posted=True, link=True, ck=i)
                 m.physical(key)
@@ -591,9 +591,11 @@ class LifetimeTests(unittest.TestCase):
         self.assertEqual(len(m.live), 32)
         with self.assertRaisesRegex(Violation, "sixteen"):
             m.allocate(Identity(99, 99, 0, 1), 0, 3, posted=True, link=True, ck=20)
-        m.mr43(0, 100, True)
-        m.mr43(1, 101, False)
-        self.assertEqual(m.late_errors, set(keys[:16]))
+        m.poll(0, 100)
+        m.poll(1, 101)
+        m.result(0, 108, True, read_clear_ck=120)
+        m.result(1, 109, False, read_clear_ck=121)
+        self.assertEqual(m.late_errors, {k for k in keys if k.tag < 16})
         with self.assertRaisesRegex(Violation, "stale response"):
             m.expose(keys[0], 0, handshaken=True)
         m.finish()

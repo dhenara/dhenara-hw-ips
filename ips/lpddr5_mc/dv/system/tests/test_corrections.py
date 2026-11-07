@@ -347,12 +347,12 @@ class IntegrityCorrections(unittest.TestCase):
         m.physical(b)
         m.result(0, 20, True, read_clear_ck=30)
         self.assertIn(a, m.late_errors)
+        m.poll(1, 25)
         c = Identity(2, 0, 0, 1)
         with self.assertRaisesRegex(Violation, "guard"):
             m.allocate(c, 0, 0, posted=True, link=True, ck=29)
         m.allocate(c, 0, 0, posted=True, link=True, ck=30)
         m.physical(c)
-        m.poll(1, 25)
         m.result(1, 33, False, read_clear_ck=45)
         m.poll(0, 35)
         m.result(0, 43, False, read_clear_ck=55)
@@ -421,16 +421,18 @@ class ManagementCorrections(unittest.TestCase):
             p.sample(0, request=True, response=False, traffic=True)
 
     def test_live_fsp_training_pm_master_and_stale_completion(self):
-        for kind in ("fsp", "training", "master", "pm"):
-            script = ResponseScript(1, 6, initial=kind in ("fsp", "training"))
+        # Completion follows release for FSP/PM, and precedes release for the
+        # training/master primitive ownership pulses.
+        for kind, end, release in [("fsp", 11, 6), ("pm", 8, 7), ("training", 6, 7), ("master", 6, 7)]:
+            script = ResponseScript(1, end, initial=kind in ("fsp", "training"))
             p = ManagementPort(kind, script)
             response = script.initial
-            for ck in range(10):
-                response = p.sample(ck, request=ck < 7, response=response)
+            for ck in range(14):
+                response = p.sample(ck, request=ck < release, response=response)
             p.finish()
         p = ManagementPort("fsp", ResponseScript(None, None, initial=True))
         p.sample(0, request=True, response=True)
-        with self.assertRaisesRegex(Violation, "stale"):
+        with self.assertRaisesRegex(Violation, "decline"):
             p.sample(1, request=False, response=True)
 
 

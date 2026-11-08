@@ -58,7 +58,8 @@ module lpddr5_mc_maintenance_tb;
     profile=fixture_profile(0,0,0,1,0,0);profile.ranks=1;reset();
     issue_reserve=int'(maintenance_admission_budget(profile,0))-int'(profile.dram_ck_trfc_ab);
     mr4_done=1;zq_done=1;
-    for(elapsed=0;elapsed<3124-issue_reserve;elapsed++) begin
+    // reset() returns one CK after the start timestamp was captured.
+    for(elapsed=1;elapsed<3124-issue_reserve;elapsed++) begin
       assert(!urgent && !request_valid && !fault)
         else $fatal(1,"normal REF charged post-command recovery elapsed=%0d issue_reserve=%0d",elapsed,issue_reserve);
       tick();

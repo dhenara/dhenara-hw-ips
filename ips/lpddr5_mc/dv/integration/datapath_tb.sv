@@ -55,6 +55,7 @@ module datapath_tb #(
   string cap_path;
   int zero_admissions[CHANNELS];
   int fairness_mode=-1,fairness_stream,fairness_rows=0,fairness_age=32,fairness_gap=64;
+  int fairness_service=SERVICE_DIV;
   string fairness_path;
   longint unsigned written_bytes=0;
   logic [PORTS-1:0][15:0] last_bid;
@@ -462,6 +463,8 @@ module datapath_tb #(
     if($value$plusargs("fairness_mode=%d",fairness_mode)) begin
       check(fairness_mode inside {0,1,2} && cap_mode==0,"fairness selection");
       if($value$plusargs("fairness_rows=%d",fairness_rows)) check(fairness_rows inside {0,1},"fairness traffic selection");
+      if($value$plusargs("fairness_service=%d",fairness_service))
+        check(fairness_service inside {1,2,4},"fairness service selection");
       // The reference A32/G64 case remains the single-direction baseline.
       // Mixed row/direction changes have separate measured costs. A1 churn
       // deliberately exercises every class's urgency without forced stalls.
@@ -469,7 +472,7 @@ module datapath_tb #(
       fairness_gap=fairness_mode==2 ? 128 : 64;
       check($value$plusargs("fairness_observations=%s",fairness_path),"fairness observation path");
       fairness_stream=$fopen(fairness_path,"w");check(fairness_stream!=0,"fairness trace open");
-      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":4,\"mode\":%0d,\"divisor\":%0d,\"profile\":%0d,\"rows\":%0d,\"depth\":64,\"age\":%0d,\"tick\":8,\"gap\":%0d}",fairness_mode,SERVICE_DIV,PROFILE_NUMBER,fairness_rows,fairness_age,fairness_gap);
+      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":4,\"mode\":%0d,\"divisor\":%0d,\"profile\":%0d,\"rows\":%0d,\"depth\":64,\"age\":%0d,\"tick\":8,\"gap\":%0d}",fairness_mode,fairness_service,PROFILE_NUMBER,fairness_rows,fairness_age,fairness_gap);
     end
     if($value$plusargs("cap_mode=%d",cap_mode)) begin
       check(cap_mode==1 || cap_mode==2,"cap mode");
@@ -495,6 +498,7 @@ module datapath_tb #(
       cfg[c].profile=profile;cfg[c].inline_ecc=INTEGRITY_MODE==1;cfg[c].service_div=3'(SERVICE_DIV);cfg[c].age_tick_div=8;cfg[c].read_urgent_age=32;cfg[c].write_urgent_age=32;
       cfg[c].read_weight=1;cfg[c].write_weight=1;cfg[c].bw_window=3000;cfg[c].config_epoch=1;
       if(fairness_mode>=0) begin
+        cfg[c].service_div=3'(fairness_service);
         cfg[c].read_urgent_age=16'(fairness_age);cfg[c].write_urgent_age=16'(fairness_age);
         cfg[c].read_weight=7;cfg[c].write_weight=1;
         cfg[c].read_batch_min=1;cfg[c].write_batch_min=1;cfg[c].write_batch_max=4;

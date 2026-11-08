@@ -99,6 +99,14 @@ python3 ips/lpddr5_mc/dv/integration/check.py --family datapath --depth 64 --pro
   --report "$PWD/ips/lpddr5_mc/evidence/fairness-read-ck2/report.json" --build-name fairness-read-ck2
 ```
 
+The [runtime matrix runner](../../dv/integration/run_fairness_binary.py) reuses a passing build from the same clean checkout for other direction, traffic and service selections. It verifies the source, original report and executable before and after each case, records each actual runtime configuration, and runs independent pin/host replay plus fairness mutations. `+fairness_service` configures the real scheduler before traffic; the observer checks its active divisor and age at every admission and issue. A matrix pass establishes only its recorded cases. Use a new destination for each traffic selection:
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/run_fairness_binary.py --checkout "$PWD" \
+  --source-report "$PWD/ips/lpddr5_mc/evidence/fairness-read-ck2/report.json" \
+  --destination "$PWD/ips/lpddr5_mc/evidence/fairness-balanced" --traffic balanced --services 1 2 4 --modes 0 1 2
+```
+
 ## Combined check command
 
 The controller regression polls dedicated TRAIN_DONE before ENABLE and reads actual per-channel device capabilities through APB, including nonzero paired-bank MR57. Its normal recovery scenario observes two changing MR4 values per channel through the real memory/channel/status/CDC/APB path, then checks that destructive recovery clears old observations and a fresh boot publishes its new capability descriptor and fresh temperature. The notification regression additionally rejects wrong-boot and wrong-configuration snapshots while retaining error detail. The [C example behavior test](../../dv/integration/control_example_test.c) compiles the delivered helper itself and covers cold/quiesced publication, running/fault rejection, changed boot, valid/epoch prerequisites, one-command bounded timeout and invalid callbacks. This callback fixture complements real APB admission checks; it does not replace them.

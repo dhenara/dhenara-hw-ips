@@ -27,7 +27,9 @@ for(genvar f=0;f<CHANNELS;f++) begin : fairness_observers
     if(admitted!="null" || issued!="null") begin
       check(dut.channels[f].channel.backend.scheduler.config_i.read_urgent_age==16'(fairness_age)
         && dut.channels[f].channel.backend.scheduler.config_i.write_urgent_age==16'(fairness_age)
-        && dut.channels[f].channel.backend.scheduler.config_i.age_tick_div==8,"fairness active age configuration");
+        && dut.channels[f].channel.backend.scheduler.config_i.age_tick_div==8
+        && dut.channels[f].channel.backend.scheduler.config_i.service_div==3'(fairness_service),
+        "fairness active age/service configuration");
     end
     pair_live=dut.channels[f].channel.backend.scheduler.pair_pending_o;
     maintenance_pause=dut.channels[f].channel.backend.register_pending_i
@@ -103,6 +105,6 @@ task automatic fairness_case;
   @(negedge clk);finish_observations=1;
   $fdisplay(fairness_stream,"{\"kind\":\"end\",\"ck\":%0d}",cap_ck);$fclose(fairness_stream);fairness_stream=0;
   repeat(2) @(negedge clk);
-  $display("DATAPATH_FAIRNESS_PASS mode=%0d divisor=%0d checks=%0d",fairness_mode,SERVICE_DIV,checks);
+  $display("DATAPATH_FAIRNESS_PASS mode=%0d divisor=%0d checks=%0d",fairness_mode,fairness_service,checks);
   $display("DATAPATH_INTEGRATION_PASS checks=%0d",checks);$finish;
 endtask

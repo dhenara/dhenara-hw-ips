@@ -56,7 +56,8 @@ module datapath_tb #(
   logic unused_debug;
   assign unused_debug=^{axi_clk,command_rejected,prepare_error,fsp_ready,fsp_declined,prepared_epoch,committed_epoch,notification_valid,
     notifications,management_out,wck,late_error,stale,accepted,grants};
-  lpddr5_mc_datapath #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH)) dut (
+  lpddr5_mc_datapath #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH),
+    .ID_BITS(INTEGRITY_MODE==4 ? 16 : 8)) dut (
     .clk_ck_i(clk),.rst_ni(rst_n),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),.rearm_i(rearm),
     .host_config_valid_i(cfg_valid),.host_config_ready_o(cfg_ready),.host_config_i(host_cfg),.rearm_ready_o(rearm_ready),
     .initialized_o(initialized),.host_config_valid_o(host_cfg_valid),.host_fault_o(host_fault),.host_settled_o(settled),.late_error_o(late_error),.stale_completions_o(stale),
@@ -253,6 +254,33 @@ module datapath_tb #(
       send_ar(0,52,0,64/BYTES);read_result(0,52,0,64/BYTES);wait_settled();
       repeat(10) @(negedge clk);check(ue_count==1 && !host_fault && !status_value[0].fault,"link error notification and later clean epoch");
       $display("DATAPATH_WRITE_LINK_PASS UE=%0d MR43=%0d",ue_count,memories[0].mr43_count);
+    end else if(INTEGRITY_MODE==4) begin
+      int identity_value,expected_ce,expected_ue;
+      before_b=b_count[0];send_aw(0,70,0,64/BYTES);send_w(0,0,64/BYTES);wait_b(0,70,before_b+1);wait_settled();
+      send_ar(0,71,0,64/BYTES);read_result(0,71,0,64/BYTES);wait_settled();
+      identity_value=72;expected_ce=0;expected_ue=0;
+      // Every DQ/parity column crosses the real returned-word tracker on each
+      // byte slice and on both sides of the BL32 split, including C8.
+      for(int group_index=0;group_index<2;group_index++) for(int slice_index=0;slice_index<2;slice_index++) begin
+        memories[0].memory_model.read_fault_group=group_index;
+        memories[0].memory_model.read_fault_slice=slice_index;
+        for(int bit_index=0;bit_index<137;bit_index++) begin
+          memories[0].memory_model.read_fault_mask=137'b1<<bit_index;
+          send_ar(0,16'(identity_value),0,64/BYTES);read_result(0,16'(identity_value),0,64/BYTES);wait_settled();
+          identity_value++;expected_ce++;
+        end
+        // A DQ/DQ and a DQ/parity double cannot become corrected payload.
+        for(int pair_index=0;pair_index<2;pair_index++) begin
+          memories[0].memory_model.read_fault_mask=137'b1 | (137'b1<<(pair_index==0 ? 127 : 136));
+          send_ar(0,16'(identity_value),0,64/BYTES);read_result(0,16'(identity_value),0,64/BYTES,2);wait_settled();
+          identity_value++;expected_ue++;
+        end
+      end
+      memories[0].memory_model.read_fault_mask=0;
+      send_ar(0,16'(identity_value),0,64/BYTES);read_result(0,16'(identity_value),0,64/BYTES);wait_settled();
+      repeat(20) @(negedge clk);
+      check(ce_count==expected_ce && ue_count==expected_ue && !host_fault && !status_value[0].fault,"read-link notifications and continued service");
+      $display("DATAPATH_READ_LINK_PASS CE=%0d UE=%0d singles=548 doubles=8 clean=2",ce_count,ue_count);
     end else begin
       // MR27=0x45 admits 64 ACTs per pair; each ordinary REF subtracts 16.
       // Repeat row changes across refresh intervals until residual RAA forces
@@ -328,5 +356,5 @@ module datapath_tb #(
     @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
     $display("DATAPATH_INTEGRATION_PASS checks=%0d ports=%0d channels=%0d ranks=%0d width=%0d depth=%0d profile=%0d div=%0d",checks,PORTS,CHANNELS,RANKS,DATA_BITS,DEPTH,PROFILE_NUMBER,SERVICE_DIV);$finish;
   end
-  initial begin #(INTEGRITY_MODE==0 ? 30000 : 100000);$fatal(1,"datapath deadline stage%0d settled=%0d fault=%0d",stage,settled,host_fault);end
+  initial begin #(INTEGRITY_MODE==4 ? 1000000 : INTEGRITY_MODE==0 ? 30000 : 100000);$fatal(1,"datapath deadline stage%0d settled=%0d fault=%0d",stage,settled,host_fault);end
 endmodule

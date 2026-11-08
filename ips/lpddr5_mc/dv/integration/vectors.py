@@ -10,8 +10,10 @@ IP = Path(__file__).resolve().parents[2]
 def generate(destination: Path) -> None:
     sys.path.insert(0, str(IP / "dv"))
     from contracts.configuration import example_configuration, register_image
+    from contracts.raw_parity import generate_read_encoder
 
     destination.mkdir(parents=True, exist_ok=True)
+    generate_read_encoder(destination)
     profiles = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"]
     schema = json.loads((IP / "config/contracts/registers.json").read_text())
     include = ["task automatic expected_profile(input int number);", "  profile='0;", "  case(number)"]

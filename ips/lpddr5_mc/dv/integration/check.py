@@ -37,7 +37,7 @@ def main() -> None:
     )
     parser.add_argument("--scenario", type=int, choices=range(4))
     parser.add_argument("--power-policy", type=int, choices=(1, 2))
-    parser.add_argument("--integrity-mode", type=int, choices=range(4), default=0)
+    parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
     for flag, values, default in (
         ("ports", (1, 2), 2),
         ("channels", (1, 2), 2),
@@ -79,10 +79,10 @@ def main() -> None:
     if args.integrity_mode and (
         args.family != "datapath"
         or (args.ports, args.channels, args.ranks) != (1, 1, 1)
-        or args.profile_number != (8 if args.integrity_mode == 2 else 0)
+        or args.profile_number != ({2: 8, 4: 16}.get(args.integrity_mode, 0))
     ):
         parser.error(
-            "focused integrity/management modes require datapath, one port/channel/rank and profile 0 (8 for link)"
+            "focused modes require datapath, one port/channel/rank and profile 0 (8 for write link, 16 for read link)"
         )
     report = args.report.resolve()
     if report.exists():
@@ -248,7 +248,7 @@ def main() -> None:
             from connected import check
 
             profiles = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"]
-            if args.integrity_mode in (1, 2):
+            if args.integrity_mode in (1, 2, 4):
                 from integrity import check as check_integrity
 
                 result["integrity_observations"] = check_integrity(

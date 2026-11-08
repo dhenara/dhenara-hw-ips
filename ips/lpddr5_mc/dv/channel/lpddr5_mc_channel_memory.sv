@@ -1,6 +1,9 @@
 // Bounded behavioral fixture, driven by decoded CA rather than internal DUT
 // launches/completions. Independent system qualification remains downstream.
-module lpddr5_mc_channel_memory (
+module lpddr5_mc_channel_memory #(
+  parameter bit INITIAL_PATTERN=0,
+  parameter int CHANNELS=1,CHANNEL_INDEX=0
+) (
   input lpddr5_mc_channel_pkg::lpddr5_mc_profile_t profile_i,
   input lpddr5_mc_contract_pkg::lpddr5_mc_ca_t ca_i,
   input lpddr5_mc_contract_pkg::lpddr5_mc_write_bus4_t write_i,
@@ -34,13 +37,26 @@ module lpddr5_mc_channel_memory (
   longint unsigned byte_address;
   logic [7:0] raw_value,value;
   logic masked;
+  // Faults affect the external returned codeword, after parity generation.
+  // Bits0..127 are DQ, bits128..136 are the raw DMI parity positions.
+  logic [136:0] read_fault_mask=0;
+  int read_fault_group=0,read_fault_slice=0;
+  logic [127:0] read_group_data;
+  logic [1:0][1:0][8:0] read_checks;
   logic unused_debug;
   assign unused_debug=^{profile_i,write_i.link_parity};
+  `include "read_link_encoder.svh"
+  function automatic byte unsigned stored_byte(input longint unsigned at);
+    longint unsigned logical_address;
+    if(memory_bytes.exists(at)!=0) return memory_bytes[at];
+    logical_address=CHANNELS==1 ? at : (at & 63) | (64'(CHANNEL_INDEX)<<6) | ((at & ~64'd63)<<1);
+    return INITIAL_PATTERN ? 8'(logical_address ^ (logical_address>>8) ^ 64'd90) : 8'd0;
+  endfunction
   task automatic reset;
     command_count=0;ck=0;act_pending=0;act_rank=0;act_row=0;act_bank=0;open_banks=0;
     rfm_count_o=0;for(int r=0;r<2;r++) for(int p=0;p<8;p++) raa[r][p]=0;
     mr43_count_o=0;mr4_count_o=0;zq_count_o=0;refresh_count_o=0;return_o='0;
-    memory_bytes.delete();write_epoch_pending=0;
+    memory_bytes.delete();write_epoch_pending=0;read_fault_mask=0;read_fault_group=0;read_fault_slice=0;
     for(int r=0;r<2;r++) begin first_write_ck[r]=0;last_mr43_ck[r]=-1000;end
     for(int r=0;r<2;r++) for(int b=0;b<16;b++) rows[r][b]=0;
   endtask
@@ -52,6 +68,16 @@ module lpddr5_mc_channel_memory (
     words=0;offset_word=0;enable_at=0;word_at=0;byte_address=0;raw_value=0;value=0;masked=0;
     for(int c=0;c<command_count;c++) begin
       words=commands[c].bl32 ? 16 : 8;
+      read_checks=0;read_group_data=0;
+      if(profile_i.read_link && !commands[c].write_access && !commands[c].mrr) begin
+        for(int group_index=0;group_index<(commands[c].bl32 ? 2 : 1);group_index++) begin
+          for(int slice_index=0;slice_index<2;slice_index++) begin
+            for(int beat=0;beat<16;beat++)
+              read_group_data[beat*8+:8]=stored_byte(commands[c].address+64'(group_index)*32+64'(beat)*2+64'(slice_index));
+            read_checks[group_index][slice_index]=fixture_read_checks(read_group_data);
+          end
+        end
+      end
       for(int lane=0;lane<ratio;lane++) begin
         word_at=ck*ratio+lane;
         enable_at=commands[c].at_ck*ratio+(commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrcslat) : int'(profile_i.dfi_wck_tphy_rdcslat));
@@ -87,7 +113,16 @@ module lpddr5_mc_channel_memory (
               if(commands[c].mrr) begin
                 if(w<4 && b%2==0) value=commands[c].mr_address==43 ? mr43_i : {3'b0,mr4_i};
                 else value=8'hda;
-              end else if(memory_bytes.exists(byte_address)!=0) value=memory_bytes[byte_address];
+              end else value=stored_byte(byte_address);
+              if(profile_i.read_link && !commands[c].mrr) begin
+                int beat_in_group,group_index,slice_index;
+                beat_in_group=(w%8)*2+b/2;group_index=w/8;slice_index=b%2;
+                if(beat_in_group>=7) return_o.link_parity[lane][b]=read_checks[group_index][slice_index][beat_in_group-7];
+                if(group_index==read_fault_group && slice_index==read_fault_slice) begin
+                  value^=read_fault_mask[beat_in_group*8+:8];
+                  if(beat_in_group>=7) return_o.link_parity[lane][b]^=read_fault_mask[128+beat_in_group-7];
+                end
+              end
               return_o.data[lane][b*8+:8]=value;
             end
           end
@@ -98,6 +133,21 @@ module lpddr5_mc_channel_memory (
     assert(write_i.cs==expected_write_cs && read_i.cs==expected_read_cs) else $fatal(1,"continuous CS mismatch at CK%0d",ck);
   endtask
   task automatic sample;
+    // Retire only after the last data and continuous-CS slot. Tracking live
+    // commands bounds long simulations without changing storage contents.
+    int retained,last_data,last_cs,span;
+    retained=0;
+    for(int c=0;c<command_count;c++) begin
+      span=(commands[c].bl32 ? 16 : 8)+(profile_i.ratio==4 && commands[c].bl32 ? 8 : 0);
+      last_data=commands[c].at_ck*int'(profile_i.ratio)+span+
+        (commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrlat)+int'(profile_i.dfi_wck_tphy_wrdata) : int'(profile_i.dfi_wck_trddata_en)+2*int'(profile_i.ratio));
+      last_cs=commands[c].at_ck*int'(profile_i.ratio)+span+
+        (commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrcslat) : int'(profile_i.dfi_wck_tphy_rdcslat));
+      if(ck*int'(profile_i.ratio)<=last_data || ck*int'(profile_i.ratio)<=last_cs) begin
+        commands[retained]=commands[c];retained++;
+      end
+    end
+    command_count=retained;
     if(ca_i.cs!=0) begin
       rank_value=ca_i.cs==2 ? 1 : 0;bank_value=int'(ca_i.address[10:7]);
       if(act_pending) begin

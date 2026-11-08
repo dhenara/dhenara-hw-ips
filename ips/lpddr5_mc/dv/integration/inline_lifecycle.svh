@@ -17,16 +17,16 @@ task automatic inline_payload(input int p,at,input byte salt,input bit sparse=0)
 endtask
 task automatic inline_image(input string phase_name,input int channel,at);
   logic [511:0] data_value,check_value;
-  int local_at;
-  local_at=(at&63)|((at>>7)<<6);data_value=0;check_value=0;
+  longint unsigned local_at;
+  local_at=64'((at&63)|((at>>7)<<6));data_value=0;check_value=0;
   // Constant generate indices are required by the qualified simulator.
   for(int j=0;j<64;j++) begin
     if(channel==0) begin
-      data_value[j*8+:8]=memories[0].memory_model.memory_bytes[64'(local_at+j)];
-      check_value[j*8+:8]=memories[0].memory_model.memory_bytes[64'((1073741824/576)*512+(local_at/512)*64+j)];
+      data_value[j*8+:8]=memories[0].memory_model.memory_bytes[local_at+64'(j)];
+      check_value[j*8+:8]=memories[0].memory_model.memory_bytes[64'((1073741824/576)*512)+(local_at/512)*64+64'(j)];
     end else begin
-      data_value[j*8+:8]=memories[1].memory_model.memory_bytes[64'(local_at+j)];
-      check_value[j*8+:8]=memories[1].memory_model.memory_bytes[64'((1073741824/576)*512+(local_at/512)*64+j)];
+      data_value[j*8+:8]=memories[1].memory_model.memory_bytes[local_at+64'(j)];
+      check_value[j*8+:8]=memories[1].memory_model.memory_bytes[64'((1073741824/576)*512)+(local_at/512)*64+64'(j)];
     end
   end
   $display("INLINE_IMAGE {\"phase\":\"%s\",\"ps\":%0d,\"channel\":%0d,\"address\":%0d,\"data\":\"0x%h\",\"check\":\"0x%h\"}",

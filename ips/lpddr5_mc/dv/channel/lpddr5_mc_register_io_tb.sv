@@ -18,18 +18,20 @@ module lpddr5_mc_register_io_tb;
     .busy_o(busy),.result_valid_o(result_valid),.result_ready_i(result_ready),.result_rank_o(result_rank),.result_zq_o(result_zq),.result_failed_o(result_failed),
     .result_address_o(result_address),.result_value_o(result_value),.ca_o(ca),.wck_o(wck),.read_request_o(read_request),.return_i(return_value),.fault_o(fault));
   task automatic tick; #1; clk=1; #1; clk=0; #1; endtask
-  task automatic run_case(input int ratio_two,always_on,kind);
+  task automatic run_case(input int ratio_two,always_on,kind,long_guard);
     logic [7:0] enable_history[3];
     logic [7:0] held_value;
-    int mrr_at,zq_at,word_count,command_count;
+    int mrr_at,zq_at,word_count,command_count,handback_at,guard_ck,ready_at;
     assert(ratio_two inside {0,1} && always_on inside {0,1}) else $fatal(1,"profile selector");
     profile=fixture_profile(1'(ratio_two),0,0,1'(always_on),0,0);
+    if(long_guard!=0) begin profile.dram_ck_tmrr=80;profile.dram_ck_tmrw=60; end
+    guard_ck=int'(profile.dram_ck_tmrr)+int'(profile.dram_ck_tmrw);
     rst_n=0; request_valid=0; result_ready=0; return_value='0; tick(); rst_n=1;
     for(int h=0;h<3;h++) enable_history[h]=0;
-    request_rank=1; request_zq=kind==1; address=kind==0 ? 7'd43 : 7'd4;
+    request_rank=1; request_zq=kind==1; address=kind==0 ? 7'd43 : kind==5 ? 7'd44 : kind==6 ? 7'd45 : 7'd4;
     exclusive=0; #1; assert(!request_ready) else $fatal(1,"exclusive pin ownership"); exclusive=1;
     request_valid=1; tick(); request_valid=0;
-    mrr_at=-1; zq_at=-1; word_count=0; command_count=0;
+    mrr_at=-1; zq_at=-1; word_count=0; command_count=0; handback_at=-1;
     for(int cycle=0;cycle<500;cycle++) begin
       return_value='0;
       for(int lane=0;lane<4;lane++) if(enable_history[1][lane*2+:2]!=0 && kind!=2) begin
@@ -41,7 +43,9 @@ module lpddr5_mc_register_io_tb;
         word_count++;
       end
       #1;
+      if(mrr_at>=0 && handback_at<0 && dut.wck_disabled && dut.data_drained) handback_at=cycle;
       if(ca.cs!=0) begin
+        if(mrr_at>=0) assert(cycle-mrr_at>=guard_ck) else $fatal(1,"CA before command-origin register guard");
         assert(ca.cs==2) else $fatal(1,"register rank selection");
         command_count++;
         case(ca.address[6:0])
@@ -60,7 +64,14 @@ module lpddr5_mc_register_io_tb;
         else begin
           assert(result_valid && !fault && result_rank==request_rank && result_zq==request_zq && result_address==address) else $fatal(1,"register result identity");
           if(request_zq) assert(cycle-zq_at>=24 && command_count==1) else $fatal(1,"ZQ recovery");
-          else assert(result_value==8'h35 && result_failed==(kind==3) && word_count==8 && cycle-mrr_at>=int'(profile.dram_ck_tmrr)) else $fatal(1,"MRR opcode/return/guard");
+          else begin
+            assert(result_value==8'h35 && result_failed==(kind==3) && word_count==8 && cycle-mrr_at>=guard_ck)
+              else $fatal(1,"MRR opcode/return/guard");
+            ready_at=handback_at>mrr_at+guard_ck ? handback_at : mrr_at+guard_ck;
+            assert(handback_at>=0 && cycle<=ready_at+2)
+              else $fatal(1,"unnecessary serialized register guard: result=%0d handback=%0d command=%0d guard=%0d",cycle,handback_at,mrr_at,guard_ck);
+            if(kind==4) $display("REGISTER_HANDOFF ratio_two=%0d always_on=%0d guard=%0d command=%0d handback=%0d result=%0d",ratio_two,always_on,guard_ck,mrr_at,handback_at,cycle);
+          end
           held_value=result_value;
           repeat(8) begin tick(); assert(result_valid && result_value==held_value && busy && ca.cs==0) else $fatal(1,"stable register response"); end
           result_ready=1; tick(); result_ready=0; assert(!busy) else $fatal(1,"register retirement");
@@ -73,7 +84,7 @@ module lpddr5_mc_register_io_tb;
   initial begin
     profile='0; return_value='0;
     for(int ratio_two=0;ratio_two<2;ratio_two++) for(int always_on=0;always_on<2;always_on++)
-      for(int kind=0;kind<4;kind++) run_case(ratio_two,always_on,kind);
-    $display("PASS register IO: actual MRR/return data, defined UI, rank, WCK/stop, ZQ latch/recovery, result stalls, DNV and missing-return faults"); $finish;
+      for(int kind=0;kind<7;kind++) for(int long_guard=0;long_guard<2;long_guard++) run_case(ratio_two,always_on,kind,long_guard);
+    $display("PASS register IO: actual MRR/return data, command-origin guards, WCK/data handback, defined UI, rank, ZQ latch/recovery, result stalls, DNV and missing-return faults"); $finish;
   end
 endmodule

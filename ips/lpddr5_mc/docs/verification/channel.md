@@ -41,7 +41,7 @@ The manifest includes the independent `dv/system` models used by fairness replay
 | `maintenance` | Paired RAA/RFM, stable requests, complete REFpb rounds/order and rank interleave, staggered-rank all-bank grouping, hot all-bank fallback, thermal derating/invalidity, MR4/retention faults, long SR/SRX extra refresh and retained diagnostics through reset | Scheduler timing and real MR4 service are checked by the connected fixture |
 | `fsp` | Frozen target MRs, paired programming/readback oracle, long guard, fresh low/high acceptance/completion, normal decline, invalid/late/early/stuck/WCK faults and epoch publication | Constant-CK digital points only; host all-channel commit remains pending |
 | `lifecycle` | Fresh boot/token/profile fences, host settlement, normal power-down/wake/tXP, SR update-before-exit/tXSR, FSP/update reserve boundaries, actual per-rank PHY refresh execution, missing execution fault, fresh master reports and destructive recovery | Host settlement/reset and PHY state/execution are explicit fixture attestations |
-| `register_io` | Actual MRR/returned opcode, defined UI, rank, WCK/stop, ZQ latch/recovery, stalls, DNV and missing-return fault | Exclusive pin owner; combined arbitration is checked separately |
+| `register_io` | Actual MRR/returned opcode, MR4/MR43–45 command-origin guards, defined UI, rank, WCK/stop, ZQ latch/recovery, stalls, DNV and missing-return fault | Both WCK ratios/policies; exclusive pin owner, with combined arbitration checked separately |
 | `granule_adapter` | Eighty requests through four credits, masked MWR16 halves, distinct internal tags, staged outcomes, failure/stalls/stale results and invalid column rejection | Bounded slot fixture; complete host acceptance/width/queue matrix remains pending |
 | `channel` | Connected streams and management cases below | One channel with explicit host/PHY seams; independent system environment remains downstream |
 
@@ -61,6 +61,8 @@ The table describes assertions present in source. Passing claims additionally re
 - Mandatory RFM from row churn followed by thermal codes 13/15, refresh service and MR4 progress. The thermal restart observes ENABLE acceptance, checks that urgent-maintenance rejection keeps QUIET admission closed, and retries for at most 2000 CK before starting traffic.
 
 A quiesce wait requires both QUIET and actual drained status, because background register work can start while the lifecycle remains QUIET. The CA-driven memory fixture independently counts ACT and REF/RFM decrements and rejects an ACT beyond its paired-bank bound. A component lifecycle check separately supplies actual rank-specific PHY refresh execution within the admitted two-CK bound and verifies a missing-execution fault retains PHY acknowledgement.
+
+The register fixture extends the recovery sum beyond physical return time and checks no intervening CA or result can bypass it. It also checks that a completed guard does not restart after data and WCK handback: the result arrives within two CK of both independent prerequisites. Result stalls preserve identity and opcode. These owning checks do not establish final combined throughput.
 
 Use `--channel-case 7` for exactly one MR4/ZQ visit per populated rank in each of two successive sweeps, including changed returned temperature. Both one- and two-rank cases check the quiet interval after completion. The write-link case with REFpb also checks periodic MR4 through staggered two-rank refresh rounds; a missed 3000-CK watchdog remains a failure.
 

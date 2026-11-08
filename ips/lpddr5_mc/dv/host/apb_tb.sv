@@ -35,7 +35,7 @@ module apb_tb;
   int checks = 0;
 
   lpddr5_mc_apb #(.PUBLICATION_TIMEOUT(900)) dut (
-    .pclk, .preset_n, .psel_i(psel), .penable_i(penable), .request_i(req),
+    .pclk, .preset_n, .cold_preset_n(preset_n), .psel_i(psel), .penable_i(penable), .request_i(req),
     .pready_o(pready), .response_o(rsp), .enabled_i(enabled), .quiesced_i(quiesced),
     .host_settled_i(settled), .active_fsp_i(active_fsp), .link_fault_i(link_fault),
     .recovery_confirmed_i(recovery), .global_status_valid_i(global_valid),
@@ -193,7 +193,9 @@ module apb_tb;
       status[c].perf_capture = 0;
     end
     repeat(3) @(negedge pclk);
+    check(!(|status_ready), "reset must fence diagnostic consumption");
     preset_n = 1;
+    @(negedge pclk);
     check(global_ready && &status_ready && &ack_ready, "stream readiness");
     read_reg(0, read_data);
     check(read_data == 32'h4c500200, "ID value");

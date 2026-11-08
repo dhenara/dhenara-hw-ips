@@ -43,11 +43,13 @@ module lpddr5_mc #(
   import lpddr5_mc_apb_pkg::*;
   import lpddr5_mc_host_pkg::*;
   import lpddr5_mc_channel_pkg::*;
-  logic crst_n,prst_n,cold_rst_n;
+  logic crst_n,prst_n,cold_rst_n,cold_prst_n;
   // Epoch custody survives a core/APB reset while any AXI ledger survives.
   // Cold startup must assert the common reset and every AXI reset together.
   lpddr5_mc_reset_sync cold_reset(.clk_i(clk_ck_i),
     .arst_ni(rst_ni || (|axi_rst_ni)),.rst_no(cold_rst_n));
+  lpddr5_mc_reset_sync cold_p_reset(.clk_i(pclk_i),
+    .arst_ni(rst_ni || (|axi_rst_ni)),.rst_no(cold_prst_n));
   lpddr5_mc_reset_sync c_reset(.clk_i(clk_ck_i),.arst_ni(rst_ni),.rst_no(crst_n));
   lpddr5_mc_reset_sync p_reset(.clk_i(pclk_i),.arst_ni(rst_ni),.rst_no(prst_n));
   logic [CHANNELS-1:0] p_fault,c_fault,p_ready,c_ready;
@@ -189,7 +191,7 @@ module lpddr5_mc #(
   logic unused_global_ready;
   lpddr5_mc_apb #(.CHANNELS(CHANNELS),.PORTS(PORTS),.RANKS(RANKS),.AXI_BITS(DATA_BITS),
     .ADDRESS_BITS(ADDRESS_BITS),.QUEUE_DEPTH(DEPTH),.PUBLICATION_TIMEOUT(PUBLICATION_TIMEOUT)) apb (
-    .pclk(pclk_i),.preset_n(prst_n),.psel_i,.penable_i,.request_i(apb_i),.pready_o,.response_o(apb_o),
+    .pclk(pclk_i),.preset_n(prst_n),.cold_preset_n(cold_prst_n),.psel_i,.penable_i,.request_i(apb_i),.pready_o,.response_o(apb_o),
     .enabled_i(global_pq.enabled),.quiesced_i(global_pq.quiesced),.host_settled_i(global_pq.settled),.active_fsp_i(active_image[0][INDEX_DVFS][1:0]),
     .link_fault_i(p_transport_fault),.recovery_confirmed_i(global_dvalid && global_d.recovered),
     .global_status_valid_i(global_dvalid),.global_status_i(global_image),.global_status_ready_o(unused_global_ready),
@@ -203,6 +205,7 @@ module lpddr5_mc #(
     assign management_request[c]=management_i[c].phyupd_req || management_i[c].phymstr_req;
     assign p_config[c].publication=publication[c];assign p_config[c].boot_epoch=publication_boot;assign p_config[c].image=publication_image[c];
     lpddr5_mc_control_link crossing (
+      .a_status_rst_ni(cold_prst_n),.c_status_rst_ni(cold_rst_n),
       .aclk_i(pclk_i),.arst_ni(prst_n),.a_enable_i(1'b1),.a_rearm_i(p_rearm_q),.a_fault_o(p_fault[c]),.a_rearm_ready_o(p_ready[c]),
       .cclk_i(clk_ck_i),.crst_ni(crst_n),.c_enable_i(1'b1),.c_rearm_i(c_rearm_q),.c_fault_o(c_fault[c]),.c_rearm_ready_o(c_ready[c]),
       .a_config_valid_i(publication_valid[c]),.a_config_ready_o(publication_ready[c]),.a_config_i(p_config[c]),
@@ -222,7 +225,7 @@ module lpddr5_mc #(
     assign channel_command[c]=fsp_command[c] ? CH_CMD_FSP : coordinator_command[c];
     assign snapshot=lpddr5_mc_integration_pkg::channel_status_image(status_o[c]);
     lpddr5_mc_status_bridge status_source (
-      .clk_i(clk_ck_i),.rst_ni(crst_n),.snapshot_i(snapshot),.perf_capture_i(perf_snapshot[c]),.perf_ready_o(perf_ready[c]),.notification_valid_i(notify_valid[c]),.notification_ready_o(notify_ready[c]),
+      .clk_i(clk_ck_i),.rst_ni(cold_rst_n),.snapshot_i(snapshot),.perf_capture_i(perf_snapshot[c]),.perf_ready_o(perf_ready[c]),.notification_valid_i(notify_valid[c]),.notification_ready_o(notify_ready[c]),
       .notification_i(notification[c]),.valid_o(c_status_valid[c]),.ready_i(c_status_ready[c]),.status_o(c_status[c]));
   end
   lpddr5_mc_coordinator #(.CHANNELS(CHANNELS)) coordinator (

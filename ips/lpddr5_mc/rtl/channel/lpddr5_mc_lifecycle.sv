@@ -117,10 +117,58 @@ module lpddr5_mc_lifecycle (
     if(master_ack_o || state_q inside {UPDATE,FSP,LP_UPDATE}) owner_o=LPDDR5_MC_OWN_PHY;
     if(state_q==FAILED) owner_o=LPDDR5_MC_OWN_FAULT;
   end
-  task automatic fail(input logic [7:0] code_value);
-    state_q<=FAILED; trusted_o<=0; fault_code_o<=code_value;
-    if(first_fault_o==0) first_fault_o<={code_value,boot_epoch_o[7:0],profile_epoch_i[7:0],3'b0,state_q};
-  endtask
+  logic operational_q;
+  logic [7:0] failure_code;
+  // One ordered decoder supplies both volatile failure state and the retained
+  // first-fault snapshot. Later checks keep the existing fault priority.
+  always_comb begin
+    failure_code=0;
+    case(state_q)
+      BOOT: if(profile_valid_i && elapsed_q>32'(profile_i.management_ck_boot_timeout)) failure_code=1;
+      DRAIN: if(drained && pages_closed_i && wck_disabled_i && !maintenance_urgent_i
+          && !master_pending_q && !management_i.phyupd_req && operation_q!=CH_CMD_UPDATE
+          && operation_q inside {CH_CMD_POWER_DOWN,CH_CMD_SELF_REFRESH}
+          && (!extra_refresh_i || operation_q==CH_CMD_POWER_DOWN)
+          && (operation_q==CH_CMD_SELF_REFRESH || refresh_budget_i>wake_limit+32'(profile_i.dram_ck_txp)+32'(profile_i.management_ck_tlp_resp)+8)
+          && (management_i.lp_ctrl_ack || management_i.lp_data_ack)) failure_code=2;
+      LP_ACCEPT: if(!(management_i.lp_ctrl_ack && management_i.lp_data_ack && elapsed_q+1<=32'(profile_i.management_ck_tlp_resp))
+          && elapsed_q+1>=32'(profile_i.management_ck_tlp_resp)
+          && (lp_seen_q || management_i.lp_ctrl_ack || management_i.lp_data_ack)) failure_code=3;
+      LP_HOLD: if(!management_i.lp_ctrl_ack || !management_i.lp_data_ack) failure_code=4;
+      LP_RELEASE: if((management_i.lp_ctrl_ack || management_i.lp_data_ack) && elapsed_q+1>wake_limit) failure_code=5;
+      MASTER: begin
+        for(int r=0;r<2;r++) if(active_ranks[r] && !chosen_sr_q[r]) begin
+          if(phy_refresh_request_o[r]) begin
+            if(!phy_refresh_done_i[r] && refresh_age_q[r]+1>32'(profile_i.management_ck_tphymstr_rfsh)) failure_code=6;
+          end else if(phy_refresh_done_i[r]) failure_code=7;
+        end
+        if(!management_i.phymstr_req && ((report_low_q & active_ranks)!=active_ranks || !known_ranks
+            || (rank_self_refresh_i & active_ranks)!=chosen_sr_q || phy_refresh_request_o!=0)) failure_code=9;
+        if(master_elapsed_q+1>master_limit) failure_code=8;
+      end
+      MASTER_RETURN: if(!master_fresh_q) failure_code=10;
+      BOOT_START,BOOT_EXIT,BOOT_WAIT,QUIET,RUN,LP_ENTER,LP_UPDATE,LP_EXIT,LP_WAIT,
+        UPDATE,FSP,MASTER_ENTER,MASTER_GUARD,MASTER_EXIT,MASTER_WAIT,FAILED,PD_LOW: begin end
+      default: failure_code=11;
+    endcase
+    if(state_q!=FAILED && !destructive_reset_o) begin
+      if(master_pending_q && (!management_i.phymstr_req || management_i.phymstr_type!=master_type_q
+          || management_i.phymstr_cs_state!=master_choices_q || management_i.phymstr_state_sel!=master_sel_q
+          || master_age_q+1>32'(profile_i.management_ck_tphymstr_resp))) failure_code=12;
+      if(master_ack_o && management_i.phymstr_req && (management_i.phymstr_type!=master_type_q
+          || management_i.phymstr_cs_state!=master_choices_q || management_i.phymstr_state_sel!=master_sel_q)) failure_code=13;
+      if(management_i.error || fault_i || update_fault_i || fsp_fault_i) failure_code=14;
+      if(state_q!=BOOT && state_q!=BOOT_START && !profile_valid_i) failure_code=15;
+      if((management_i.lp_ctrl_ack || management_i.lp_data_ack)
+          && !(state_q inside {LP_ACCEPT,LP_ENTER,LP_HOLD,LP_RELEASE})) failure_code=16;
+    end
+    if(!operational_q || state_q==FAILED) failure_code=0;
+  end
+  always_ff @(posedge clk_ck_i or negedge cold_rst_ni) begin
+    if(!cold_rst_ni) first_fault_o<=0;
+    else if(first_fault_o==0 && failure_code!=0)
+      first_fault_o<={failure_code,boot_epoch_o[7:0],profile_epoch_i[7:0],3'b0,state_q};
+  end
   // Identity must outlive every source ledger that can still reject its reuse.
   always_ff @(posedge clk_ck_i or negedge cold_rst_ni) begin
     if(!cold_rst_ni) boot_epoch_o<=0;
@@ -129,16 +177,17 @@ module lpddr5_mc_lifecycle (
   end
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if(!rst_ni) begin
-      state_q<=BOOT; operation_q<=CH_CMD_NONE; elapsed_q<=0;
+      operational_q<=0;state_q<=BOOT; operation_q<=CH_CMD_NONE; elapsed_q<=0;
       retired_epoch_q<=0; retired_valid_q<=0; boot_profile_epoch_q<=0; init_low_q<=0; boot_attested_q<=0;
       lp_seen_q<=0; op_started_q<=0; master_pending_q<=0; master_fresh_q<=0;
       master_age_q<=0; master_elapsed_q<=0; master_type_q<=0; master_choices_q<=0;
       master_sel_q<=0; chosen_sr_q<=0; boot_sr_q<=0; report_low_q<=0; refresh_age_q<=0;
       lp_ctrl_request_o<=0; lp_data_request_o<=0; master_ack_o<=0; syscs_state_o<=0; phy_refresh_request_o<=0;
-      trusted_o<=0; train_request_o<=0; train_done_o<=0; first_fault_o<=0; fault_code_o<=0;
+      trusted_o<=0; train_request_o<=0; train_done_o<=0; fault_code_o<=0;
       command_rejected_o<=0; destructive_reset_o<=0; maintenance_start_o<=0;
       self_refresh_enter_o<=0; self_refresh_exit_o<=0; external_refresh_o<=0;
     end else begin
+      operational_q<=1;
       command_rejected_o<=0; destructive_reset_o<=0; maintenance_start_o<=0;
       self_refresh_enter_o<=0; self_refresh_exit_o<=0; external_refresh_o<=0;
       elapsed_q<=elapsed_q+1;
@@ -162,7 +211,6 @@ module lpddr5_mc_lifecycle (
                   || (rank_self_refresh_i & active_ranks)!=boot_sr_q) command_rejected_o<=1;
               else begin train_done_o<=1; train_request_o<=0; maintenance_start_o<=1; state_q<=BOOT_START; elapsed_q<=0; end
             end
-            if(elapsed_q>32'(profile_i.management_ck_boot_timeout)) fail(8'd1);
           end else begin elapsed_q<=0; if(train_ack_i) command_rejected_o<=1; end
         end
         BOOT_START: begin
@@ -200,8 +248,7 @@ module lpddr5_mc_lifecycle (
           else if(operation_q inside {CH_CMD_POWER_DOWN,CH_CMD_SELF_REFRESH}) begin
             if(!extra_refresh_i || operation_q==CH_CMD_POWER_DOWN) begin
               if(operation_q==CH_CMD_SELF_REFRESH || refresh_budget_i>wake_limit+32'(profile_i.dram_ck_txp)+32'(profile_i.management_ck_tlp_resp)+8) begin
-                if(management_i.lp_ctrl_ack || management_i.lp_data_ack) fail(8'd2);
-                else begin state_q<=LP_ACCEPT; lp_ctrl_request_o<=1; lp_data_request_o<=1; lp_seen_q<=0; end
+                if(!management_i.lp_ctrl_ack && !management_i.lp_data_ack) begin state_q<=LP_ACCEPT; lp_ctrl_request_o<=1; lp_data_request_o<=1; lp_seen_q<=0; end
               end
             end
           end else state_q<=QUIET;
@@ -218,8 +265,7 @@ module lpddr5_mc_lifecycle (
           if(management_i.lp_ctrl_ack || management_i.lp_data_ack) lp_seen_q<=1;
           if(management_i.lp_ctrl_ack && management_i.lp_data_ack && elapsed_q+1<=32'(profile_i.management_ck_tlp_resp)) begin state_q<=LP_ENTER; elapsed_q<=0; end
           else if(elapsed_q+1>=32'(profile_i.management_ck_tlp_resp)) begin
-            if(lp_seen_q || management_i.lp_ctrl_ack || management_i.lp_data_ack) fail(8'd3);
-            else begin lp_ctrl_request_o<=0; lp_data_request_o<=0; state_q<=QUIET; end
+            if(!lp_seen_q && !management_i.lp_ctrl_ack && !management_i.lp_data_ack) begin lp_ctrl_request_o<=0; lp_data_request_o<=0; state_q<=QUIET; end
           end
         end
         LP_ENTER: begin
@@ -227,16 +273,17 @@ module lpddr5_mc_lifecycle (
           elapsed_q<=0; state_q<=LP_HOLD;
         end
         LP_HOLD: begin
-          if(!management_i.lp_ctrl_ack || !management_i.lp_data_ack) fail(8'd4);
-          else if((command_valid_i && command_i==CH_CMD_WAKE) || (operation_q==CH_CMD_POWER_DOWN && refresh_budget_i<=wake_limit+32'(profile_i.dram_ck_txp)+8)) begin
-            if(elapsed_q+1>=residency_limit) begin state_q<=LP_RELEASE; elapsed_q<=0; lp_ctrl_request_o<=0; lp_data_request_o<=0; end
-            else command_rejected_o<=command_valid_i;
-          end else if(command_valid_i) command_rejected_o<=1;
+          if(management_i.lp_ctrl_ack && management_i.lp_data_ack) begin
+            if((command_valid_i && command_i==CH_CMD_WAKE) || (operation_q==CH_CMD_POWER_DOWN && refresh_budget_i<=wake_limit+32'(profile_i.dram_ck_txp)+8)) begin
+              if(elapsed_q+1>=residency_limit) begin state_q<=LP_RELEASE; elapsed_q<=0; lp_ctrl_request_o<=0; lp_data_request_o<=0; end
+              else command_rejected_o<=command_valid_i;
+            end else if(command_valid_i) command_rejected_o<=1;
+          end
         end
         LP_RELEASE: begin
           if(!management_i.lp_ctrl_ack && !management_i.lp_data_ack) begin
             elapsed_q<=0; op_started_q<=0; state_q<=operation_q==CH_CMD_SELF_REFRESH ? LP_UPDATE : LP_EXIT;
-          end else if(elapsed_q+1>wake_limit) fail(8'd5);
+          end
         end
         LP_UPDATE: begin
           if(update_busy_i) op_started_q<=1;
@@ -263,16 +310,13 @@ module lpddr5_mc_lifecycle (
             if(phy_refresh_request_o[r]) begin
               refresh_age_q[r]<=refresh_age_q[r]+1;
               if(phy_refresh_done_i[r]) begin external_refresh_o[r]<=1; phy_refresh_request_o[r]<=0; end
-              else if(refresh_age_q[r]+1>32'(profile_i.management_ck_tphymstr_rfsh)) fail(8'd6);
-            end else if(phy_refresh_done_i[r]) fail(8'd7);
+            end
           end
           if(!management_i.phymstr_req) begin
-            if((report_low_q & active_ranks)!=active_ranks || !known_ranks || (rank_self_refresh_i & active_ranks)!=chosen_sr_q || phy_refresh_request_o!=0) fail(8'd9);
-            else begin master_ack_o<=0; master_fresh_q<=1; state_q<=MASTER_RETURN; elapsed_q<=0; end
+            if((report_low_q & active_ranks)==active_ranks && known_ranks && (rank_self_refresh_i & active_ranks)==chosen_sr_q && phy_refresh_request_o==0) begin master_ack_o<=0; master_fresh_q<=1; state_q<=MASTER_RETURN; elapsed_q<=0; end
           end
-          if(master_elapsed_q+1>master_limit) fail(8'd8);
         end
-        MASTER_RETURN: begin if(master_fresh_q) begin state_q<=chosen_sr_q==0 ? QUIET : MASTER_EXIT; end else fail(8'd10); end
+        MASTER_RETURN: begin if(master_fresh_q) begin state_q<=chosen_sr_q==0 ? QUIET : MASTER_EXIT; end end
         MASTER_EXIT: begin self_refresh_exit_o<=chosen_sr_q; elapsed_q<=0; state_q<=MASTER_WAIT; end
         MASTER_WAIT: if(elapsed_q+1>=32'(profile_i.dram_ck_txsr)) state_q<=QUIET;
         FAILED: if(command_valid_i && command_i==CH_CMD_RECOVER) begin
@@ -285,19 +329,10 @@ module lpddr5_mc_lifecycle (
             master_pending_q<=0; operation_q<=CH_CMD_NONE; fault_code_o<=0; op_started_q<=0;
           end
         end
-        default: fail(8'd11);
+        default: begin end
       endcase
-      if(state_q!=FAILED && !destructive_reset_o) begin
-        if(master_pending_q && (!management_i.phymstr_req || management_i.phymstr_type!=master_type_q
-            || management_i.phymstr_cs_state!=master_choices_q || management_i.phymstr_state_sel!=master_sel_q
-            || master_age_q+1>32'(profile_i.management_ck_tphymstr_resp))) fail(8'd12);
-        if(master_ack_o && management_i.phymstr_req && (management_i.phymstr_type!=master_type_q
-            || management_i.phymstr_cs_state!=master_choices_q || management_i.phymstr_state_sel!=master_sel_q)) fail(8'd13);
-        if(management_i.error || fault_i || update_fault_i || fsp_fault_i) fail(8'd14);
-        if(state_q!=BOOT && state_q!=BOOT_START && !profile_valid_i) fail(8'd15);
-        if(management_i.lp_ctrl_ack || management_i.lp_data_ack) begin
-          if(!(state_q inside {LP_ACCEPT,LP_ENTER,LP_HOLD,LP_RELEASE})) fail(8'd16);
-        end
+      if(failure_code!=0) begin
+        state_q<=FAILED;trusted_o<=0;fault_code_o<=failure_code;
       end
     end
   end

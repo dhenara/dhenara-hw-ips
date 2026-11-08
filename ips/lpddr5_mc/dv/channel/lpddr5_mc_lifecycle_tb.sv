@@ -1,7 +1,7 @@
 module lpddr5_mc_lifecycle_tb;
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_channel_pkg::*;
-  logic clk=0,rst_n=0,profile_ready=1,command_valid=0,command_ready,rejected;
+  logic clk=0,rst_n=0,cold_rst_n=0,profile_ready=1,command_valid=0,command_ready,rejected;
   logic host_settled=1,backend_drained=1,integrity_drained=1,pages_closed=1,wck_disabled=1,urgent=0,extra=0;
   logic fault_input=0,reset_confirmed=0,train_ack=0;
   logic [31:0] profile_epoch=1,budget=3000,token=0;
@@ -22,7 +22,7 @@ module lpddr5_mc_lifecycle_tb;
   logic [7:0] fault_code;
   logic unused_debug, maintenance_enable;
   assign unused_debug=^{update_window,maintenance_enable,command_ready,issue_enable,stop_wck,maintenance_start,sr_enter,sr_exit,external_refresh,extra_service,syscs,refresh_request,first_fault,fault_code};
-  lpddr5_mc_lifecycle dut(.clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n),.profile_i(profile),.profile_valid_i(profile_ready),.profile_epoch_i(profile_epoch),
+  lpddr5_mc_lifecycle dut(.clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(cold_rst_n),.profile_i(profile),.profile_valid_i(profile_ready),.profile_epoch_i(profile_epoch),
     .command_valid_i(command_valid),.command_i(command),.command_ready_o(command_ready),.command_rejected_o(rejected),
     .host_settled_i(host_settled),.backend_drained_i(backend_drained),.integrity_drained_i(integrity_drained),.pages_closed_i(pages_closed),
     .wck_disabled_i(wck_disabled),.maintenance_urgent_i(urgent),.extra_refresh_i(extra),.refresh_budget_i(budget),.fault_i(fault_input),.reset_confirmed_i(reset_confirmed),
@@ -36,7 +36,7 @@ module lpddr5_mc_lifecycle_tb;
     .boot_epoch_o(boot_epoch),.first_fault_o(first_fault),.fault_code_o(fault_code));
   task automatic tick; #1; clk=1; #1; clk=0; #1; endtask
   task automatic reset;
-    rst_n=0; tick(); rst_n=1; management='0; management.init_complete=1; reports=3; rank_sr=0;
+    rst_n=0;cold_rst_n=0; tick(); rst_n=1;cold_rst_n=1; management='0; management.init_complete=1; reports=3; rank_sr=0;
     command_valid=0; profile_ready=1; profile_epoch=1; backend_drained=1; host_settled=1; integrity_drained=1; pages_closed=1; wck_disabled=1;
     train_ack=0; token=0; fault_input=0; reset_confirmed=0; urgent=0; extra=0; budget=3000; update_busy=0; update_done=0; phy_refresh_done=0;
   endtask
@@ -139,6 +139,17 @@ module lpddr5_mc_lifecycle_tb;
     assert(refresh_request==3) else $fatal(1,"missing refresh timeout stimulus");
     repeat(int'(profile.management_ck_tphymstr_rfsh)+2) tick();
     assert(fault && !trusted && master_ack && fault_code==6) else $fatal(1,"master missing execution attestation did not fault");
+    diagnostic=first_fault;
+    assert(diagnostic!=0) else $fatal(1,"first fault was never captured");
+    rst_n=0;tick();rst_n=1;profile_ready=0;management='0;fault_input=0;
+    repeat(3) tick();assert(first_fault==diagnostic && boot_epoch==0 && !trusted)
+      else $fatal(1,"raw reset lost first-fault custody");
+    fault_input=1;repeat(2) tick();fault_input=0;
+    reset_confirmed=1;send(CH_CMD_RECOVER);
+    assert(boot_epoch==1 && first_fault==diagnostic && !trusted) else $fatal(1,"raw-reset recovery diagnostics");
+    rst_n=0;tick();rst_n=1;repeat(2) tick();
+    assert(boot_epoch==1 && first_fault==diagnostic) else $fatal(1,"second raw reset reused identity or lost diagnostics");
+    reset();tick();assert(boot_epoch==0 && first_fault==0) else $fatal(1,"cold reset failed to clear retained state");
     $display("PASS lifecycle: fresh boot/token/epoch fencing, true host drain, LP decline/SR update/wakeup, master return attestation, retained faults and destructive fresh recovery"); $finish;
   end
 endmodule

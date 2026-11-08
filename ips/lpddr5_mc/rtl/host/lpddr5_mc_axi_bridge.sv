@@ -83,7 +83,8 @@ module lpddr5_mc_axi_bridge #(
     .clk_i(core_clk_i),.arst_ni(link_arst_n),.rst_no(link_reset_n)
   );
   assign initialized_o = &endpoint_initialized;
-  assign fault_o = was_active_q && ((|endpoint_fault) || protocol_fault_q || !( &axi_rst_ni));
+  assign fault_o = was_active_q && ((!rearming_q && (|endpoint_fault))
+    || protocol_fault_q || !( &axi_rst_ni));
   assign abort_settled_o = (&endpoint_abort_settled) && state_q == IDLE;
   assign host_settled_o = (&endpoint_settled) && state_q == IDLE
     && (!(fatal_i || fault_o) || abort_settled_o);
@@ -95,10 +96,13 @@ module lpddr5_mc_axi_bridge #(
   assign rearm_ready_o = link_reset_n && !enable_i && cfg_valid_i && core_settled_i
     && (&endpoint_transport_reset_ready) && host_settled_o && !admission_busy_o && !rearming_q;
   assign rearm = rearm_i && rearm_ready_o;
-  // Core reset aborts transport but cannot forget an initialized AXI epoch.
+  // Rearm may install a source epoch before every port acknowledges it. Keep
+  // that history even when a reset interrupts the initial rearm. Endpoint fault
+  // levels are expected during rearm; reset itself clears rearming_q and makes
+  // a surviving epoch's abort visible immediately.
   always_ff @(posedge core_clk_i or negedge cold_rst_ni) begin
     if (!cold_rst_ni) was_active_q <= 0;
-    else if (initialized_o) was_active_q <= 1;
+    else if (rearm || initialized_o) was_active_q <= 1;
   end
   always_ff @(posedge core_clk_i or negedge core_reset_n) begin
     if (!core_reset_n) begin

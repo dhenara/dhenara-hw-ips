@@ -14,6 +14,7 @@ def main() -> None:
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--partial-rearm-reset", action="store_true")
     parser.add_argument("--build-subdir", default="host-assembly")
     args = parser.parse_args()
     if args.report.exists():
@@ -68,6 +69,7 @@ def main() -> None:
             "ips/lpddr5_mc/rtl/host/files.f",
             "ips/lpddr5_mc/dv/host/assembly/lpddr5_mc_host_assembly_tb.sv",
         ],
+        *([[str(build / "Vlpddr5_mc_host_assembly_tb"), "+partial_rearm_reset"]] if args.partial_rearm_reset else []),
         [str(build / "Vlpddr5_mc_host_assembly_tb")],
     ]
     args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -88,9 +90,12 @@ def main() -> None:
             }
         )
         print(f"assembly phase {i}: exit {result.returncode}", flush=True)
-        if result.returncode or i == 1:
+        if result.returncode or i >= 1:
             print(observed, flush=True)
-        if result.returncode or (i == 1 and "HOST_ASSEMBLY_PASS tests=7" not in observed):
+        marker = (
+            "HOST_PARTIAL_REARM_RESET_PASS" if args.partial_rearm_reset and i == 1 else "HOST_ASSEMBLY_PASS tests=7"
+        )
+        if result.returncode or (i >= 1 and marker not in observed):
             passed = False
             break
     source_changed = any(
@@ -102,6 +107,7 @@ def main() -> None:
         "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo)),
         "source_files": manifest,
         "source_changed_during_run": source_changed,
+        "partial_rearm_reset": args.partial_rearm_reset,
         "commands": records,
         "parameters": {"ports": 2, "channels": 2, "data_bits": 128, "depth": 16},
         "clocks_ns": {"host": 1.25, "axi0": 2.5, "axi1": 3.5, "axi1_phase": 0.375},

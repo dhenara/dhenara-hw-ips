@@ -60,7 +60,7 @@ module apb_publication_tb;
     if(inject_stale) observed_ack[0].sequence_number=prior_epoch;
   end
   lpddr5_mc_apb #(.PUBLICATION_TIMEOUT(PUBLICATION_TIMEOUT)) apb (
-    .pclk,.preset_n(rst_n),.psel_i(psel),.penable_i(penable),.request_i(apb_request),.pready_o(pready),.response_o(apb_response),
+    .pclk,.preset_n(rst_n),.cold_preset_n(rst_n),.psel_i(psel),.penable_i(penable),.request_i(apb_request),.pready_o(pready),.response_o(apb_response),
     .enabled_i(1'b0),.quiesced_i(1'b1),.host_settled_i(1'b1),.active_fsp_i(active_image[0][INDEX_DVFS][1:0]),
     .link_fault_i(1'b0),.recovery_confirmed_i(1'b0),.global_status_valid_i(1'b1),.global_status_i(global_status),.global_status_ready_o(global_ready),
     .status_valid_i(2'b0),.status_i(zero_status),.status_ready_o(unused_status_ready),
@@ -88,6 +88,7 @@ module apb_publication_tb;
     assign publication_payload[c].boot_epoch=config_boot;
     assign publication_payload[c].image=config_image[c];
     lpddr5_mc_control_link crossing (
+      .a_status_rst_ni(rst_n),.c_status_rst_ni(rst_n),
       .aclk_i(pclk),.arst_ni(rst_n),.a_enable_i(1'b1),.a_rearm_i(p_rearm),.a_fault_o(p_fault[c]),.a_rearm_ready_o(p_rearm_ready[c]),
       .cclk_i(clk),.crst_ni(rst_n),.c_enable_i(1'b1),.c_rearm_i(c_rearm),.c_fault_o(c_fault[c]),.c_rearm_ready_o(c_rearm_ready[c]),
       .a_config_valid_i(publication_valid[c]),.a_config_ready_o(publication_ready[c]),.a_config_i(publication_payload[c]),

@@ -8,7 +8,7 @@ module lpddr5_mc_host_assembly_tb;
   logic clk=0, rst_n=0, enable=0, fatal=0, recover=0, cfg_valid=0, cfg_ready;
   /* verilator lint_on SYNCASYNCNET */
   logic rearm=0, rearm_ready, initialized, config_valid, fault, settled, late_error;
-  logic clk0=0, clk1=0, run0=1, run_host=1;
+  logic clk0=0, clk1=0, run0=1, run1=1, run_host=1;
   wire [1:0] axi_clk={clk1,clk0};
   logic [1:0] axi_rst_n=0;
   logic [1:0] awvalid=0, arvalid=0, wvalid=0, awready, arready, wready;
@@ -38,7 +38,7 @@ module lpddr5_mc_host_assembly_tb;
   end
   always #0.625 if(run_host) clk=~clk;
   always #1.25 if(run0) clk0=~clk0;
-  initial begin #0.375; forever #1.75 clk1=~clk1; end
+  initial begin #0.375; forever #1.75 if(run1) clk1=~clk1; end
 
   lpddr5_mc_host #(.DEPTH(16)) dut (
     .clk_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n || (|axi_rst_n)),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),
@@ -182,6 +182,31 @@ module lpddr5_mc_host_assembly_tb;
     assert(!dut.core_fault)else $fatal(1,"core recovery failed");
     cfg.boot_epoch++;cfg.config_epoch++;publish();
   endtask
+  task automatic partial_rearm_reset;
+    int before_b;
+    while(!cfg_ready) @(negedge clk);
+    cfg_valid=1;@(negedge clk);cfg_valid=0;
+    while(!rearm_ready) @(negedge clk);
+    // The second port cannot install its epoch or acknowledge initialization.
+    @(negedge clk1);run1=0;
+    rearm=1;@(negedge clk);rearm=0;
+    for(int n=0;n<100;n++) begin
+      @(negedge clk);
+      if(dut.bridge.ports[0].endpoint.ever_epoch_q) break;
+    end
+    assert(dut.bridge.ports[0].endpoint.ever_epoch_q
+      && !dut.bridge.ports[1].endpoint.ever_epoch_q && !initialized)
+      else $fatal(1,"partial rearm stimulus did not install exactly one source epoch");
+    @(negedge clk);rst_n=0;#2.125;rst_n=1;run1=1;
+    repeat(60) @(negedge clk);
+    assert(fault && !enable) else $fatal(1,"raw reset during partial rearm lost epoch fault");
+    recover_host();
+    before_b=b_count[0];send_aw(0,31,28672,4);send_w(0,28672,4);
+    while(b_count[0]==before_b) @(negedge clk0);
+    send_ar(1,32,28672,4);read_result(1,32,28672,4);wait_settled();
+    assert(!fault && initialized && cfg.boot_epoch==2) else $fatal(1,"partial rearm fresh recovery failed");
+    $display("HOST_PARTIAL_REARM_RESET_PASS boot=%0d requests=%0d",cfg.boot_epoch,requests);$finish;
+  endtask
   initial begin
     lpddr5_mc_axi_b_t held;
     int before_b,before_requests;
@@ -192,7 +217,9 @@ module lpddr5_mc_host_assembly_tb;
     cfg.read_limit='{default:16};cfg.write_limit='{default:16};
     cfg.regions[0].enable=1;cfg.regions[0].size=1<<20;
     for(int i=0;i<40;i++)cfg.regions[0].permutation[i]=6'(i);
-    #20;rst_n=1;axi_rst_n=3;publish();stage=1;
+    #20;rst_n=1;axi_rst_n=3;
+    if($test$plusargs("partial_rearm_reset")) partial_rearm_reset();
+    publish();stage=1;
     before_b=b_count[0];before_requests=requests;
     send_aw(0,1,4096,128);send_w(0,4096,128);
     while(b_count[0]==before_b)@(negedge clk0);wait_settled();

@@ -305,7 +305,7 @@ module lpddr5_mc_channel #(
     end
   end
   lpddr5_mc_notifications #(.DEPTH(NOTIFICATION_DEPTH)) notifications (
-    .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.destructive_reset_i(destructive_reset),
+    .clk_ck_i(clk_ck_i),.rst_ni(cold_rst_ni),.destructive_reset_i(destructive_reset),
     .occurrence_valid_i(occurrence_valid),.occurrence_i(occurrences),
     .notification_valid_o(notification_valid_o),.notification_ready_i(notification_ready_i),.notification_o(notification),.overflow_o(notification_overflow),
     .first_error_clear_i(first_error_clear_i),.first_error_clear_version_i(first_error_clear_version_i),

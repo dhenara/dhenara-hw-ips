@@ -121,7 +121,7 @@ module lpddr5_mc_coordinator #(
   always_ff @(posedge clk_i or negedge cold_rst_ni) begin
     if(!cold_rst_ni) host_monitored_q<=0;
     else begin
-      if(host_initialized_i) host_monitored_q<=1;
+      if(host_initialized_i || host_rearm_o) host_monitored_q<=1;
       if(state_q==RECOVER_HOST && recover_sent_q && !host_fault_i) host_monitored_q<=0;
     end
   end

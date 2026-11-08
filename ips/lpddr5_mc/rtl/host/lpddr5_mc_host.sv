@@ -75,7 +75,7 @@ module lpddr5_mc_host #(
   always_ff @(posedge clk_i or negedge cold_rst_ni) begin
     if (!cold_rst_ni) monitor_q <= 0;
     else begin
-      if (initialized_o) monitor_q <= 1;
+      if (initialized_o || (rearm_i && rearm_ready_o)) monitor_q <= 1;
       if (recover_allowed) monitor_q <= 0;
     end
   end

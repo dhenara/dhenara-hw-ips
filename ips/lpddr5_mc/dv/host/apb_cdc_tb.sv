@@ -20,6 +20,7 @@ module apb_cdc_tb;
   int checks = 0;
 
   lpddr5_mc_control_link dut (
+    .a_status_rst_ni(arst_n),.c_status_rst_ni(crst_n),
     .aclk_i(aclk), .arst_ni(arst_n), .a_enable_i(a_enable), .a_rearm_i(a_rearm), .a_fault_o(a_fault),
     .a_rearm_ready_o(a_rearm_ready), .c_rearm_ready_o(c_rearm_ready),
     .cclk_i(cclk), .crst_ni(crst_n), .c_enable_i(c_enable), .c_rearm_i(c_rearm), .c_fault_o(c_fault),

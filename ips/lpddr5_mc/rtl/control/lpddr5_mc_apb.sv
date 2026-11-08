@@ -12,6 +12,7 @@ module lpddr5_mc_apb #(
 ) (
   input logic pclk,
   input logic preset_n,
+  input logic cold_preset_n,
   input logic psel_i,
   input logic penable_i,
   input lpddr5_mc_contract_pkg::lpddr5_mc_apb_request_t request_i,
@@ -71,6 +72,7 @@ module lpddr5_mc_apb #(
   logic [12:0] irq_q, irq_d;
   logic [31:0] hardware_state_q, hardware_state_d;
   logic valid_q, valid_d, fault_q, fault_d, access_q, access_d;
+  logic diagnostic_active_q;
 
   function automatic lpddr5_mc_register_image_t reset_image();
     lpddr5_mc_register_image_t result;
@@ -160,7 +162,7 @@ module lpddr5_mc_apb #(
   assign command_valid_o = count_q != 0;
   assign command_o = commands_q[head_q];
   assign irq_o = |(irq_q & staging_q[0][INDEX_IRQ_MASK][12:0]);
-  assign status_ready_o = '1;
+  assign status_ready_o = {CHANNELS{diagnostic_active_q}};
   assign global_status_ready_o = 1'b1;
   assign config_ack_ready_o = '1;
 
@@ -344,7 +346,7 @@ module lpddr5_mc_apb #(
     end
     for (int c = 0; c < CHANNELS; c++) begin
       if (|(clear_events & first_events_q[c])) first_error_d[c] = 1'b0;
-      if (status_valid_i[c]) begin
+      if (status_valid_i[c] && diagnostic_active_q) begin
         // A retained occurrence keeps the boot/configuration of the event.
         // Destructive recovery does not discard it. Only the live snapshot
         // portion is freshness-gated; acknowledging an old event must still
@@ -486,9 +488,9 @@ module lpddr5_mc_apb #(
 
   always_ff @(posedge pclk or negedge preset_n) begin
     if (!preset_n) begin
+      diagnostic_active_q <= 0;
       state_q <= IDLE;
       for (int c = 0; c < CHANNELS; c++) begin
-        staging_q[c] <= RESET_IMAGE;
         frozen_q[c] <= RESET_IMAGE;
         active_q[c] <= RESET_IMAGE;
       end
@@ -503,21 +505,18 @@ module lpddr5_mc_apb #(
       acked_q <= '0;
       declined_q <= '0;
       prior_valid_q <= 0;
-      first_error_q <= '0;
-      first_events_q <= '0;
       sequence_q <= 0;
       epoch_q <= 0;
       boot_q <= 0;
-      irq_q <= 0;
       hardware_state_q <= 0;
       valid_q <= 0;
       fault_q <= 0;
       access_q <= 0;
       last_protection_o <= 0;
     end else begin
+      diagnostic_active_q <= 1;
       if (pready_o) last_protection_o <= request_i.protection;
       state_q <= state_d;
-      staging_q <= staging_d;
       frozen_q <= frozen_d;
       active_q <= active_d;
       commands_q <= commands_d;
@@ -531,16 +530,39 @@ module lpddr5_mc_apb #(
       acked_q <= acked_d;
       declined_q <= declined_d;
       prior_valid_q <= prior_valid_d;
-      first_error_q <= first_error_d;
-      first_events_q <= first_events_d;
       sequence_q <= sequence_d;
       epoch_q <= epoch_d;
       boot_q <= boot_d;
-      irq_q <= irq_d;
       hardware_state_q <= hardware_state_d;
       valid_q <= valid_d;
       fault_q <= fault_d;
       access_q <= access_d;
+    end
+  end
+
+  // Diagnostic capture, counts, pending IRQs and explicit performance captures
+  // have cold-reset custody. A common reset cannot consume an event or W1C.
+  always_ff @(posedge pclk or negedge cold_preset_n) begin
+    if(!cold_preset_n) begin first_error_q<='0;first_events_q<='0;irq_q<=0;end
+    else if(diagnostic_active_q) begin
+      first_error_q<=first_error_d;first_events_q<=first_events_d;irq_q<=irq_d;
+    end
+  end
+  for(genvar c=0;c<CHANNELS;c++) begin : staging_channels
+    for(genvar r=0;r<REG_COUNT;r++) begin : staging_registers
+      logic [31:0] value_q;
+      assign staging_q[c][r]=value_q;
+      if(r>=INDEX_ERROR_ADDR_LO && r<=INDEX_PERF_CYCLES_1) begin : retained
+        always_ff @(posedge pclk or negedge cold_preset_n) begin
+          if(!cold_preset_n) value_q<=RESET_IMAGE[r];
+          else if(diagnostic_active_q) value_q<=staging_d[c][r];
+        end
+      end else begin : volatile_register
+        always_ff @(posedge pclk or negedge preset_n) begin
+          if(!preset_n) value_q<=RESET_IMAGE[r];
+          else value_q<=staging_d[c][r];
+        end
+      end
     end
   end
 

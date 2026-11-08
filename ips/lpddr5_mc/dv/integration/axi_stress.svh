@@ -78,7 +78,7 @@ task automatic axi_stress_case;
   stress_rng=32'(stress_seed);
   for(int n=0;n<64;n++) begin
     p=n%PORTS;stage=100+n;error_kind=n%16>=12 ? n%16-11 : 0;
-    base=64'd131072+64'(stress_random()%32)*4096+64'(stress_random()%8)*128;
+    base=64'd131072+(64'(stress_random())%64'd32)*4096+(64'(stress_random())%64'd8)*128;
     beats=1<<(1+(n/3)%4);a=address(16'(n%4),base,beats);
     a.burst=2'(n%3);a.size=3'((n/3)%($clog2(BYTES)+1));
     if(error_kind==1) a.size=0; // Guarantees an out-of-range strobe lane.

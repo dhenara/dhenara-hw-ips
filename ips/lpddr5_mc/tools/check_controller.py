@@ -152,6 +152,9 @@ def plan(evidence: Path, name: str, suite: str) -> list[dict]:
                 "dv/integration/check.py",
                 ["--family", family, "--report", str(report), "--build-name", name + "-" + label, *extra],
                 report,
+                # This family runs four full lifecycle simulations after one
+                # build. A single-scenario deadline can kill a healthy matrix.
+                3600 if family == "apb_publication" else 1800,
             )
     return steps
 
@@ -161,6 +164,7 @@ def main() -> None:
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--build-name", required=True)
     parser.add_argument("--suite", choices=("all", "owning", "connected"), default="all")
+    parser.add_argument("--step", action="append", help="Run only these named steps; repeat for multiple steps")
     parser.add_argument("--require-clean", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -170,8 +174,15 @@ def main() -> None:
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.build_name):
         parser.error("build name must be a simple unique name")
     steps = plan(evidence, args.build_name, args.suite)
+    full_names = [s["name"] for s in steps]
+    if args.step:
+        unknown = set(args.step) - set(full_names)
+        if unknown:
+            parser.error("unknown steps for selected suite: " + ", ".join(sorted(unknown)))
+        steps = [s for s in steps if s["name"] in args.step]
+    selection = {"full_suite_selected": len(steps) == len(full_names), "selected_steps": [s["name"] for s in steps]}
     if args.dry_run:
-        print(json.dumps({"status": "not_run", "steps": steps}, indent=2))
+        print(json.dumps({"status": "not_run", **selection, "steps": steps}, indent=2))
         return
     before = source()
     if args.require_clean and before["dirty"]:
@@ -180,6 +191,7 @@ def main() -> None:
     report = {
         "status": "running",
         "suite": args.suite,
+        **selection,
         "source_before": before,
         "python": sys.version,
         "seed": 2095,

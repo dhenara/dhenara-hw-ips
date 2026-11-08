@@ -2,11 +2,16 @@
 // All addresses are disjoint; there are no missing-W, cap or ECC exclusions
 // after scheduler admission. Row/timing/WCK costs stay inside the measured G.
 for(genvar f=0;f<CHANNELS;f++) begin : fairness_observers
-  always @(posedge clk) if(rst_n && fairness_stream!=0) begin
+  initial begin
+    wait(rst_n);
+    forever begin
+      @(posedge clk);
+      if(fairness_stream!=0) begin
     lpddr5_mc_granule_t request_value,issue_value;
     string admitted,issued;
     bit pair_live,maintenance_pause,owner_pause,response_pause;
     int pause_reason;
+    check(dut.channels[f].channel.backend.scheduler.ck_q==64'(cap_ck),"independent fairness CK origin");
     request_value=dut.channels[f].channel.backend.scheduler.request_i;
     issue_value=dut.channels[f].channel.backend.scheduler.launch_o;
     admitted="null";issued="null";
@@ -28,6 +33,8 @@ for(genvar f=0;f<CHANNELS;f++) begin : fairness_observers
     pause_reason=pair_live ? 0 : maintenance_pause ? 3 : owner_pause ? 2 : response_pause ? 1 : 0;
     $fdisplay(fairness_stream,"{\"kind\":\"cycle\",\"ck\":%0d,\"channel\":%0d,\"admit\":%s,\"issue\":%s,\"pair\":%0d,\"maintenance\":%0d,\"ownership\":%0d,\"response\":%0d,\"pause\":%0d}",
       cap_ck,f,admitted,issued,pair_live,maintenance_pause,owner_pause,response_pause,pause_reason);
+      end
+    end
   end
 end
 

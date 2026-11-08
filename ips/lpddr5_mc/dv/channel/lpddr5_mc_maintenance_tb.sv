@@ -50,6 +50,30 @@ module lpddr5_mc_maintenance_tb;
     assert(mr4_request && zq_request && !fault) else $fatal(1,"normal polling never became due");
     $display("PASS normal polling cadence: bounded complete service reserve without premature REF pull-in");
   endtask
+  task automatic normal_refresh_command_deadline;
+    int issue_reserve,elapsed;
+    // Keep polling freshly discharged to isolate the retention scheduler.
+    // Its timestamp moves at REF issue; this rank's post-REF recovery does
+    // not belong in the lead needed to meet that command deadline.
+    profile=fixture_profile(0,0,0,1,0,0);profile.ranks=1;reset();
+    issue_reserve=int'(maintenance_admission_budget(profile,0))-int'(profile.dram_ck_trfc_ab);
+    mr4_done=1;zq_done=1;
+    for(elapsed=0;elapsed<3124-issue_reserve;elapsed++) begin
+      assert(!urgent && !request_valid && !fault)
+        else $fatal(1,"normal REF charged post-command recovery elapsed=%0d issue_reserve=%0d",elapsed,issue_reserve);
+      tick();
+    end
+    // A real backend may use the remaining lead to drain traffic/close rows.
+    // Merely making a request does not discharge retention.
+    while(elapsed<3124) begin
+      tick();elapsed++;
+      assert(!fault) else $fatal(1,"REF deadline fault before command deadline");
+    end
+    assert(request_valid && budget==0) else $fatal(1,"REF request did not retain its actual issue deadline");
+    request_ready=1;tick();request_ready=0;
+    assert(!fault && budget>3000) else $fatal(1,"on-deadline REF did not discharge retention");
+    $display("PASS normal REF command deadline: issue reserve=%0d, actual command at CK3124",issue_reserve);
+  endtask
   task automatic coalesced_poll_case(input int ranks);
     int visits[2];
     profile.ranks=2'(ranks);reset();
@@ -85,6 +109,7 @@ module lpddr5_mc_maintenance_tb;
     logic [2:0] held_pair;
     profile=fixture_profile(0,0,0,0,0,0); profile.ranks=1; event_value='0;
     normal_poll_cadence();
+    normal_refresh_command_deadline();
     profile=fixture_profile(0,0,0,0,0,0);
     for(int ranks=1;ranks<=2;ranks++) coalesced_poll_case(ranks);
     profile.ranks=1;

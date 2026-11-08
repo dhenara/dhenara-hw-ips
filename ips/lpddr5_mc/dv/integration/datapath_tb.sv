@@ -51,8 +51,9 @@ module datapath_tb #(
   int ce_count=0,ue_count=0;
   byte unsigned expected[longint unsigned];
   int b_count[PORTS],r_count[PORTS],checks=0,stage=0;
-  int cap_mode=0,cap_stream,cap_ck=0,cap_granule_bytes=64,cap_mixed=0;
+  int cap_mode=0,cap_stream,cap_ck=0,cap_granule_bytes=64,cap_mixed=0,zero_cap_direction=-1;
   string cap_path;
+  int zero_admissions[CHANNELS];
   longint unsigned written_bytes=0;
   logic [PORTS-1:0][15:0] last_bid;
   logic [PORTS-1:0][1:0] last_bresponse;
@@ -153,6 +154,7 @@ module datapath_tb #(
           if(accepted_request)
             $fdisplay(cap_stream,"{\"kind\":\"admit\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d}",
               cap_ck,c,request_value.tag,request_value.generation,request_value.is_write,request_value.is_64_bytes ? 64 : 32,request_value.port_index,request_value.qos_class);
+          if(accepted_request && zero_cap_direction==int'(request_value.is_write)) zero_admissions[c]++;
           if(issued_request)
             $fdisplay(cap_stream,"{\"kind\":\"issue\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d}",
               cap_ck,c,launch_value.tag,launch_value.generation,launch_value.is_write,launch_value.is_64_bytes ? 64 : 32,launch_value.port_index,launch_value.qos_class);
@@ -161,6 +163,7 @@ module datapath_tb #(
     end
   end
   always @(posedge clk or negedge rst_n) if(!rst_n) cap_ck<=0;else cap_ck<=cap_ck+1;
+  `include "zero_caps.svh"
   task automatic cap_case;
     bit all_drained;
     check(PORTS==2 && CHANNELS==2 && INTEGRITY_MODE==0,"cap workload shape");
@@ -458,12 +461,19 @@ module datapath_tb #(
       if($value$plusargs("cap_granule_bytes=%d",cap_granule_bytes))
         check(cap_granule_bytes==32 || cap_granule_bytes==64,"cap granule size");
       if($value$plusargs("cap_mixed=%d",cap_mixed)) check(cap_mixed==0 || (cap_mixed==1 && cap_mode==1),"cap traffic mode");
+      if($value$plusargs("zero_cap_direction=%d",zero_cap_direction))
+        check(zero_cap_direction inside {0,1} && cap_granule_bytes==64 && cap_mixed==0,"zero cap selection");
       check($value$plusargs("cap_observations=%s",cap_path),"cap observation path");
       cap_stream=$fopen(cap_path,"w");check(cap_stream!=0,"cap trace open");
-      $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":2,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d}",cap_mode,CHANNELS,cap_granule_bytes,cap_mixed);
+      if(zero_cap_direction>=0)
+        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":3,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"zero_direction\":%0d,\"read_cap\":%0d,\"write_cap\":%0d,\"granule_bytes\":64}",
+          cap_mode,CHANNELS,zero_cap_direction,zero_cap_direction==0 ? 0 : 64,zero_cap_direction==1 ? 0 : 64);
+      else
+        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":2,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d}",cap_mode,CHANNELS,cap_granule_bytes,cap_mixed);
     end
     host_cfg='0;cfg='0;mailbox_value='0;management='0;aw='0;ar='0;wd='0;train_token=0;command='0;target_fsp=0;target_frequency=0;phy_refresh_done=0;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
+    for(int c=0;c<CHANNELS;c++) zero_admissions[c]=0;
     expected.delete();
     expected_profile(PROFILE_NUMBER);profile.ranks=2'(RANKS);
     for(int c=0;c<CHANNELS;c++) begin
@@ -472,6 +482,8 @@ module datapath_tb #(
       if(cap_mode!=0) begin
         cfg[c].caps_enable=1;cfg[c].work_conserving=cap_mode==2;
         cfg[c].bw_window=512;cfg[c].read_cap=64;cfg[c].write_cap=64;
+        if(zero_cap_direction==0) cfg[c].read_cap=0;
+        if(zero_cap_direction==1) cfg[c].write_cap=0;
       end
     end
     host_cfg.granule64=GRANULE_BYTES==64;host_cfg.inline_ecc=INTEGRITY_MODE==1;host_cfg.config_epoch=1;
@@ -481,6 +493,7 @@ module datapath_tb #(
     host_cfg.regions[0].enable=1;host_cfg.regions[0].size=RANKS==2 ? 41'd1<<(30+$clog2(CHANNELS)+$clog2(RANKS)) : 41'd1<<20;
     for(int bit_index=0;bit_index<40;bit_index++) host_cfg.regions[0].permutation[bit_index]=6'(bit_index);
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;publish_and_boot();stage=1;
+    if(zero_cap_direction>=0) zero_cap_case();
     if(cap_mode!=0) cap_case();
     if(INTEGRITY_MODE!=0) integrity_case();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);

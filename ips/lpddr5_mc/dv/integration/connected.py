@@ -32,6 +32,7 @@ def check(
     mr4_change_ck: int | None = None,
     id_bits: int = 16,
     address_bits: int = 40,
+    fault_ps: int | None = None,
 ) -> dict:
     profile = copy.deepcopy(profile)
     profile["ranks"] = ranks
@@ -64,6 +65,7 @@ def check(
     origin_ps = None
     ended = False
     commands = writes = reads = 0
+    observed_fault = None
     serial = 0
 
     def logical(channel, physical):
@@ -78,7 +80,7 @@ def check(
 
     def finish_physical(tag, ps):
         t = host.transactions[tag]
-        if t.error or t.physical:
+        if t.error or t.physical or host.faulted:
             return
         require(
             ps >= final_pin.get(tag, float("inf")),
@@ -103,7 +105,11 @@ def check(
     for e in events:
         require(not ended, "raw event after end")
         kind, ps = e["kind"], e["ps"]
-        if kind in ("aw", "ar"):
+        if kind == "fault":
+            require(fault_ps is not None and observed_fault is None and ps == fault_ps, "unexpected fault witness")
+            observed_fault = ps
+            host.fail()
+        elif kind in ("aw", "ar"):
             a = Address(
                 **{
                     k: number(e[k])
@@ -291,6 +297,7 @@ def check(
                             final_pin[source_tag] = max(final_pin.get(source_tag, 0), ps)
                     reads += 1
         elif kind == "end":
+            require(observed_fault == fault_ps, "missing selected fault witness")
             host.finish()
             require(
                 not any(q for q in source_queues.values()),
@@ -306,7 +313,7 @@ def check(
         else:
             raise ValueError("unknown raw observation kind")
     require(ended, "truncated raw observation trace")
-    return {
+    result = {
         "commands": commands,
         "physical_write_words": writes,
         "returned_slices": reads,
@@ -318,3 +325,14 @@ def check(
             "qualification remain separate."
         ],
     }
+    if fault_ps is not None:
+        result["fault_ps"] = observed_fault
+        result["failed_requests_by_direction"] = [
+            sum(t.write == bool(direction) and t.offered[1] == 2 for t in host.transactions.values())
+            for direction in (0, 1)
+        ]
+        result["physical_payload_bytes_by_direction"] = [
+            sum(b.beats * 2 for channel in bursts for _, b, *_ in channel if b.write == bool(direction))
+            for direction in (0, 1)
+        ]
+    return result

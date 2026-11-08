@@ -69,6 +69,7 @@ def main() -> None:
     parser.add_argument("--cap-mode", type=int, choices=(1, 2))
     parser.add_argument("--cap-granule-bytes", type=int, choices=(32, 64), default=64)
     parser.add_argument("--cap-traffic", choices=("phase", "mixed"), default="phase")
+    parser.add_argument("--zero-cap-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
@@ -123,6 +124,10 @@ def main() -> None:
         parser.error("mixed cap traffic currently requires strict caps; opposite-eligibility replay remains pending")
     if args.cap_mode is None and (args.cap_granule_bytes != 64 or args.cap_traffic != "phase"):
         parser.error("cap workload selections require --cap-mode")
+    if args.zero_cap_direction is not None and (
+        args.cap_mode is None or args.cap_traffic != "phase" or args.cap_granule_bytes != 64
+    ):
+        parser.error("zero-cap checks require --cap-mode and the default phase/64-byte selections")
     if args.benchmark_smoke and not args.benchmark_direction:
         parser.error("benchmark smoke requires an explicit benchmark direction")
     if args.benchmark_direction and (
@@ -182,6 +187,7 @@ def main() -> None:
         **os.environ,
         "VERILATOR_ROOT": str(tool / "share/verilator"),
         "VERILATOR_BIN": "../../bin/verilator_bin",
+        "PYTHONPATH": os.pathsep.join(filter(None, (str(IP / "dv"), os.environ.get("PYTHONPATH")))),
     }
     sources = [REPO / line for line in (IP / "rtl/files.f").read_text().splitlines() if line]
     if args.family in ("datapath", "publication", "apb_publication", "controller"):
@@ -217,6 +223,7 @@ def main() -> None:
         "cap_mode": args.cap_mode,
         "cap_granule_bytes": args.cap_granule_bytes,
         "cap_traffic": args.cap_traffic,
+        "zero_cap_direction": args.zero_cap_direction,
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "source_sha256": manifest,
         "commands": [],
@@ -323,6 +330,8 @@ def main() -> None:
                 "+cap_observations=" + str(report.with_name("cap-observations.jsonl")),
             ]
         )
+        if args.zero_cap_direction is not None:
+            commands[-1].append(f"+zero_cap_direction={int(args.zero_cap_direction == 'write')}")
     if args.family == "apb_publication":
         simulation = commands.pop()
         scenarios = range(4) if args.scenario is None else [args.scenario]
@@ -337,7 +346,7 @@ def main() -> None:
             "-s",
             str(IP / "dv/integration"),
             "-p",
-            "check_test.py",
+            "*_test.py",
             "-v",
         ]
         log = report.with_name(report.stem + "-tooling.log")
@@ -416,6 +425,15 @@ def main() -> None:
                     mapped_end=(1 << 30) * args.channels * args.ranks if args.ranks == 2 else 1 << 20,
                     id_bits=configuration.get("ID_BITS", 8),
                     address_bits=args.address_bits,
+                    fault_ps=(
+                        int(
+                            re.search(r"ZERO_CAP_FAULT ps=(\d+)", report.with_name(f"{report.stem}-2.log").read_text())[
+                                1
+                            ]
+                        )
+                        if args.zero_cap_direction is not None
+                        else None
+                    ),
                     mr4_change_ck=(
                         int(
                             re.search(
@@ -435,7 +453,10 @@ def main() -> None:
                     depth=16,
                 )
             if args.cap_mode is not None:
-                from caps import qualify as qualify_caps
+                if args.zero_cap_direction is not None:
+                    from zero_caps import qualify as qualify_caps
+                else:
+                    from caps import qualify as qualify_caps
 
                 result["cap_observations"] = qualify_caps(
                     report.with_name("cap-observations.jsonl"),

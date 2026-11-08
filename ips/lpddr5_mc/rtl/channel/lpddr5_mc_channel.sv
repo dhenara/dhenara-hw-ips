@@ -88,7 +88,7 @@ module lpddr5_mc_channel #(
   logic fsp_request,fsp_busy,fsp_published,fsp_declined,fsp_fault,fsp_init_start,fsp_clock_done,fsp_target_ready;
   logic [1:0] fsp_value,fsp_ratio,active_fsp_q;
   logic [4:0] fsp_frequency;
-  logic register_valid,register_ready,register_result_valid,register_result_rank,register_result_zq,register_result_failed;
+  logic register_pending,register_valid,register_ready,register_result_valid,register_result_rank,register_result_zq,register_result_failed;
   logic [6:0] register_result_address;
   logic [7:0] register_result_value;
   typedef enum logic [1:0] {REG_IDLE,REG_SEND,REG_WAIT} register_state_t;
@@ -198,7 +198,7 @@ module lpddr5_mc_channel #(
     .request_valid_i(backend_valid),.request_ready_o(backend_ready),.request_i(backend_request),
     .completion_valid_o(backend_completion_valid),.completion_ready_i(backend_completion_ready),.completion_o(backend_completion),
     .maintenance_valid_i(maintenance_valid),.maintenance_rank_i(maintenance_rank),.maintenance_rfm_i(maintenance_rfm),.maintenance_all_i(maintenance_all),.maintenance_pair_i(maintenance_pair),.maintenance_ready_o(maintenance_ready),
-    .activate_allowed_i(activate_allowed),.register_valid_i(register_valid),.register_rank_i(register_rank_q),.register_zq_i(register_zq_q),.register_address_i(7'd4),
+    .activate_allowed_i(activate_allowed),.register_pending_i(register_pending),.register_valid_i(register_valid),.register_rank_i(register_rank_q),.register_zq_i(register_zq_q),.register_address_i(7'd4),
     .register_ready_o(register_ready),.register_result_valid_o(register_result_valid),.register_result_rank_o(register_result_rank),.register_result_zq_o(register_result_zq),
     .register_result_failed_o(register_result_failed),.register_result_address_o(register_result_address),.register_result_value_o(register_result_value),
     .ca_o(backend_ca),.wck_o(wck_o),.write_o(write_o),.read_request_o(read_request_o),.return_i(return_i),.event_o(event_value),
@@ -319,6 +319,13 @@ module lpddr5_mc_channel #(
     : 2*(32'(active.profile.rl_ck)+32'(active.profile.dram_ck_tras_min)+32'(active.profile.dram_ck_trp_ab)
     +(32'(active.profile.dfi_wck_tphy_rdlat)+32'(active.profile.wck_twck_dis)+8)/(active.profile.ratio==2 ? 2 : 4)
     +32'(active.profile.dram_ck_tmrr)+32'(active.profile.dram_ck_tmrw)+64);
+  // Preserve the physical drain until every due register obligation retires,
+  // including the IDLE/done edge between MR4 and an already-due ZQ sweep.
+  // A completion pulse masks only its own stale request until the timer
+  // samples it. Refresh may still preempt; transaction admission below keeps
+  // its independent budget and urgency checks.
+  assign register_pending=service && !life_fault && !external_fault
+    && (register_state_q!=REG_IDLE || (mr4_request && !mr4_done) || (zq_request && !zq_done));
   assign register_valid=register_state_q==REG_SEND && service && !maintenance_urgent && !life_fault && !external_fault && refresh_budget>register_reserve;
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if(!rst_ni) begin

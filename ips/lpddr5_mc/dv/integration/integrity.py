@@ -18,6 +18,7 @@ from contracts.link_ecc import encode as encode_link
 from system.dram import decode as decode_ca
 from system.ecc import InlineWitness
 from system.host import Violation, require
+from system.return_timing import ReturnTiming
 
 IP = Path(__file__).resolve().parents[2]
 
@@ -252,6 +253,7 @@ def read_link_blocks(events, profile, payload):
     require(identities == list(range(71, 629)), "read-link AR sequence")
     pending, pointers, blocks, finished = [deque(), deque()], [0, 0], [], {}
     details = []
+    timing = ReturnTiming(profile)
     for event in events:
         if event["kind"] == "r":
             require(event["id"] in finished and event["ps"] > finished[event["id"]], "AXI before raw read tail")
@@ -275,6 +277,7 @@ def read_link_blocks(events, profile, payload):
                 for byte_slice in range(2):
                     pending[byte_slice].append((block, word, enable))
         raw = number(event["return"])
+        timing.sample(event["ck"], event["cs"], event["ca"], (raw >> 32) & 255)
         for byte_slice in range(2):
             count = 0
             for ordinal in range(ratio):
@@ -284,7 +287,7 @@ def read_link_blocks(events, profile, payload):
                 require(count == ordinal and bool(pending[byte_slice]), "raw return hole/unsolicited slice")
                 count += 1
                 block, word, enable = pending[byte_slice].popleft()
-                require(event["ck"] * ratio + lane == enable + 2 * ratio, "raw return word/timing identity")
+                require(event["ck"] * ratio >= enable, "raw return before read enable")
                 for half in range(2):
                     shift = lane * 4 + half * 2 + byte_slice
                     require(raw >> (16 + shift) & 1 == 0, "read-link unavailable byte")
@@ -297,6 +300,7 @@ def read_link_blocks(events, profile, payload):
                     finished[block["id"]] = event["ps"]
             pointers[byte_slice] = (pointers[byte_slice] + count) % ratio
     require(len(blocks) == 558 and not any(pending) and len(finished) == 558, "read-link raw tail/count")
+    timing.finish()
     counts = {"clean": 0, "corrected": 0, "uncorrectable": 0}
     for ordinal, block in enumerate(blocks):
         fault_group = fault_slice = None
@@ -346,7 +350,13 @@ def read_link_blocks(events, profile, payload):
             }
         )
     require(counts == {"clean": 2, "corrected": 548, "uncorrectable": 8}, "read-link fault coverage")
-    return {"read_bursts": len(blocks), "codewords": 4 * len(blocks), "counts": counts, "faults": details}
+    return {
+        "read_bursts": len(blocks),
+        "codewords": 4 * len(blocks),
+        "counts": counts,
+        "faults": details,
+        "physical_return_timing": timing.finish(),
+    }
 
 
 def read_link_sensitivity(events, profile, payload):

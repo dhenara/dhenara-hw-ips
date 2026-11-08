@@ -14,6 +14,7 @@ from system.adapters import returned_snapshot
 from system.dram import decode
 from system.host import Address, HostScoreboard, require
 from system.phy import DigitalPhy
+from system.return_timing import ReturnTiming
 from system.trace import source_order
 
 
@@ -46,6 +47,7 @@ def check(
     require(0 < mapped_end <= (1 << 30) * channels * ranks, "identity region capacity")
     host = HostScoreboard(header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end)
     phy = [DigitalPhy(profile) for _ in range(channels)]
+    return_timing = [ReturnTiming(profile) for _ in range(channels)]
     completion = [CompletionOracle([], 16, profile["dfi_wck"]["tphy_rdlat"]) for _ in range(channels)]
     bus = [ReadBusOracle(profile["ratio"], c) for c in completion]
     bursts = [[] for _ in range(channels)]
@@ -186,6 +188,7 @@ def check(
                         )
                 completion[c].received[serial] = {}
             raw_write, raw_read, raw_return = (number(e[k]) for k in ("write", "read", "return"))
+            return_timing[c].sample(ck, e["cs"], e["ca"], (raw_return >> 32) & 255)
             write_data, write_mask = raw_write >> 48, (raw_write >> 32) & 65535
             write_enable, write_cs = (raw_write >> 24) & 255, (raw_write >> 16) & 255
             read_enable, read_cs = raw_read >> 16, raw_read & 65535
@@ -290,7 +293,7 @@ def check(
                 not any(q for value in completion for q in value.pending.values()),
                 "unsettled physical read tail",
             )
-            for model in phy:
+            for model in [*phy, *return_timing]:
                 model.finish()
             ended = True
         else:
@@ -300,6 +303,7 @@ def check(
         "commands": commands,
         "physical_write_words": writes,
         "returned_slices": reads,
+        "physical_return_timing": [t.finish() for t in return_timing],
         "write_bytes": host.handshaken_bytes[True],
         "read_bytes": host.handshaken_bytes[False],
         "limitations": [

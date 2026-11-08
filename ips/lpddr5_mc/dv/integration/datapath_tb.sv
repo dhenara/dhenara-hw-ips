@@ -165,7 +165,8 @@ module datapath_tb #(
             if(cap_mixed==2)
               check(dut.channels[c].channel.backend.scheduler.config_i.write_weight==4
                 && dut.channels[c].channel.backend.scheduler.config_i.read_weight==1
-                && dut.channels[c].channel.backend.scheduler.config_i.write_batch_min==2,
+                && dut.channels[c].channel.backend.scheduler.config_i.write_batch_min==2
+                && dut.channels[c].channel.backend.scheduler.config_i.write_batch_max==4,
                 "observed concurrent cap batching");
           end
           if(accepted_request)
@@ -540,7 +541,7 @@ module datapath_tb #(
         $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":3,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"zero_direction\":%0d,\"read_cap\":%0d,\"write_cap\":%0d,\"granule_bytes\":64}",
           cap_mode,CHANNELS,zero_cap_direction,zero_cap_direction==0 ? 0 : 64,zero_cap_direction==1 ? 0 : 64);
       else
-        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":%0d,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d,\"read_weight\":1,\"write_weight\":%0d,\"write_batch_min\":%0d}",cap_mixed==2 ? 4 : 2,cap_mode,CHANNELS,cap_granule_bytes,cap_mixed,cap_mixed==2 ? 4 : 1,cap_mixed==2 ? 2 : 0);
+        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":%0d,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d,\"read_weight\":1,\"write_weight\":%0d,\"write_batch_min\":%0d,\"write_batch_max\":%0d}",cap_mixed==2 ? 4 : 2,cap_mode,CHANNELS,cap_granule_bytes,cap_mixed,cap_mixed==2 ? 4 : 1,cap_mixed==2 ? 2 : 0,cap_mixed==2 ? 4 : 0);
     end
     host_cfg='0;cfg='0;mailbox_value='0;management='0;aw='0;ar='0;wd='0;train_token=0;command='0;target_fsp=0;target_frequency=0;phy_refresh_done=0;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
@@ -562,7 +563,7 @@ module datapath_tb #(
         if(zero_cap_direction==0) cfg[c].read_cap=0;
         if(zero_cap_direction==1) cfg[c].write_cap=0;
         if(cap_mixed==2) begin
-          cfg[c].read_weight=1;cfg[c].write_weight=4;cfg[c].write_batch_min=2;
+          cfg[c].read_weight=1;cfg[c].write_weight=4;cfg[c].write_batch_min=2;cfg[c].write_batch_max=4;
         end
       end
     end

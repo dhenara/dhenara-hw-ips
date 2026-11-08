@@ -48,7 +48,7 @@ module lpddr5_mc_maintenance_tb;
           if(request_valid) break;
           tick();
         end
-        assert(request_valid && request_all && !request_rfm && request_rank<ranks)
+        assert(request_valid && request_all && !request_rfm && int'(request_rank)<ranks)
           else $fatal(1,"due periodic sweep did not share a REF drain ranks=%0d round=%0d",ranks,round_index);
         visits[int'(request_rank)]++;
         request_ready=1;tick();request_ready=0;

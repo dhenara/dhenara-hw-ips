@@ -20,6 +20,24 @@ IP = Path(__file__).resolve().parents[2]
 REPO = IP.parents[1]
 
 
+def source_manifest(ip: Path = IP) -> list[dict[str, str]]:
+    """Hash owned source independently of the checkout's parent directories."""
+    paths = set()
+    for prefix in ("rtl", "dv/contracts", "dv/channel", "config", "constraints/channel"):
+        for path in (ip / prefix).rglob("*"):
+            relative = path.relative_to(ip)
+            if (
+                path.is_file()
+                and not {"evidence", "__pycache__"}.intersection(relative.parts)
+                and path.suffix in (".sv", ".f", ".py", ".json", ".sdc")
+            ):
+                paths.add(path)
+    return [
+        {"path": str(path.relative_to(ip.parents[1])), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        for path in sorted(paths)
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", required=True, type=Path)
@@ -109,31 +127,6 @@ def main() -> None:
         ],
     }
 
-    def source_manifest() -> list[dict[str, str]]:
-        paths = set()
-        for prefix in (
-            "rtl",
-            "dv/contracts",
-            "dv/channel",
-            "config",
-            "constraints/channel",
-        ):
-            for path in (IP / prefix).rglob("*"):
-                if (
-                    path.is_file()
-                    and "evidence" not in path.parts
-                    and "__pycache__" not in path.parts
-                    and path.suffix in (".sv", ".f", ".py", ".json", ".sdc")
-                ):
-                    paths.add(path)
-        return [
-            {
-                "path": str(path.relative_to(REPO)),
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-            for path in sorted(paths)
-        ]
-
     result["source_manifest_start"] = source_manifest()
 
     def run(argv: list[str]) -> None:
@@ -160,6 +153,7 @@ def main() -> None:
             raise RuntimeError(f"Command failed: {argv[0]} ({outcome.returncode})")
 
     try:
+        run([sys.executable, "-m", "unittest", "discover", "-s", str(IP / "dv/channel"), "-p", "check_test.py", "-v"])
         run([str(executable), "--version"])
         for top in (
             "lpddr5_mc_data",

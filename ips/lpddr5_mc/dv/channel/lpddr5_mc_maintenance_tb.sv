@@ -75,6 +75,27 @@ module lpddr5_mc_maintenance_tb;
     assert(!fault && budget>3000) else $fatal(1,"on-deadline REF did not discharge retention");
     $display("PASS normal REF command deadline: issue reserve=%0d, actual command at CK3124",issue_reserve);
   endtask
+  task automatic rfm_poll_preemption;
+    profile=fixture_profile(0,0,0,1,0,0);profile.ranks=1;reset();
+    repeat(2400) tick();
+    // This fixture's mandatory RFM maximum is 64. Select an RFM just
+    // before the enlarged lead becomes due, so it cannot become a REF.
+    repeat(63) begin event_value.row_opened=1;event_value.bank=0;tick();end
+    event_value='0;tick();
+    assert(request_valid && request_rfm && mr4_request && zq_request && !fault)
+      else $fatal(1,"selected RFM did not reserve its preemption before polling");
+    request_ready=1;tick();request_ready=0;tick();
+    assert(request_valid && !request_rfm && request_all)
+      else $fatal(1,"RFM preemption did not retain the following REF group");
+    request_ready=1;tick();request_ready=0;
+    repeat(40) begin
+      tick();assert(mr4_request && zq_request && !request_valid && !fault)
+        else $fatal(1,"early polling retracted after RFM debt was discharged");
+    end
+    mr4_done=1;zq_done=1;tick();mr4_done=0;zq_done=0;tick();
+    assert(!mr4_request && !zq_request && !fault) else $fatal(1,"early polling did not retire on done");
+    $display("PASS RFM preemption: preceding selected RFM, shared REF and stable early MR4/ZQ until done");
+  endtask
   task automatic coalesced_poll_case(input int ranks);
     int visits[2];
     profile.ranks=2'(ranks);reset();
@@ -111,6 +132,7 @@ module lpddr5_mc_maintenance_tb;
     profile=fixture_profile(0,0,0,0,0,0); profile.ranks=1; event_value='0;
     normal_poll_cadence();
     normal_refresh_command_deadline();
+    rfm_poll_preemption();
     profile=fixture_profile(0,0,0,0,0,0);
     for(int ranks=1;ranks<=2;ranks++) coalesced_poll_case(ranks);
     profile.ranks=1;

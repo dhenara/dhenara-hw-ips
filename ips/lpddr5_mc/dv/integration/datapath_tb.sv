@@ -269,7 +269,7 @@ module datapath_tb #(
     // in the two-rank image. Keep all arithmetic wide above the 32-bit limit.
     region_end=64'(host_cfg.regions[0].size);
     for(int c=0;c<CHANNELS;c++) begin
-      last_address=region_end-64'(CHANNELS-c)*64'd64;
+      last_address=region_end-(64'(CHANNELS)-64'(c))*64'd64;
       before_b=b_count[0];send_aw(0,maximum_id,last_address,64/BYTES);send_w(0,last_address,64/BYTES);
       wait_b(0,maximum_id,before_b+1);wait_settled();
       send_ar(PORTS-1,maximum_id,last_address,64/BYTES);read_result(PORTS-1,maximum_id,last_address,64/BYTES);wait_settled();

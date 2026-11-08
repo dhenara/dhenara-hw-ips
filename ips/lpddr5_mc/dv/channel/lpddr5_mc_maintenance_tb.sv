@@ -33,10 +33,42 @@ module lpddr5_mc_maintenance_tb;
     end
     $fatal(1,"missing maintenance request");
   endtask
+  task automatic coalesced_poll_case(input int ranks);
+    int visits[2];
+    profile.ranks=2'(ranks);reset();
+    for(int round_index=0;round_index<2;round_index++) begin
+      visits[0]=0;visits[1]=0;
+      for(int c=0;c<3000;c++) begin
+        if(mr4_request && zq_request) break;
+        tick();assert(!fault) else $fatal(1,"coalesced poll admission fault");
+      end
+      assert(mr4_request && zq_request) else $fatal(1,"missing due periodic sweep");
+      for(int rank_index=0;rank_index<ranks;rank_index++) begin
+        for(int c=0;c<8;c++) begin
+          if(request_valid) break;
+          tick();
+        end
+        assert(request_valid && request_all && !request_rfm && int'(request_rank)<ranks)
+          else $fatal(1,"due periodic sweep did not share a REF drain ranks=%0d round=%0d",ranks,round_index);
+        visits[int'(request_rank)]++;
+        request_ready=1;tick();request_ready=0;
+      end
+      assert(visits[0]==1 && visits[1]==ranks-1) else $fatal(1,"coalesced REF rank membership");
+      // Refresh already discharged the group. A pending ZQ request and
+      // the MR4 done edge must not repeatedly pull in another REF round.
+      mr4_done=1;tick();mr4_done=0;
+      repeat(40) begin tick();assert(!request_valid && !urgent && !fault) else $fatal(1,"duplicate coalesced REF");end
+      zq_done=1;tick();zq_done=0;tick();
+      assert(!mr4_request && !zq_request && !request_valid && !fault) else $fatal(1,"coalesced sweep retirement");
+    end
+    $display("PASS coalesced periodic drain ranks=%0d: two REF/MR4/ZQ rounds, exact membership and no duplicate pull-in",ranks);
+  endtask
   initial begin
     logic held_rank,held_rfm,held_all;
     logic [2:0] held_pair;
     profile=fixture_profile(0,0,0,0,0,0); profile.ranks=1; event_value='0;
+    for(int ranks=1;ranks<=2;ranks++) coalesced_poll_case(ranks);
+    profile.ranks=1;
     reset(); assert(allowed[1]==0) else $fatal(1,"inactive rank");
     // Counter saturation cannot be cleared by an ordinary self-refresh cycle.
     repeat(64) begin event_value.row_opened=1; event_value.bank=0; tick(); end

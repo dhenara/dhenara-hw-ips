@@ -63,6 +63,7 @@ def main() -> None:
     parser.add_argument("--scenario", type=int, choices=range(4))
     parser.add_argument("--runtime-reset", action="store_true")
     parser.add_argument("--runtime-reset-matrix", action="store_true")
+    parser.add_argument("--runtime-reset-case", type=int, choices=range(10))
     parser.add_argument("--power-policy", type=int, choices=(1, 2))
     parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
     parser.add_argument("--cap-mode", type=int, choices=(1, 2))
@@ -84,6 +85,8 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.runtime_reset_case is not None:
+        args.runtime_reset_matrix = True
     if args.runtime_reset_matrix:
         args.runtime_reset = True
     configuration = {
@@ -210,6 +213,7 @@ def main() -> None:
         "benchmark_smoke": args.benchmark_smoke,
         "runtime_reset": args.runtime_reset,
         "runtime_reset_matrix": args.runtime_reset_matrix,
+        "runtime_reset_case": args.runtime_reset_case,
         "cap_mode": args.cap_mode,
         "cap_granule_bytes": args.cap_granule_bytes,
         "cap_traffic": args.cap_traffic,
@@ -298,6 +302,8 @@ def main() -> None:
         commands[-1].append("+recovery_observations=" + str(report.with_name("recovery-observations.jsonl")))
         if args.power_policy is not None:
             commands[-1].append(f"+power_policy={args.power_policy}")
+        if args.runtime_reset_case is not None:
+            commands[-1].append(f"+runtime_reset_case={args.runtime_reset_case}")
         if args.benchmark_direction:
             commands[-1].extend(
                 [

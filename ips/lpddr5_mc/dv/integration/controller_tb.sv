@@ -104,9 +104,13 @@ module controller_tb #(
       if(rvalid[p] && rready[p]) r_count[p]=r_count[p]+1;
     end
     end
-    assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) bvalid[p]&&!bready[p] |=> bvalid[p]&&$stable(b[p]));
+    assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) bvalid[p]&&!bready[p] |=> bvalid[p]&&$stable(b[p]))
+      else $fatal(1,"B stability port=%0d stage=%0d valid=%b ready=%b payload=%h",p,stage,bvalid[p],bready[p],b[p]);
     assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) rvalid[p]&&!rready[p] |=> rvalid[p]&&$stable(r[p]));
   end
+  // Keep response-ready timing visible when a stopped clock changes phase.
+  always @(bready) if(RUNTIME_RESET)
+    $display("RUNTIME_RESET_BREADY ps=%0t ready=%b clocks=%b valid=%b payload=%h",$time,bready,axi_clk,bvalid,b);
   `include "expected_profiles.svh"
   task automatic check(input logic condition,input string message);
     assert(condition) else $fatal(1,"stage%0d: %s",stage,message);checks++;

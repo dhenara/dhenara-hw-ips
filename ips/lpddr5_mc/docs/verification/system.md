@@ -32,6 +32,8 @@ python3 ips/lpddr5_mc/dv/integration/check.py --family controller --runtime-rese
   --report "$PWD/ips/lpddr5_mc/evidence/runtime-reset-matrix/report.json" --build-name runtime-reset-matrix
 ```
 
+Use `--runtime-reset-case N` to isolate case 0 through 9 with the same checks. It implies the matrix selection but executes one recovery, so the expected boot epoch advances from zero to one regardless of the case number. The report records the selected case; a focused pass does not cover the other cases or their repeated-reset history. Runtime reset logs include response-ready transitions and case start times to diagnose clock-phase-dependent failures without disabling response stability assertions.
+
 Example focused commands from the repository root:
 
 ```sh

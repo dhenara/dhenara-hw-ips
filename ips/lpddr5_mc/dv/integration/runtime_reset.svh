@@ -2,20 +2,26 @@
 // The memory fixture explicitly loses its tracked contents at raw reset; no
 // preservation claim is inferred from the clean traces around this scenario.
 task automatic runtime_reset_run;
-  int before_b,case_count,case_kind,surviving_port,read_port,reset_port;
+  int before_b,case_count,case_kind,surviving_port,read_port,reset_port,selected_case;
   bit common_reset;
+  selected_case=-1;
+  if($value$plusargs("runtime_reset_case=%d",selected_case))
+    check(RESET_MATRIX && selected_case>=0 && selected_case<10,"runtime reset case selection");
   case_count=RESET_MATRIX ? 10 : 2;
+  if(selected_case>=0) case_count=1;
   @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
   for(int epoch_value=0;epoch_value<case_count;epoch_value++) begin
     // Cases 0/1 retain repeated common resets. Cases 2/3 reset each AXI
     // endpoint; 4/5 stop CK/APB during common reset; 6/7 stop the reset AXI
     // clock; 8/9 stop a surviving AXI clock during common reset.
-    case_kind=RESET_MATRIX ? epoch_value : 0;
+    // Boot epochs count executed recoveries even when isolating a later case.
+    case_kind=selected_case>=0 ? selected_case : RESET_MATRIX ? epoch_value : 0;
     common_reset=!(case_kind inside {2,3,6,7});
     reset_port=(case_kind==2 || case_kind==6) ? 0 : PORTS-1;
     surviving_port=common_reset ? 0 : PORTS-1-reset_port;
     read_port=common_reset ? PORTS-1 : surviving_port;
     stage=10+epoch_value;
+    $display("RUNTIME_RESET_START case=%0d epoch=%0d ps=%0t",case_kind,epoch_value,$time);
     bready=0;before_b=b_count[surviving_port];
     send_aw(surviving_port,20,16384,64/BYTES);send_ar(read_port,21,20544,64/BYTES);
     if(!common_reset) send_ar(reset_port,30,22528,64/BYTES);

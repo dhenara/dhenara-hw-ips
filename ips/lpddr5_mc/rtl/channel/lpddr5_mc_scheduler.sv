@@ -76,6 +76,7 @@ module lpddr5_mc_scheduler #(
   logic selected, legal, free_found, hazard, hit, urgent, best_urgent;
   logic masked, opposite_eligible;
   logic candidate_eligible, candidate_cap, candidate_better;
+  logic new_group, best_new_group;
   logic policy_waiting, capped_miss_waiting;
   logic miss_lock_q,miss_locked,locked_candidate,best_locked;
   int miss_index_q;
@@ -201,6 +202,7 @@ module lpddr5_mc_scheduler #(
     bank_index=0; rank_index=0; group_index=0; maintenance_bank=-1;
     hazard=0; hit=0; urgent=0; masked=0; opposite_eligible=0;
     candidate_eligible=0; candidate_cap=0; candidate_better=0; live_operation=OP_ACT;
+    new_group=0;best_new_group=0;
     bytes_used=0; cap=0; final_pin_ck=0;
     for (int i=0; i<TOTAL; i++) begin
       if (!entries_q[i].valid && (i/QUEUE_DEPTH)==int'(request_i.is_write) && !free_found) begin
@@ -248,6 +250,8 @@ module lpddr5_mc_scheduler #(
             && (miss_locked ? i==miss_index_q : ((!policy_waiting || capped_miss_waiting || entries_q[i].granule.is_write==policy_direction)
               && (!capped_miss_waiting || live_operation!=OP_ACCESS)))));
         hit=live_operation==OP_ACCESS; preferred=entries_q[i].granule.is_write==policy_direction;
+        new_group=live_operation==OP_ACT
+          && (open_q & (32'hf << (4*(bank_number(entries_q[i].granule)/4))))==0;
         capped_miss=!hit && config_i.hit_cap!=0 && hit_run_q>=config_i.hit_cap;
         locked_candidate=miss_locked && i==miss_index_q;
         candidate_better=!selected;
@@ -260,6 +264,10 @@ module lpddr5_mc_scheduler #(
           else if(preferred!=best_preferred) candidate_better=preferred;
           else if(entries_q[i].granule.qos_class!=best_qos) candidate_better=entries_q[i].granule.qos_class>best_qos;
           else if(hit!=(selected_operation==OP_ACCESS)) candidate_better=hit;
+          // Spread otherwise equal nonurgent misses across bank groups.
+          // Opening only one group after closure can strand the next CK/4
+          // access slot on tCCD even while another group's DQ slot is free.
+          else if(new_group!=best_new_group) candidate_better=new_group;
           else candidate_better=entries_q[i].order_number<best_order;
         end
         if(candidate_eligible && candidate_better) begin
@@ -268,6 +276,7 @@ module lpddr5_mc_scheduler #(
           best_qos=entries_q[i].granule.qos_class; best_preferred=preferred;
           best_capped_miss=capped_miss;
           best_locked=locked_candidate;
+          best_new_group=new_group;
         end
       end
     end

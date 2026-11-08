@@ -18,6 +18,29 @@ REPO = Path(__file__).resolve().parents[4]
 IP = REPO / "ips/lpddr5_mc"
 
 
+def reserve_observations(report: Path, family: str, benchmark: bool, caps: bool) -> list[Path]:
+    """Reserve shared trace names before compilation or another writer can start.
+
+    Different report filenames do not isolate observations in one directory.
+    Exclusive creation also fences concurrent runs; stale files require a new
+    evidence directory, never deletion or an overwrite of the earlier run.
+    """
+    paths = []
+    if family in ("datapath", "controller"):
+        paths.append(report.with_name("observations.jsonl.gz" if benchmark else "observations.jsonl"))
+    if family == "controller":
+        paths.append(report.with_name("recovery-observations.jsonl"))
+    if caps:
+        paths.append(report.with_name("cap-observations.jsonl"))
+    for path in paths:
+        if path.exists():
+            raise FileExistsError(f"Refusing to overwrite retained observations: {path}; use a fresh report directory")
+    for path in paths:
+        with path.open("x"):
+            pass
+    return paths
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", required=True, type=Path)
@@ -142,6 +165,7 @@ def main() -> None:
     build = storage / "lpddr5-integration" / args.build_name
     build.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
+    reserved = reserve_observations(report, args.family, bool(args.benchmark_direction), args.cap_mode is not None)
     sys.pycache_prefix = str(storage / "lpddr5-integration/pycache")
     from vectors import generate
 
@@ -190,6 +214,7 @@ def main() -> None:
         "commands": [],
         "legacy_counterexample": args.expect_legacy_loss,
         "status": "running",
+        "reserved_observations": [str(path) for path in reserved],
         "limitations": ["Boundary regression only; complete controller and final qualification remain pending."],
     }
     if args.expect_legacy_loss:
@@ -291,6 +316,29 @@ def main() -> None:
         commands.extend([*simulation, f"+scenario={scenario}"] for scenario in scenarios)
     report.write_text(json.dumps(result, indent=2) + "\n")
     try:
+        command = [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            str(IP / "dv/integration"),
+            "-p",
+            "check_test.py",
+            "-v",
+        ]
+        log = report.with_name(report.stem + "-tooling.log")
+        start = time.monotonic()
+        with log.open("w") as stream:
+            run = subprocess.run(command, cwd=REPO, env=env, stdout=stream, stderr=subprocess.STDOUT, check=False)
+        result["tooling_check"] = {
+            "argv": command,
+            "exit_code": run.returncode,
+            "seconds": time.monotonic() - start,
+            "log": str(log),
+        }
+        if run.returncode:
+            raise RuntimeError(f"Integration tooling regression failed; see {log}")
         for index, command in enumerate(commands):
             start = time.monotonic()
             log = report.with_name(f"{report.stem}-{index}.log")

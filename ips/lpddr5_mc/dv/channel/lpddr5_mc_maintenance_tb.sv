@@ -33,6 +33,23 @@ module lpddr5_mc_maintenance_tb;
     end
     $fatal(1,"missing maintenance request");
   endtask
+  task automatic normal_poll_cadence;
+    // The benchmark's complete REF/MR4 admission fits within 300 CK,
+    // including the latest legal BL16 return and WCK handback. Starting
+    // earlier repeatedly pulls REF in and consumes extra payload windows.
+    profile=fixture_profile(0,0,0,1,0,0);profile.ranks=1;reset();
+    for(int elapsed=0;elapsed<2700;elapsed++) begin
+      assert(!mr4_request && !zq_request && !request_valid && !fault)
+        else $fatal(1,"normal periodic service reserved over 300 CK elapsed=%0d",elapsed);
+      tick();
+    end
+    for(int elapsed=2700;elapsed<3000;elapsed++) begin
+      if(mr4_request && zq_request) break;
+      tick();
+    end
+    assert(mr4_request && zq_request && !fault) else $fatal(1,"normal polling never became due");
+    $display("PASS normal polling cadence: bounded complete service reserve without premature REF pull-in");
+  endtask
   task automatic coalesced_poll_case(input int ranks);
     int visits[2];
     profile.ranks=2'(ranks);reset();
@@ -67,6 +84,8 @@ module lpddr5_mc_maintenance_tb;
     logic held_rank,held_rfm,held_all;
     logic [2:0] held_pair;
     profile=fixture_profile(0,0,0,0,0,0); profile.ranks=1; event_value='0;
+    normal_poll_cadence();
+    profile=fixture_profile(0,0,0,0,0,0);
     for(int ranks=1;ranks<=2;ranks++) coalesced_poll_case(ranks);
     profile.ranks=1;
     reset(); assert(allowed[1]==0) else $fatal(1,"inactive rank");

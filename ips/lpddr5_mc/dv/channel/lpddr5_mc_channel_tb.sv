@@ -25,6 +25,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   lpddr5_mc_read_request4_t read_value;
   lpddr5_mc_return4_t return_value;
   int mr43_count,mr4_count,zq_count,refresh_count,rfm_count,cycles;
+  bit check_poll_handoff=0;
   logic notification_valid,notification_error_valid,first_error_valid;
   logic notification_ready=1,memory_reset=0,check_fsp=0,mrw_pending=0;
   int mrw_count=0,mrw_address=0,last_mrw=0,sre_count=0,srx_count=0,last_srx=0;
@@ -85,6 +86,9 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   task automatic check_control_pins;
     logic [7:0] expected_value;
     if(ca.cs!=0) begin
+      if(check_poll_handoff && mr4_count>0 && zq_count==0)
+        assert(!(ca.address[2:0] inside {3'b111,3'b011}))
+          else $fatal(1,"periodic handoff reopened a row before due ZQ CK=%0d",cycles);
       if(ca.address[6:0]==104) sre_count++;
       if(ca.address[6:0]==40) begin srx_count++;last_srx=cycles;end
       if(check_fsp) begin
@@ -315,6 +319,14 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       $display("PASS single periodic MR4/ZQ visit ranks=%0d MR4=%0d ZQ=%0d temperature=%0d",rank_count,mr4_count,zq_count,status_value.temperature_mr4);
     end
   endtask
+  task automatic poll_handoff_case;
+    setup_control();check_poll_handoff=1;
+    // Both periodic obligations start at boot. Keep row-changing traffic
+    // queued across their first shared service window and check the pins.
+    row_churn();check_poll_handoff=0;
+    assert(mr4_count>=2 && zq_count>=2) else $fatal(1,"periodic handoff not exercised");
+    $display("PASS periodic MR4 to ZQ handoff without row reopening MR4=%0d ZQ=%0d",mr4_count,zq_count);
+  endtask
   task automatic wait_low_power;
     for(int c=0;c<2000;c++) begin
       if(management_out.lp_ctrl_req && management_out.lp_data_req) return;
@@ -482,6 +494,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     for(int c=0;c<5;c++)
       if(selected_case==0 || (selected_case==5 && c<4) || (selected_case==6 && c==4)) control_case(c);
     if(selected_case inside {0,7}) poll_once_case();
+    if(selected_case inside {0,8}) poll_handoff_case();
     $display("PASS selected channel cases selection=%0d",selected_case);$finish;
   end
 endmodule

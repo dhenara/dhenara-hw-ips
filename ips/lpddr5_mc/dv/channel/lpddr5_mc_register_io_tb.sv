@@ -28,7 +28,7 @@ module lpddr5_mc_register_io_tb;
     guard_ck=int'(profile.dram_ck_tmrr)+int'(profile.dram_ck_tmrw);
     rst_n=0; request_valid=0; result_ready=0; return_value='0; tick(); rst_n=1;
     for(int h=0;h<3;h++) enable_history[h]=0;
-    request_rank=1; request_zq=kind==1; address=kind==0 ? 7'd43 : 7'd4;
+    request_rank=1; request_zq=kind==1; address=kind==0 ? 7'd43 : kind==5 ? 7'd44 : kind==6 ? 7'd45 : 7'd4;
     exclusive=0; #1; assert(!request_ready) else $fatal(1,"exclusive pin ownership"); exclusive=1;
     request_valid=1; tick(); request_valid=0;
     mrr_at=-1; zq_at=-1; word_count=0; command_count=0; handback_at=-1;
@@ -70,6 +70,7 @@ module lpddr5_mc_register_io_tb;
             ready_at=handback_at>mrr_at+guard_ck ? handback_at : mrr_at+guard_ck;
             assert(handback_at>=0 && cycle<=ready_at+2)
               else $fatal(1,"unnecessary serialized register guard: result=%0d handback=%0d command=%0d guard=%0d",cycle,handback_at,mrr_at,guard_ck);
+            if(kind==4) $display("REGISTER_HANDOFF ratio_two=%0d always_on=%0d guard=%0d command=%0d handback=%0d result=%0d",ratio_two,always_on,guard_ck,mrr_at,handback_at,cycle);
           end
           held_value=result_value;
           repeat(8) begin tick(); assert(result_valid && result_value==held_value && busy && ca.cs==0) else $fatal(1,"stable register response"); end
@@ -83,7 +84,7 @@ module lpddr5_mc_register_io_tb;
   initial begin
     profile='0; return_value='0;
     for(int ratio_two=0;ratio_two<2;ratio_two++) for(int always_on=0;always_on<2;always_on++)
-      for(int kind=0;kind<4;kind++) for(int long_guard=0;long_guard<2;long_guard++) run_case(ratio_two,always_on,kind,long_guard);
+      for(int kind=0;kind<7;kind++) for(int long_guard=0;long_guard<2;long_guard++) run_case(ratio_two,always_on,kind,long_guard);
     $display("PASS register IO: actual MRR/return data, command-origin guards, WCK/data handback, defined UI, rank, ZQ latch/recovery, result stalls, DNV and missing-return faults"); $finish;
   end
 endmodule

@@ -1,12 +1,14 @@
 """Check combined RTL boundaries with retained commands and source manifests."""
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
 import platform
 import re
 import resource
+import shutil
 import subprocess
 import sys
 import time
@@ -38,6 +40,8 @@ def main() -> None:
     parser.add_argument("--scenario", type=int, choices=range(4))
     parser.add_argument("--power-policy", type=int, choices=(1, 2))
     parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
+    parser.add_argument("--benchmark-direction", choices=("read", "write"))
+    parser.add_argument("--benchmark-smoke", action="store_true")
     for flag, values, default in (
         ("ports", (1, 2), 2),
         ("channels", (1, 2), 2),
@@ -59,16 +63,29 @@ def main() -> None:
         "SERVICE_DIV": args.service_div,
         "INTEGRITY_MODE": args.integrity_mode,
     }
-    if args.family not in ("datapath", "lint") and list(configuration.values()) != [
-        2,
-        2,
-        1,
-        128,
-        16,
-        0,
-        2,
-        0,
-    ]:
+    if args.benchmark_smoke and not args.benchmark_direction:
+        parser.error("benchmark smoke requires an explicit benchmark direction")
+    if args.benchmark_direction and (
+        args.family != "controller"
+        or (args.ports, args.channels, args.ranks, args.data_bits, args.depth, args.profile_number, args.integrity_mode)
+        != (2, 2, 1, 128, 64, 4, 0)
+    ):
+        parser.error("benchmark requires controller, two AXI128 ports/channels, one rank, depth 64 and profile 4")
+    if (
+        args.family not in ("datapath", "lint")
+        and not args.benchmark_direction
+        and list(configuration.values())
+        != [
+            2,
+            2,
+            1,
+            128,
+            16,
+            0,
+            2,
+            0,
+        ]
+    ):
         parser.error("parameter selection applies only to datapath and wrapper lint")
     if args.scenario is not None and args.family != "apb_publication":
         parser.error("scenario selection applies only to APB publication")
@@ -114,9 +131,11 @@ def main() -> None:
         sources += [IP / "dv/integration" / (top + ".sv")]
     dependencies = [
         *sorted((IP / "dv/integration").glob("*.py")),
+        *sorted((IP / "dv/integration").glob("*.svh")),
         *sorted((IP / "dv/system").rglob("*.py")),
         *sorted((IP / "dv/contracts").rglob("*.py")),
         *sorted((IP / "config/contracts").glob("*.json")),
+        *sorted((IP / "config/reference").glob("*.json")),
     ]
     manifest = {
         str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -129,6 +148,8 @@ def main() -> None:
         "family": args.family,
         "configuration": configuration,
         "power_policy": args.power_policy,
+        "benchmark_direction": args.benchmark_direction,
+        "benchmark_smoke": args.benchmark_smoke,
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "source_sha256": manifest,
         "commands": [],
@@ -151,6 +172,9 @@ def main() -> None:
         sources = [old if p.name == old.name else p for p in sources]
         result["legacy_apb_sha256"] = hashlib.sha256(old.read_bytes()).hexdigest()
     binary = build / (args.family + "-obj") / ("V" + top)
+    trace_path = (
+        build / "benchmark-observations.jsonl" if args.benchmark_direction else report.with_name("observations.jsonl")
+    )
     commands = [
         [str(tool / "bin/verilator"), "--version"],
         [
@@ -160,19 +184,20 @@ def main() -> None:
             "--timescale-override",
             "1ns/1ps",
             "--assert",
-            "--public-flat-rw",
+            *([] if args.benchmark_direction else ["--public-flat-rw"]),
             "-Wall",
             "--output-split",
             "10000",
             "--output-split-cfuncs",
             "500",
             "-MAKEFLAGS",
-            "OPT_FAST=-O0 OPT_SLOW=-O0",
+            "OPT_FAST=-O2 OPT_SLOW=-O1" if args.benchmark_direction else "OPT_FAST=-O0 OPT_SLOW=-O0",
             "--top-module",
             top,
             "--Mdir",
             str(build / (args.family + "-obj")),
             "-I" + str(build),
+            "-I" + str(IP / "dv/integration"),
             *(
                 [
                     f"-G{key}={value}"
@@ -182,6 +207,9 @@ def main() -> None:
                 if args.family == "lint"
                 else [f"-G{key}={value}" for key, value in configuration.items()]
                 if args.family == "datapath"
+                else [f"-G{key}={value}" for key, value in configuration.items() if key != "INTEGRITY_MODE"]
+                + ["-GBENCHMARK=1'b1"]
+                if args.benchmark_direction
                 else []
             ),
             *map(str, sources),
@@ -195,11 +223,7 @@ def main() -> None:
                 if args.family in ("decoder", "publication", "apb_publication", "controller")
                 else []
             ),
-            *(
-                ["+observations=" + str(report.with_name("observations.jsonl"))]
-                if args.family in ("datapath", "controller")
-                else []
-            ),
+            *(["+observations=" + str(trace_path)] if args.family in ("datapath", "controller") else []),
         ],
     ]
     if args.family == "lint":
@@ -208,6 +232,14 @@ def main() -> None:
         commands[-1].append("+recovery_observations=" + str(report.with_name("recovery-observations.jsonl")))
         if args.power_policy is not None:
             commands[-1].append(f"+power_policy={args.power_policy}")
+        if args.benchmark_direction:
+            commands[-1].extend(
+                [
+                    f"+benchmark_direction={int(args.benchmark_direction == 'write')}",
+                    f"+benchmark_smoke={int(args.benchmark_smoke)}",
+                    f"+benchmark_service={args.service_div}",
+                ]
+            )
     if args.family == "apb_publication":
         simulation = commands.pop()
         scenarios = range(4) if args.scenario is None else [args.scenario]
@@ -248,7 +280,19 @@ def main() -> None:
             from connected import check
 
             profiles = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"]
-            if args.integrity_mode in (1, 2, 4):
+            if args.benchmark_direction:
+                from benchmark import check as check_benchmark
+
+                result["benchmark_observations"] = check_benchmark(
+                    trace_path,
+                    report.with_name(f"{report.stem}-2.log"),
+                    args.benchmark_direction,
+                    args.service_div,
+                    smoke=args.benchmark_smoke,
+                )
+                if not args.benchmark_smoke and not result["benchmark_observations"]["threshold_passed"]:
+                    raise RuntimeError("Actual controller payload is below the agreed 99% threshold")
+            elif args.integrity_mode in (1, 2, 4):
                 from integrity import check as check_integrity
 
                 result["integrity_observations"] = check_integrity(
@@ -275,7 +319,7 @@ def main() -> None:
                         else None
                     ),
                 )
-            if args.family == "controller" and args.power_policy is None:
+            if args.family == "controller" and args.power_policy is None and not args.benchmark_direction:
                 result["recovered_external_observations"] = check(
                     report.with_name("recovery-observations.jsonl"),
                     profiles[0],
@@ -293,6 +337,12 @@ def main() -> None:
         result["error"] = str(error)
         raise
     finally:
+        if args.benchmark_direction and trace_path.exists():
+            with (
+                trace_path.open("rb") as source,
+                gzip.open(report.with_name("observations.jsonl.gz"), "wb") as destination,
+            ):
+                shutil.copyfileobj(source, destination)
         report.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Integration checks passed: {report}")
 

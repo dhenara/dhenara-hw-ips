@@ -163,6 +163,29 @@ PYTHONPATH=ips/lpddr5_mc/dv python3 -m system.trace \
 
 ## Performance accounting
 
+The actual wrapper benchmark uses [benchmark.svh](../../dv/integration/benchmark.svh) and the [benchmark replay](../../dv/integration/benchmark.py). It checks source descriptors/data/order, actual source clocks, per-channel credits, complete response tails and physical prerequisites through [benchmark_pins.py](../../dv/integration/benchmark_pins.py). This binding is restricted to profile four, ratio four, always-on WCK, one rank, two channels and plain full BL32 traffic. The pin replay decodes actual CA, validates DRAM timing/maintenance and physical bytes, checks every DFI enable/data/continuous-CS slot, expands observed WCK controls into half-WCK edges and checks read returns against the independent physical latency oracle. Interleaved split halves follow global DFI word order, including shared rounded CK snapshots.
+
+Build and check a short iteration from the repository root:
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family controller \
+  --ports 2 --channels 2 --ranks 1 --data-bits 128 --depth 64 \
+  --profile-number 4 --service-div 2 --benchmark-direction write --benchmark-smoke \
+  --report "$PWD/ips/lpddr5_mc/evidence/benchmark-smoke/report.json" --build-name benchmark-smoke
+```
+
+The explicit `--benchmark-smoke` option runs two periods and returns no throughput verdict. Omit it for the specified 100 periods. `--benchmark-direction read` selects independently initialized deterministic memory contents; write traffic must provide complete validated W before physical issue. Both directions use finite, distinct successive addresses and drain after the measurement window. [run_benchmark_binary.py](../../dv/integration/run_benchmark_binary.py) can run another direction/service using the same executable only if all retained compilation inputs still match. Its report covers simulation; use the replay command below to check its independent observations. Benchmark builds allow normal Verilator optimization; their explicit diagnostic references retain only the internal observations needed for stall analysis.
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check_benchmark.py \
+  ips/lpddr5_mc/evidence/benchmark-smoke/observations.jsonl.gz \
+  --log ips/lpddr5_mc/evidence/benchmark-smoke/report-2.log \
+  --direction write --service 2 --smoke --sensitivity \
+  --report "$PWD/ips/lpddr5_mc/evidence/benchmark-smoke-sensitivity.json"
+```
+
+[check_benchmark.py](../../dv/integration/check_benchmark.py) first requires the original replay to pass, then rejects active mutations of source/response identity and data, premature success, physical data/parity/timing, DFI enables/CS, WCK, rank, clocks and trace/diagnostic tails. Mutation evidence records exact changed records and trace hashes. Sensitivity uses the bounded smoke selection; full runs omit `--smoke --sensitivity`. A replay records its rate threshold and boundary backlog separately. Engine diagnostic counts partition observed CK into issue, maintenance, selection, credits, row and timing/policy categories; overlapping pipeline costs cannot be converted one-for-one into missing bytes. Backlog interpretation, actual caps and all-class fairness remain separate required checks, and the benchmark report leaves `controller_qualified` false until combined evidence closes them.
+
 The benchmark configuration and legality basis remain [performance.md](../spec/performance.md). Drive two AXI128/400 ports and two x16 CK800/WCK3200 channels, one rank/channel, balanced aligned BG BL32 64-byte full bursts, ECC/DBI off, ready responses, 64 credits/channel/direction and the declared feedback/CDC allowance. Finite successive rows and REF/MR4/ZQ remain mandatory. The existing periodic command/resource reference complements actual host payload measurement; reference counts cannot replace it.
 
 `Benchmark` admits only 64-byte observations and counts a completed burst at its final R handshake or successful B handshake after scoreboard validation. Run at least 100 periods of 3000 CK. Discard periods zero through nine and measure the next 90 integral periods, the half-open CK interval `[30000,300000)`. Later tail completions release bookkeeping but add no measured bytes. Reads and writes have separate reports for CK, CK/2 and CK/4 selection. Reference payload is 375 bursts/channel/period for CK or CK/2 (12.8 GB/s combined), or 339 for CK/4 (11.5712 GB/s); the criterion is at least 99% of the applicable bytes. No synthetic result here is an RTL performance claim.

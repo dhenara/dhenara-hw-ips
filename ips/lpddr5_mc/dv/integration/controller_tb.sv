@@ -1,6 +1,7 @@
 module controller_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
-  parameter int PROFILE_NUMBER=0,SERVICE_DIV=2
+  parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,
+  parameter bit BENCHMARK=0
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
@@ -11,7 +12,7 @@ module controller_tb #(
   always #0.625 clk<=~clk;
   logic [PORTS-1:0] axi_clk=0,axi_rst_n=0,monitor_rst_n;
   for(genvar p=0;p<PORTS;p++) begin : clocks
-    always #(1.25+0.5*p) axi_clk[p]<=~axi_clk[p];
+    always #(BENCHMARK ? 1.25 : 1.25+0.5*p) axi_clk[p]<=~axi_clk[p];
     lpddr5_mc_reset_sync monitor_reset(.clk_i(axi_clk[p]),.arst_ni(axi_rst_n[p]),.rst_no(monitor_rst_n[p]));
   end
   logic settled,host_fault,irq,reset_request,external_fault=0;
@@ -62,7 +63,7 @@ module controller_tb #(
       if(power_policy==1 && power_entered[c] && ca[c].cs!=0 && ca[c].address==0) power_exited[c]=1;
     end
   end
-  lpddr5_mc #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH)) dut (
+  lpddr5_mc #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH),.ID_BITS(BENCHMARK ? 16 : 8)) dut (
     .clk_ck_i(clk),.pclk_i(pclk),.rst_ni(rst_n),.psel_i(psel),.penable_i(penable),.apb_i(apb_request),.pready_o(pready),.apb_o(apb_response),.irq_o(irq),
     .qualified_profiles_i(qualified),.external_fault_i(external_fault),.destructive_reset_request_o(reset_request),.destructive_reset_confirmed_i(reset_confirmed),
     .axi_clk_i(axi_clk),.axi_rst_ni(axi_rst_n),.awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_o(awready),.arready_o(arready),.wready_o(wready),
@@ -70,7 +71,7 @@ module controller_tb #(
     .management_i(management),.rank_report_valid_i(report_valid),.rank_self_refresh_i(report_sr),.phy_refresh_done_i(phy_refresh_done),.management_o(management_out),
     .ca_o(ca),.wck_o(wck),.write_o(writes),.read_request_o(reads),.return_i(returns),.status_o(status_value),
     .enabled_o(enable),.fault_o(host_fault),.host_settled_o(settled));
-  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS)) observer (
+  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(BENCHMARK)) observer (
     .clk_ck_i(clk),.rst_ni(observe_traffic),.axi_clk_i(axi_clk),.axi_rst_ni(monitor_rst_n),
     .awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_i(awready),.arready_i(arready),.wready_i(wready),
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
@@ -84,7 +85,7 @@ module controller_tb #(
     int mr43_count,mr4_count,zq_count,refresh_count,rfm_count;
     logic unused_counts;
     assign unused_counts=^{mr43_count,mr4_count,zq_count,refresh_count,rfm_count};
-    lpddr5_mc_channel_memory memory_model (
+    lpddr5_mc_channel_memory #(.INITIAL_PATTERN(BENCHMARK),.CHANNELS(CHANNELS),.CHANNEL_INDEX(c)) memory_model (
       .profile_i(qualified[0]),.ca_i(ca[c]),.write_i(writes[c]),.read_i(reads[c]),.return_o(returns[c]),
       .mr43_i(8'd0),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
     initial forever begin
@@ -215,6 +216,7 @@ module controller_tb #(
     for(int n=0;n<3000;n++) begin @(negedge clk);if(settled) return;end
     $fatal(1,"stage%0d accepted work failed to drain",stage);
   endtask
+  `include "benchmark.svh"
   initial begin
     int before_b;
     string path;
@@ -229,12 +231,12 @@ module controller_tb #(
     for(int f=0;f<3;f++) qualified[f]=profile;
     check($value$plusargs("images=%s",path),"missing image vectors");stream=$fopen(path,"r");
     check(stream!=0 && $fscanf(stream,"%d",count)==1 && count==192,"image vector header");
-    // The default fixture consumes profile0/rank1 and all three FSP banks.
-    for(int f=0;f<3;f++) begin
-      check($fscanf(stream,"%d %d %d",number,ranks,target)==3 && number==0 && ranks==1 && target==f,"image identity");
+    // Select all three FSP banks for the exact requested profile/geometry.
+    for(int image_index=0;image_index<count;image_index++) begin
+      check($fscanf(stream,"%d %d %d",number,ranks,target)==3,"image identity");
       for(int regindex=0;regindex<REG_COUNT;regindex++) begin
         check($fscanf(stream,"%h",word_value)==1,"image word");
-        if(f==0 || REG_FSP[regindex]==f) staging_image[regindex]=word_value;
+        if(number==PROFILE_NUMBER && ranks==RANKS && (target==0 || REG_FSP[regindex]==target)) staging_image[regindex]=word_value;
       end
     end
     $fclose(stream);staging_image[INDEX_FSP_VALID]=7;
@@ -242,6 +244,11 @@ module controller_tb #(
     staging_image[INDEX_PORT_LIMIT_0]=32'(DEPTH) | (32'(DEPTH)<<8);
     staging_image[INDEX_PORT_LIMIT_1]=staging_image[INDEX_PORT_LIMIT_0];
     staging_image[INDEX_WR_HIGH]=32'(DEPTH);staging_image[INDEX_WR_LOW]=32'(DEPTH/2);
+    if(BENCHMARK) begin
+      check($value$plusargs("benchmark_direction=%d",benchmark_direction),"missing benchmark direction");
+      check($value$plusargs("benchmark_service=%d",benchmark_service),"missing benchmark service");
+      staging_image[INDEX_MODE][10:8]=3'(benchmark_service);
+    end
     if($value$plusargs("power_policy=%d",power_policy)) begin
       check(power_policy inside {1,2},"power policy scenario");
       staging_image[INDEX_PM_REQUEST]=32'(power_policy);staging_image[INDEX_PD_IDLE]=256;staging_image[INDEX_SR_IDLE]=256;
@@ -263,6 +270,7 @@ module controller_tb #(
     // handover. PHY-owned initialization and fresh-epoch admission above are
     // checked by this fixture; no controller refresh clock runs before it.
     publish_and_boot(0);stage=1;observe_traffic=1;
+    if(BENCHMARK) benchmark_run();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);
     send_ar(PORTS-1,2,4096,128);read_result(PORTS-1,2,4096,128);wait_settled();stage=2;
     if(power_policy!=0) begin
@@ -346,5 +354,5 @@ module controller_tb #(
       stage,settled,host_fault,dut.coordinator.state_q,status_value[0].state,status_value[CHANNELS-1].state,reset_request,status_value[0].boot_epoch);
     $fflush();
   end
-  initial begin #65000;$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
+  initial begin #(BENCHMARK ? 650000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
 endmodule

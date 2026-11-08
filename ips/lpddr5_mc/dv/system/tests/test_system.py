@@ -604,6 +604,22 @@ class MeasurementTests(unittest.TestCase):
         with self.assertRaisesRegex(Violation, "starvation"):
             f.step({1, 2}, 2)
 
+    def test_borrowed_capacity_is_not_recreated_by_delayed_opposite_arrival(self):
+        for direction in (0, 1):
+            with self.subTest(direction=direction):
+                c = Caps(8, (64, 64), True)
+                c.issue(0, direction, 64, False)
+                c.issue(1, direction, 32, False)
+                with self.assertRaisesRegex(Violation, "combined byte cap"):
+                    c.issue(2, 1 - direction, 64, True)
+                c.issue(3, 1 - direction, 32, True)
+                self.assertEqual(sum(c.used), 128)
+                with self.assertRaisesRegex(Violation, "combined byte cap"):
+                    c.issue(4, direction, 32, False)
+                c.issue(8, direction, 64, True)
+                c.issue(9, 1 - direction, 64, True)
+                self.assertEqual(c.used, [64, 64])
+
 
 class LifetimeTests(unittest.TestCase):
     def test_two_rank_epochs_and_posted_history_after_reuse(self):

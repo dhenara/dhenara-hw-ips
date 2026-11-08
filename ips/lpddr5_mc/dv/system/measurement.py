@@ -173,6 +173,10 @@ class Caps:
             self.current = ck // self.window
         limit = self.limits[direction]
         require(limit > 0, "zero disables direction; negative cap is invalid")
+        if self.work_conserving:
+            # Earlier borrowing consumes capacity that a later opposite
+            # arrival cannot reclaim by staying within its individual limit.
+            require(sum(self.used) + amount <= sum(self.limits), "actual issue exceeds combined byte cap")
         if self.used[direction] + amount > limit:
             require(
                 self.work_conserving and not opposite_eligible and sum(self.used) + amount <= sum(self.limits),

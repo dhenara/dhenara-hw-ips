@@ -23,7 +23,7 @@ REPO = IP.parents[1]
 def source_manifest(ip: Path = IP) -> list[dict[str, str]]:
     """Hash owned source independently of the checkout's parent directories."""
     paths = set()
-    for prefix in ("rtl", "dv/contracts", "dv/channel", "config", "constraints/channel"):
+    for prefix in ("rtl", "dv/contracts", "dv/channel", "dv/system", "config", "constraints/channel"):
         for path in (ip / prefix).rglob("*"):
             relative = path.relative_to(ip)
             if (
@@ -52,6 +52,7 @@ def main() -> None:
             "wck",
             "config",
             "scheduler",
+            "fairness",
             "epochs",
             "inline",
             "update",
@@ -207,6 +208,7 @@ def main() -> None:
             "wck",
             "config",
             "scheduler",
+            "fairness",
             "epochs",
             "inline",
             "update",
@@ -247,7 +249,15 @@ def main() -> None:
                 simulation.append(f"+channel_case={args.channel_case}")
                 if args.trace_epochs:
                     simulation.append("+trace_epochs")
+            if family == "fairness":
+                simulation.append("+fairness_trace=" + str(report.with_name("fairness.jsonl")))
             run(simulation)
+            if family == "fairness":
+                from fairness_trace import qualify as check_fairness
+
+                result["fairness_observations"] = check_fairness(
+                    report.with_name("fairness.jsonl"), build / "fairness-mutation.jsonl"
+                )
             if family == "fsp":
                 result["fsp_oracle"] = validate_fsp(build / "vectors")
         result["status"] = "passed"

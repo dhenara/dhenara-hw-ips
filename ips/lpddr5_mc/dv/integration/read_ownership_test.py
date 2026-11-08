@@ -12,7 +12,7 @@ class ReadOwnershipTests(unittest.TestCase):
         tag = host.admit(Address(0, 1, 3, size=2), False)  # One byte in its first beat.
         reads = ReadOwnership(host)
         reads.begin((0, 1), range(64))
-        with self.assertRaisesRegex(Violation, "duplicate physical read range"):
+        with self.assertRaisesRegex(Violation, "excess physical read"):
             reads.begin((0, 2), range(64))
         reads.observe((0, 1), {2, 3}, 100)
         with self.assertRaisesRegex(Violation, "including padding"):
@@ -36,6 +36,20 @@ class ReadOwnershipTests(unittest.TestCase):
             reads.complete_before(tag, 100)
         reads.observe((0, 2), range(64, 128), 200)
         reads.complete_before(tag, 200)
+
+    def test_fixed_reads_require_separate_complete_returns_for_each_beat(self):
+        host = HostScoreboard()
+        tag = host.admit(Address(0, 1, 3, length=1, size=0, burst=0), False)
+        reads = ReadOwnership(host)
+        reads.begin((0, 1), range(64))
+        reads.observe((0, 1), range(64), 100)
+        with self.assertRaisesRegex(Violation, "including padding"):
+            reads.complete_before(tag, 100)
+        reads.begin((0, 2), range(64))
+        reads.observe((0, 2), range(64), 200)
+        reads.complete_before(tag, 200)
+        with self.assertRaisesRegex(Violation, "excess physical read"):
+            reads.begin((0, 3), range(64))
 
     def test_unadmitted_error_ambiguous_and_duplicate_effects_fail(self):
         host = HostScoreboard()

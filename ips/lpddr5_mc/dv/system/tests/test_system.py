@@ -273,6 +273,29 @@ class HostTests(unittest.TestCase):
         h.handshake(t)
         h.finish()
 
+    def test_fixed_write_effects_follow_every_validated_beat(self):
+        h = HostScoreboard()
+        tag = h.admit(Address(0, 1, 0, length=1, size=0, burst=0), True)
+        h.w(0, 0x12, 1, False)
+        with self.assertRaisesRegex(Violation, "before full validation"):
+            h.pin_write(tag, 0, b"\x12", 1, 0)
+        h.w(0, 0x34, 1, True)
+        with self.assertRaisesRegex(Violation, "unexpected physical write byte"):
+            h.pin_write(tag, 0, b"\x34", 1, 0)
+        h.pin_write(tag, 0, b"\x12", 1, 0)
+        with self.assertRaisesRegex(Violation, "before repeated write bytes"):
+            h.physical_done(tag)
+        h.pin_write(tag, 0, b"\x34", 1, 0)
+        with self.assertRaisesRegex(Violation, "duplicate physical byte"):
+            h.pin_write(tag, 0, b"\x34", 1, 0)
+        h.physical_done(tag)
+        h.integrity_done(tag)
+        h.offer(tag, 0, 0, True)
+        h.handshake(tag)
+        self.assertEqual(h.memory[0], 0x34)
+        self.assertEqual(h.serial[0], 0x34)
+        h.finish()
+
 
 class ProtocolTests(unittest.TestCase):
     def test_sampled_power_down_exit_pulse(self):

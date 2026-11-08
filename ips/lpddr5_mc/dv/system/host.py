@@ -59,6 +59,8 @@ class Transaction:
     error: int = 0
     w: list[tuple[int, int]] = field(default_factory=list)
     expected: dict[int, int] = field(default_factory=dict)
+    write_values: dict[int, list[int]] = field(default_factory=dict)
+    pin_counts: dict[int, int] = field(default_factory=dict)
     pin_seen: set[int] = field(default_factory=set)
     physical: bool = False
     integrity: bool = False
@@ -139,6 +141,7 @@ class HostScoreboard:
                         lane = b % self.bus_bytes
                         if mask >> lane & 1:
                             t.expected[b] = data >> (lane * 8) & 255
+                            t.write_values.setdefault(b, []).append(t.expected[b])
         return tag
 
     def _older_overlap(self, tag: int) -> None:
@@ -163,8 +166,14 @@ class HostScoreboard:
         for i, value in enumerate(data):
             if enables >> i & 1:
                 b = address + i
-                require(b in t.expected and t.expected[b] == value, "unexpected physical write byte")
-                require(b not in t.pin_seen, "duplicate physical byte")
+                require(b in t.write_values, "unexpected physical write byte")
+                index = t.pin_counts.get(b, 0)
+                # FIXED beats can write one address repeatedly. Each actual
+                # effect must match the next fully validated W value; a third
+                # effect after two admitted values is still a duplicate.
+                require(index < len(t.write_values[b]), "duplicate physical byte")
+                require(t.write_values[b][index] == value, "unexpected physical write byte")
+                t.pin_counts[b] = index + 1
                 self.memory[b] = value
                 t.pin_seen.add(b)
 
@@ -174,6 +183,10 @@ class HostScoreboard:
         self._older_overlap(tag)
         if t.write:
             require(t.pin_seen == t.expected.keys(), "physical completion before all pin bytes")
+            require(
+                all(t.pin_counts[b] == len(values) for b, values in t.write_values.items()),
+                "physical completion before repeated write bytes",
+            )
             self.serial.update(t.expected)
         else:
             t.read_data = []

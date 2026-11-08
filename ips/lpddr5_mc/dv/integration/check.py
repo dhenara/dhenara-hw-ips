@@ -76,6 +76,7 @@ def main() -> None:
     parser.add_argument("--fairness-traffic", choices=("balanced", "row-churn"), default="balanced")
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-smoke", action="store_true")
+    parser.add_argument("--axi-stress-seed", type=int)
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
     parser.add_argument("--address-bits", type=int, choices=range(32, 41), default=40)
     parser.add_argument("--granule-bytes", type=int, choices=(32, 64), default=64)
@@ -90,6 +91,15 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.axi_stress_seed is not None and (
+        not 0 < args.axi_stress_seed < (1 << 31)
+        or args.family != "datapath"
+        or args.integrity_mode
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.benchmark_direction
+    ):
+        parser.error("AXI stress requires a positive 31-bit seed and the plain datapath fixture")
     if args.runtime_reset_case is not None:
         args.runtime_reset_matrix = True
     if args.runtime_reset_matrix:
@@ -104,6 +114,8 @@ def main() -> None:
         "SERVICE_DIV": args.service_div,
         "INTEGRITY_MODE": args.integrity_mode,
     }
+    if args.axi_stress_seed is not None:
+        configuration["AXI_STRESS"] = 1
     if args.family in ("datapath", "lint"):
         configuration.update(
             ID_BITS=args.id_bits if args.id_bits is not None else 16 if args.integrity_mode == 4 else 8,
@@ -228,7 +240,7 @@ def main() -> None:
     }
     result = {
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
-        "seed": 2095,
+        "seed": args.axi_stress_seed if args.axi_stress_seed is not None else 2095,
         "python": platform.python_version(),
         "family": args.family,
         "configuration": configuration,
@@ -327,6 +339,8 @@ def main() -> None:
     ]
     if args.family == "lint":
         commands.pop()
+    if args.axi_stress_seed is not None:
+        commands[-1].append(f"+axi_stress_seed={args.axi_stress_seed}")
     if args.family == "controller":
         commands[-1].append("+recovery_observations=" + str(report.with_name("recovery-observations.jsonl")))
         if args.power_policy is not None:
@@ -512,6 +526,14 @@ def main() -> None:
             if not args.benchmark_direction:
                 from workload_costs import measure
 
+                if args.axi_stress_seed is not None:
+                    from axi_stress import measure as measure_stress
+
+                    result["axi_stress_observations"] = measure_stress(
+                        report.with_name("observations.jsonl"),
+                        report.with_name(f"{report.stem}-2.log"),
+                        args.axi_stress_seed,
+                    )
                 result["workload_costs"] = measure(report.with_name("observations.jsonl"))
                 if args.integrity_mode == 3:
                     text = report.with_name(f"{report.stem}-2.log").read_text()

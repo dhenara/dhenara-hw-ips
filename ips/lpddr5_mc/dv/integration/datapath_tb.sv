@@ -1,7 +1,8 @@
 module datapath_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
   parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,INTEGRITY_MODE=0,
-  parameter int ID_BITS=8,ADDRESS_BITS=40,GRANULE_BYTES=64
+  parameter int ID_BITS=8,ADDRESS_BITS=40,GRANULE_BYTES=64,
+  parameter int AXI_STRESS=0
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
@@ -529,6 +530,7 @@ module datapath_tb #(
     @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
     $display("DATAPATH_INTEGRATION_PASS checks=%0d integrity=%0d",checks,INTEGRITY_MODE);$finish;
   endtask
+  `include "axi_stress.svh"
   initial begin
     int before_b;
     if($value$plusargs("fairness_mode=%d",fairness_mode)) begin
@@ -596,6 +598,7 @@ module datapath_tb #(
     host_cfg.regions[0].enable=1;host_cfg.regions[0].size=RANKS==2 ? 41'd1<<(30+$clog2(CHANNELS)+$clog2(RANKS)) : 41'd1<<20;
     for(int bit_index=0;bit_index<40;bit_index++) host_cfg.regions[0].permutation[bit_index]=6'(bit_index);
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;publish_and_boot();stage=1;
+    if(AXI_STRESS!=0) axi_stress_case();
     if(fairness_mode>=0) fairness_case();
     if(zero_cap_direction>=0) zero_cap_case();
     if(cap_mode!=0) cap_case();
@@ -638,5 +641,5 @@ module datapath_tb #(
     @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
     $display("DATAPATH_INTEGRATION_PASS checks=%0d ports=%0d channels=%0d ranks=%0d width=%0d depth=%0d profile=%0d div=%0d",checks,PORTS,CHANNELS,RANKS,DATA_BITS,DEPTH,PROFILE_NUMBER,SERVICE_DIV);$finish;
   end
-  initial begin #(INTEGRITY_MODE==4 ? 1000000 : INTEGRITY_MODE==0 ? 30000 : 100000);$fatal(1,"datapath deadline stage%0d settled=%0d fault=%0d",stage,settled,host_fault);end
+  initial begin #(AXI_STRESS!=0 ? 200000 : INTEGRITY_MODE==4 ? 1000000 : INTEGRITY_MODE==0 ? 30000 : 100000);$fatal(1,"datapath deadline stage%0d settled=%0d fault=%0d",stage,settled,host_fault);end
 endmodule

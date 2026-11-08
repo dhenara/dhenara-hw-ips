@@ -10,6 +10,7 @@ from collections import deque
 from pathlib import Path
 
 from contracts.read_completion import CompletionOracle, ExpectedWord, ReadBusOracle
+from read_ownership import ReadOwnership
 from system.adapters import returned_snapshot
 from system.dram import decode
 from system.host import Address, HostScoreboard, require
@@ -53,6 +54,7 @@ def check(
     host = HostScoreboard(
         header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end, id_bits=id_bits, address_bits=address_bits
     )
+    read_ownership = ReadOwnership(host)
     phy = [DigitalPhy(profile) for _ in range(channels)]
     wck = [WckObservations(profile) for _ in range(channels)]
     thermal = [ThermalReturns(p.dram.maintenance) for p in phy]
@@ -64,7 +66,7 @@ def check(
     word_owner = [{} for _ in range(channels)]
     mrr_windows = [[] for _ in range(channels)]
     source_queues = {(p, w): deque() for p in range(ports) for w in (False, True)}
-    read_seen, final_pin = {}, {}
+    final_pin = {}
     ratio = profile["ratio"]
     origin_ps = None
     ended = False
@@ -86,15 +88,10 @@ def check(
         t = host.transactions[tag]
         if t.error or t.physical or host.faulted:
             return
-        require(
-            ps >= final_pin.get(tag, float("inf")),
-            "AXI response before final physical pin",
-        )
-        if not t.write:
-            require(
-                read_seen.get(tag, set()) == t.hazard,
-                "AXI read before all physical return words",
-            )
+        if t.write:
+            require(ps >= final_pin.get(tag, float("inf")), "AXI response before final physical pin")
+        else:
+            read_ownership.complete_before(tag, ps)
         host.physical_done(tag)
         host.integrity_done(tag)
 
@@ -169,6 +166,7 @@ def check(
                     values = [model.dram.beat(b, beat, b.times[beat]) for beat in range(b.beats)]
                 bursts[c].append((serial, b, origin, address, values))
                 if not b.write:
+                    read_ownership.begin((c, serial), (logical(c, address + i) for i in range(b.beats * 2)))
                     for w in range(b.beats // 2):
                         expected_words[c][serial, w] = values[2 * w] | (values[2 * w + 1] << 16)
                         word_owner[c][serial, w] = logical(c, address + w * 4)
@@ -297,15 +295,14 @@ def check(
                     )
                     thermal[c].receive(tag, w, lane, value, ck, ps)
                     if (tag, w) in word_owner[c]:
-                        for half in range(2):
-                            address = word_owner[c][tag, w] + lane + 2 * half
-                            source_tag = owner(address, False)
-                            read_seen.setdefault(source_tag, set()).add(address)
-                            final_pin[source_tag] = max(final_pin.get(source_tag, 0), ps)
+                        read_ownership.observe(
+                            (c, tag), (word_owner[c][tag, w] + lane + 2 * half for half in range(2)), ps
+                        )
                     reads += 1
         elif kind == "end":
             require(observed_fault == fault_ps, "missing selected fault witness")
             host.finish()
+            read_ownership.finish()
             require(
                 not any(q for q in source_queues.values()),
                 "unsettled source trace tail",

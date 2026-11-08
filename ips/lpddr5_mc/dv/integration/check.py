@@ -135,10 +135,10 @@ def main() -> None:
         args.family != "datapath"
         or args.cap_mode is not None
         or (args.ports, args.channels, args.ranks, args.data_bits, args.depth, args.profile_number, args.integrity_mode)
-        != (2, 2, 1, 128, 64, 0, 0)
+        != (2, 2, 1, 128, 64, 4, 0)
         or args.granule_bytes != 64
     ):
-        parser.error("fairness requires two plain AXI128 ports/channels, one rank, depth64/profile0/64-byte granules")
+        parser.error("fairness requires two plain AXI128 ports/channels, one rank, depth64/profile4/64-byte granules")
     if args.benchmark_smoke and not args.benchmark_direction:
         parser.error("benchmark smoke requires an explicit benchmark direction")
     if args.benchmark_direction and (

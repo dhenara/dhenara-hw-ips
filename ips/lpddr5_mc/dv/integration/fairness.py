@@ -35,7 +35,8 @@ def check(path: Path, physical: dict) -> dict:
             if header is None:
                 require(
                     kind == "header"
-                    and event["version"] == 1
+                    and event["version"] == 2
+                    and event["profile"] == 4
                     and event["mode"] in (0, 1, 2)
                     and event["divisor"] in (1, 2, 4)
                     and (event["depth"], event["age"], event["tick"], event["gap"]) == (64, 32, 8, 64),
@@ -116,6 +117,7 @@ def check(path: Path, physical: dict) -> dict:
     return {
         "mode": header["mode"],
         "divisor": header["divisor"],
+        "profile": header["profile"],
         "conditional_bound_ck": models[0].bound,
         "maximum_issue_gap_ck": 64,
         "measured_issue_gap_ck": [m.worst_gap for m in models],

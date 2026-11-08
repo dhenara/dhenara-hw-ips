@@ -12,7 +12,17 @@ from system.host import Violation
 
 def observations(mode):
     events = [
-        {"kind": "header", "version": 1, "mode": mode, "divisor": 2, "depth": 64, "age": 32, "tick": 8, "gap": 64}
+        {
+            "kind": "header",
+            "version": 2,
+            "profile": 4,
+            "mode": mode,
+            "divisor": 2,
+            "depth": 64,
+            "age": 32,
+            "tick": 8,
+            "gap": 64,
+        }
     ]
     directions = (0, 1) if mode == 2 else (mode,)
     cycle = 0
@@ -82,6 +92,11 @@ class CombinedFairnessTests(unittest.TestCase):
             path.write_text("".join(json.dumps(e) + "\n" for e in events))
             with self.assertRaisesRegex(Violation, "physical payload"):
                 check(path, {**physical, "read_bytes": 0})
+            path.write_text(
+                "".join(json.dumps({**e, "profile": 0} if e["kind"] == "header" else e) + "\n" for e in events)
+            )
+            with self.assertRaisesRegex(Violation, "fairness configuration"):
+                check(path, physical)
             events[max(i for i, event in enumerate(events) if event.get("issue") is not None)]["issue"] = None
             path.write_text("".join(json.dumps(e) + "\n" for e in events))
             with self.assertRaisesRegex(Violation, "unserved combined fairness tail"):

@@ -52,7 +52,8 @@ endtask
 
 task automatic fairness_case;
   bit complete,pins_idle;
-  check(PORTS==2 && CHANNELS==2 && RANKS==1 && DATA_BITS==128 && DEPTH==64,"fairness workload shape");
+  check(PORTS==2 && CHANNELS==2 && RANKS==1 && DATA_BITS==128 && DEPTH==64
+    && PROFILE_NUMBER==4 && profile.always_on,"fairness reference workload shape");
   for(int p=0;p<PORTS;p++) begin
     source_negative(p);bready[p]=fairness_mode!=1;rready[p]=fairness_mode==2;
   end

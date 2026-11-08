@@ -463,7 +463,7 @@ module datapath_tb #(
       check(fairness_mode inside {0,1,2} && cap_mode==0,"fairness selection");
       check($value$plusargs("fairness_observations=%s",fairness_path),"fairness observation path");
       fairness_stream=$fopen(fairness_path,"w");check(fairness_stream!=0,"fairness trace open");
-      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":1,\"mode\":%0d,\"divisor\":%0d,\"depth\":64,\"age\":32,\"tick\":8,\"gap\":64}",fairness_mode,SERVICE_DIV);
+      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":2,\"mode\":%0d,\"divisor\":%0d,\"profile\":%0d,\"depth\":64,\"age\":32,\"tick\":8,\"gap\":64}",fairness_mode,SERVICE_DIV,PROFILE_NUMBER);
     end
     if($value$plusargs("cap_mode=%d",cap_mode)) begin
       check(cap_mode==1 || cap_mode==2,"cap mode");

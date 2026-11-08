@@ -79,7 +79,7 @@ def main() -> None:
         if not version.stdout.startswith("Verilator 5.006 "):
             raise ValueError("Unqualified simulator version")
         cases = [
-            ("minimum-contract", {"CHECK_CONTRACT": 1}, True),
+            ("minimum-contract", {"CHECK_CONTRACT": "1'b1"}, True),
             (
                 "maximum",
                 {

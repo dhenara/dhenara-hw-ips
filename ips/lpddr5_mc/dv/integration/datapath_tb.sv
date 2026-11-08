@@ -50,7 +50,7 @@ module datapath_tb #(
   int ce_count=0,ue_count=0;
   byte unsigned expected[longint unsigned];
   int b_count[PORTS],r_count[PORTS],checks=0,stage=0;
-  int cap_mode=0,cap_stream,cap_ck=0;
+  int cap_mode=0,cap_stream,cap_ck=0,cap_granule_bytes=64,cap_mixed=0;
   string cap_path;
   longint unsigned written_bytes=0;
   logic [PORTS-1:0][15:0] last_bid;
@@ -159,19 +159,39 @@ module datapath_tb #(
   task automatic cap_case;
     bit all_drained;
     check(PORTS==2 && CHANNELS==2 && INTEGRITY_MODE==0,"cap workload shape");
-    // Disjoint addresses and phase drain make opposite-direction eligibility
-    // unambiguous from admissions alone. Each source clock remains independent.
-    for(int phase_number=0;phase_number<2;phase_number++) begin
+    check(cap_granule_bytes>=BYTES,"cap source width fits granule");
+    if(cap_mixed!=0) begin
+      // Queue both directions before collecting responses. Addresses are
+      // disjoint, so concurrency cannot depend on an unresolved write hazard.
+      // Each port visits both channels and every mapped QoS class.
+      for(int n=0;n<16;n++) begin
+        for(int p=0;p<PORTS;p++) begin
+          longint unsigned at;
+          at=64'd32768+64'(int'((n*2+p)*128+((n/4+p)%2)*64+(cap_granule_bytes==32 ? (n%2)*32 : 0)));
+          send_aw(p,16'(64+n),at,cap_granule_bytes/BYTES);send_w(p,at,cap_granule_bytes/BYTES);
+          send_ar(p,16'(96+n),at+64'd32768,cap_granule_bytes/BYTES);
+        end
+        for(int p=0;p<PORTS;p++) begin
+          longint unsigned at;
+          at=64'd65536+64'(int'((n*2+p)*128+((n/4+p)%2)*64+(cap_granule_bytes==32 ? (n%2)*32 : 0)));
+          read_result(p,16'(96+n),at,cap_granule_bytes/BYTES);
+          wait_b(p,16'(64+n),n+1);
+        end
+      end
+      wait_settled();
+    end else for(int phase_number=0;phase_number<2;phase_number++) begin
+      // Phase drain makes opposite-direction eligibility unambiguous from
+      // admissions alone during the borrowing workload.
       stage=10+phase_number;
       for(int n=0;n<16;n++) begin
         for(int p=0;p<PORTS;p++) begin
           longint unsigned at;
           logic [15:0] id;
-          at=64'd32768+64'(n*128+p*64);id=16'(64+n);
+          at=64'd32768+64'(int'((n*2+p)*128+((n/4+p)%2)*64+(cap_granule_bytes==32 ? (n%2)*32 : 0)));id=16'(64+n);
           if(phase_number==0) begin
-            send_aw(p,id,at,64/BYTES);send_w(p,at,64/BYTES);wait_b(p,id,n+1);
+            send_aw(p,id,at,cap_granule_bytes/BYTES);send_w(p,at,cap_granule_bytes/BYTES);wait_b(p,id,n+1);
           end else begin
-            send_ar(p,id,at,64/BYTES);read_result(p,id,at,64/BYTES);
+            send_ar(p,id,at,cap_granule_bytes/BYTES);read_result(p,id,at,cap_granule_bytes/BYTES);
           end
         end
       end
@@ -194,7 +214,7 @@ module datapath_tb #(
     finish_observations=1;
     $fdisplay(cap_stream,"{\"kind\":\"end\",\"ck\":%0d}",cap_ck);$fclose(cap_stream);cap_stream=0;
     repeat(2) @(negedge clk);
-    $display("DATAPATH_CAP_PASS mode=%0d checks=%0d",cap_mode,checks);
+    $display("DATAPATH_CAP_PASS mode=%0d granule=%0d mixed=%0d checks=%0d",cap_mode,cap_granule_bytes,cap_mixed,checks);
     $display("DATAPATH_INTEGRATION_PASS checks=%0d",checks);$finish;
   endtask
   task automatic send_ar(input int p,input logic [15:0] id,input longint unsigned at,input int beats);
@@ -380,9 +400,12 @@ module datapath_tb #(
     int before_b;
     if($value$plusargs("cap_mode=%d",cap_mode)) begin
       check(cap_mode==1 || cap_mode==2,"cap mode");
+      if($value$plusargs("cap_granule_bytes=%d",cap_granule_bytes))
+        check(cap_granule_bytes==32 || cap_granule_bytes==64,"cap granule size");
+      if($value$plusargs("cap_mixed=%d",cap_mixed)) check(cap_mixed==0 || (cap_mixed==1 && cap_mode==1),"cap traffic mode");
       check($value$plusargs("cap_observations=%s",cap_path),"cap observation path");
       cap_stream=$fopen(cap_path,"w");check(cap_stream!=0,"cap trace open");
-      $fdisplay(cap_stream,"{\"kind\":\"header\",\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64}",cap_mode,CHANNELS);
+      $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":2,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d}",cap_mode,CHANNELS,cap_granule_bytes,cap_mixed);
     end
     host_cfg='0;cfg='0;mailbox_value='0;management='0;aw='0;ar='0;wd='0;train_token=0;command='0;target_fsp=0;target_frequency=0;phy_refresh_done=0;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
@@ -397,6 +420,7 @@ module datapath_tb #(
       end
     end
     host_cfg.granule64=1;host_cfg.inline_ecc=INTEGRITY_MODE==1;host_cfg.config_epoch=1;
+    if(cap_mode!=0) host_cfg.granule64=cap_granule_bytes==64;
     if(cap_mode!=0) for(int q=0;q<16;q++) host_cfg.qos_map[q]=2'(q%4);
     host_cfg.read_limit='{default:8'(DEPTH)};host_cfg.write_limit='{default:8'(DEPTH)};
     host_cfg.regions[0].enable=1;host_cfg.regions[0].size=RANKS==2 ? 41'd1<<(30+$clog2(CHANNELS)+$clog2(RANKS)) : 41'd1<<20;

@@ -177,6 +177,7 @@ def main() -> None:
                     str(executable),
                     "--lint-only",
                     "-Wall",
+                    "-I" + str(build / "vectors"),
                     "--top-module",
                     top,
                     *map(str, sources),
@@ -195,6 +196,7 @@ def main() -> None:
                     "lpddr5_mc_channel",
                     f"-GDEPTH={depth}",
                     "-GCHANNEL_INDEX=1",
+                    "-I" + str(build / "vectors"),
                     *map(str, sources),
                 ]
             )

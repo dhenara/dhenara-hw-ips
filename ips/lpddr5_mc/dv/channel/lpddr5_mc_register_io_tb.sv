@@ -69,6 +69,8 @@ module lpddr5_mc_register_io_tb;
           else begin
             assert(cycle<=int'(periodic_register_budget(profile)))
               else $fatal(1,"periodic register completion exceeded reserve result=%0d budget=%0d",cycle,periodic_register_budget(profile));
+            if(kind==7) $display("REGISTER_LATEST_RETURN ratio_two=%0d always_on=%0d long_guard=%0d guard=%0d delay=%0d result=%0d budget=%0d",
+              ratio_two,always_on,long_guard,guard_ck,return_delay,cycle,periodic_register_budget(profile));
             assert(result_value==8'h35 && result_failed==(kind==3) && word_count==8 && cycle-mrr_at>=guard_ck)
               else $fatal(1,"MRR opcode/return/guard");
             ready_at=handback_at>mrr_at+guard_ck ? handback_at : mrr_at+guard_ck;
@@ -87,8 +89,14 @@ module lpddr5_mc_register_io_tb;
   endtask
   initial begin
     profile='0; return_value='0;
+    // Separate call sites preserve the zero selector across calls in the
+    // qualified simulator's timed-task lowering. Retain explicit witnesses
+    // for normal and extended recovery with the latest returned data.
     for(int ratio_two=0;ratio_two<2;ratio_two++) for(int always_on=0;always_on<2;always_on++)
-      for(int kind=0;kind<8;kind++) for(int long_guard=0;long_guard<2;long_guard++) run_case(ratio_two,always_on,kind,long_guard);
+      for(int kind=0;kind<8;kind++) begin
+        run_case(ratio_two,always_on,kind,0);
+        run_case(ratio_two,always_on,kind,1);
+      end
     $display("PASS register IO: actual MRR/return data, command-origin guards, WCK/data handback, defined UI, rank, ZQ latch/recovery, result stalls, DNV and missing-return faults"); $finish;
   end
 endmodule

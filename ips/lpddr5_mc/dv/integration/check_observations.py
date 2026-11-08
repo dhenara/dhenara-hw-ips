@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from connected import check, number
+from system.dram import decode
 from system.host import Violation
 
 IP = Path(__file__).resolve().parents[2]
@@ -101,6 +102,28 @@ def sensitivity(events: list[dict], profile: dict) -> dict[str, list[dict]]:
     return variants
 
 
+def thermal_sensitivity(events: list[dict], observations: list[list[dict]]) -> dict[str, list[dict]]:
+    hot = next(((c, t) for c, channel in enumerate(observations) for t in channel if t["mr4"] in (13, 15)), None)
+    if hot is None:
+        return {}
+    channel, temperature = hot
+    altered = copy.deepcopy(events)
+    removed = 0
+    for event in altered:
+        if (
+            event["kind"] == "phy"
+            and event["channel"] == channel
+            and event["ck"] > temperature["completed_ck"]
+            and event["cs"]
+            and decode(event["ca"]).kind == "REF"
+        ):
+            event.update(cs=0, ca=0)
+            removed += 1
+    if not removed:
+        raise RuntimeError("Hot sensitivity needs actual subsequent refresh commands")
+    return {"missed_hot_refresh": altered}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", type=Path)
@@ -109,6 +132,7 @@ def main():
     parser.add_argument("--ranks", type=int, default=1)
     parser.add_argument("--depth", type=int, default=16)
     parser.add_argument("--mapped-end", type=lambda value: int(value, 0), default=1 << 20)
+    parser.add_argument("--mr4-change-ck", type=int)
     args = parser.parse_args()
     if args.report.exists():
         parser.error("Refusing to overwrite evidence")
@@ -138,9 +162,13 @@ def main():
             ranks=args.ranks,
             depth=args.depth,
             mapped_end=args.mapped_end,
+            mr4_change_ck=args.mr4_change_ck,
         )
         events = [json.loads(line) for line in args.trace.read_text().splitlines()]
-        for name, altered in sensitivity(events, profile).items():
+        variants = sensitivity(events, profile) | thermal_sensitivity(
+            events, report["baseline"]["temperature_returns_by_channel"]
+        )
+        for name, altered in variants.items():
             path = storage / (name + ".jsonl")
             path.write_text("".join(json.dumps(e) + "\n" for e in altered))
             try:
@@ -150,11 +178,20 @@ def main():
                     ranks=args.ranks,
                     depth=args.depth,
                     mapped_end=args.mapped_end,
+                    mr4_change_ck=args.mr4_change_ck,
                 )
-            except Violation as error:
+            except (Violation, ValueError) as error:
+                if name == "missed_hot_refresh":
+                    if str(error) != "missed periodic refresh":
+                        raise RuntimeError(
+                            "Hot refresh mutation failed at an unrelated boundary: " + str(error)
+                        ) from error
+                elif not isinstance(error, Violation):
+                    raise
                 report["negative_cases"][name] = {
                     "rejected": True,
                     "reason": str(error),
+                    "mutated_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 }
             else:
                 raise RuntimeError("Checker accepted deliberate violation: " + name)

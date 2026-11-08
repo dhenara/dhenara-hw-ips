@@ -109,7 +109,12 @@ module lpddr5_mc_maintenance (
     // bounded return, rather than paying both serially and another 64 CK.
     // Keep the existing early policy for hot and per-bank service.
     if(coalesced_policy) poll_lead=32'(profile_i.ranks)
-      *(maintenance_admission_budget(effective_profile_o,1'b0)+periodic_register_budget(effective_profile_o));
+      *((profile_i.mr27[0] ? 2 : 1)*maintenance_admission_budget(effective_profile_o,1'b0)
+        +periodic_register_budget(effective_profile_o));
+    // With mandatory RFM enabled, an already selected RFM can precede the
+    // shared REF/MR4 group. Register-pending fencing then prevents new ACT
+    // debt, so reserve at most one such complete maintenance visit per rank.
+    // Its recovery cannot be omitted merely because REF follows it.
     if(!coalesced_policy && poll_lead<600) poll_lead=600;
     mr4_request_o=running_q && !fault_o && ck_q-last_mr4_q+64'(poll_lead)>=64'd3000;
     zq_request_o=running_q && !fault_o && ck_q-last_zq_q+64'(poll_lead)>=64'd3000;

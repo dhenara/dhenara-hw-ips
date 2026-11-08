@@ -155,12 +155,14 @@ module datapath_tb #(
         if(cap_stream!=0 && !finish_observations) begin
           check(scheduler_ck==64'(cap_ck),"independent cap CK origin");
           if(accepted_request)
-            $fdisplay(cap_stream,"{\"kind\":\"admit\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d}",
-              cap_ck,c,request_value.tag,request_value.generation,request_value.is_write,request_value.is_64_bytes ? 64 : 32,request_value.port_index,request_value.qos_class);
+            $fdisplay(cap_stream,"{\"kind\":\"admit\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d,\"rank\":%0d,\"bank\":%0d,\"row\":%0d,\"column\":%0d}",
+              cap_ck,c,request_value.tag,request_value.generation,request_value.is_write,request_value.is_64_bytes ? 64 : 32,request_value.port_index,request_value.qos_class,
+              request_value.rank_index,{request_value.bank_group,request_value.bank},request_value.row,request_value.column);
           if(accepted_request && zero_cap_direction==int'(request_value.is_write)) zero_admissions[c]++;
           if(issued_request)
-            $fdisplay(cap_stream,"{\"kind\":\"issue\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d}",
-              cap_ck,c,launch_value.tag,launch_value.generation,launch_value.is_write,launch_value.is_64_bytes ? 64 : 32,launch_value.port_index,launch_value.qos_class);
+            $fdisplay(cap_stream,"{\"kind\":\"issue\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d,\"rank\":%0d,\"bank\":%0d,\"row\":%0d,\"column\":%0d}",
+              cap_ck,c,launch_value.tag,launch_value.generation,launch_value.is_write,launch_value.is_64_bytes ? 64 : 32,launch_value.port_index,launch_value.qos_class,
+              launch_value.rank_index,{launch_value.bank_group,launch_value.bank},launch_value.row,launch_value.column);
         end
       end
     end
@@ -168,11 +170,35 @@ module datapath_tb #(
   always @(posedge clk or negedge rst_n) if(!rst_n) cap_ck<=0;else cap_ck<=cap_ck+1;
   `include "zero_caps.svh"
   `include "fairness.svh"
+  task automatic concurrent_cap_source(input int p,input bit write_direction);
+    for(int n=0;n<16;n++) begin
+      longint unsigned at;
+      at=64'd32768+64'(int'((n*2+p)*128+((n/4+p)%2)*64+(cap_granule_bytes==32 ? (n%2)*32 : 0)));
+      if(write_direction) begin
+        send_aw(p,16'(64+n),at,cap_granule_bytes/BYTES);send_w(p,at,cap_granule_bytes/BYTES);
+        wait_b(p,16'(64+n),n+1);
+      end else begin
+        at+=64'd32768;
+        send_ar(p,16'(96+n),at,cap_granule_bytes/BYTES);
+        read_result(p,16'(96+n),at,cap_granule_bytes/BYTES);
+      end
+    end
+  endtask
   task automatic cap_case;
     bit all_drained;
     check(PORTS==2 && CHANNELS==2 && INTEGRITY_MODE==0,"cap workload shape");
     check(cap_granule_bytes>=BYTES,"cap source width fits granule");
-    if(cap_mixed!=0) begin
+    if(cap_mixed==2) begin
+      // Separate AW/W/B and AR/R source threads retain both directions while
+      // each waits for its actual responses. Read/write addresses are disjoint.
+      fork
+        concurrent_cap_source(0,0);
+        concurrent_cap_source(1,0);
+        concurrent_cap_source(0,1);
+        concurrent_cap_source(1,1);
+      join
+      wait_settled();
+    end else if(cap_mixed==1) begin
       // Queue both directions before collecting responses. Addresses are
       // disjoint, so concurrency cannot depend on an unresolved write hazard.
       // Each port visits both channels and every mapped QoS class.
@@ -482,7 +508,8 @@ module datapath_tb #(
       check(cap_mode==1 || cap_mode==2,"cap mode");
       if($value$plusargs("cap_granule_bytes=%d",cap_granule_bytes))
         check(cap_granule_bytes==32 || cap_granule_bytes==64,"cap granule size");
-      if($value$plusargs("cap_mixed=%d",cap_mixed)) check(cap_mixed==0 || (cap_mixed==1 && cap_mode==1),"cap traffic mode");
+      if($value$plusargs("cap_mixed=%d",cap_mixed))
+        check(cap_mixed==0 || (cap_mixed==1 && cap_mode==1) || (cap_mixed==2 && RANKS==1),"cap traffic mode");
       if($value$plusargs("zero_cap_direction=%d",zero_cap_direction))
         check(zero_cap_direction inside {0,1} && cap_granule_bytes==64 && cap_mixed==0,"zero cap selection");
       check($value$plusargs("cap_observations=%s",cap_path),"cap observation path");
@@ -491,7 +518,7 @@ module datapath_tb #(
         $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":3,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"zero_direction\":%0d,\"read_cap\":%0d,\"write_cap\":%0d,\"granule_bytes\":64}",
           cap_mode,CHANNELS,zero_cap_direction,zero_cap_direction==0 ? 0 : 64,zero_cap_direction==1 ? 0 : 64);
       else
-        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":2,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d}",cap_mode,CHANNELS,cap_granule_bytes,cap_mixed);
+        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":%0d,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d}",cap_mixed==2 ? 4 : 2,cap_mode,CHANNELS,cap_granule_bytes,cap_mixed);
     end
     host_cfg='0;cfg='0;mailbox_value='0;management='0;aw='0;ar='0;wd='0;train_token=0;command='0;target_fsp=0;target_frequency=0;phy_refresh_done=0;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end

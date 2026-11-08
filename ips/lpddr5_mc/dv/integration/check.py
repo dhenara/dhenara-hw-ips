@@ -70,7 +70,7 @@ def main() -> None:
     parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
     parser.add_argument("--cap-mode", type=int, choices=(1, 2))
     parser.add_argument("--cap-granule-bytes", type=int, choices=(32, 64), default=64)
-    parser.add_argument("--cap-traffic", choices=("phase", "mixed"), default="phase")
+    parser.add_argument("--cap-traffic", choices=("phase", "mixed", "concurrent"), default="phase")
     parser.add_argument("--zero-cap-direction", choices=("read", "write"))
     parser.add_argument("--fairness-mode", type=int, choices=(0, 1, 2))
     parser.add_argument("--fairness-traffic", choices=("balanced", "row-churn"), default="balanced")
@@ -125,7 +125,9 @@ def main() -> None:
     ):
         parser.error("cap modes require the plain two-port/two-channel datapath")
     if args.cap_traffic == "mixed" and args.cap_mode != 1:
-        parser.error("mixed cap traffic currently requires strict caps; opposite-eligibility replay remains pending")
+        parser.error("mixed cap traffic requires strict caps; use concurrent for timing-checked borrowing")
+    if args.cap_traffic == "concurrent" and (args.cap_mode is None or args.ranks != 1):
+        parser.error("concurrent cap traffic requires one rank and --cap-mode")
     if args.cap_mode is None and (args.cap_granule_bytes != 64 or args.cap_traffic != "phase"):
         parser.error("cap workload selections require --cap-mode")
     if args.zero_cap_direction is not None and (
@@ -344,7 +346,7 @@ def main() -> None:
             [
                 f"+cap_mode={args.cap_mode}",
                 f"+cap_granule_bytes={args.cap_granule_bytes}",
-                f"+cap_mixed={int(args.cap_traffic == 'mixed')}",
+                f"+cap_mixed={('phase', 'mixed', 'concurrent').index(args.cap_traffic)}",
                 "+cap_observations=" + str(report.with_name("cap-observations.jsonl")),
             ]
         )
@@ -484,10 +486,19 @@ def main() -> None:
                 else:
                     from caps import qualify as qualify_caps
 
+                eligibility_inputs = (
+                    {
+                        "raw": report.with_name("observations.jsonl"),
+                        "profile": profiles[args.profile_number] | {"ranks": 1},
+                    }
+                    if args.cap_traffic == "concurrent"
+                    else {}
+                )
                 result["cap_observations"] = qualify_caps(
                     report.with_name("cap-observations.jsonl"),
                     build / "cap-mutant.jsonl",
                     result["external_observations"],
+                    **eligibility_inputs,
                 )
             if args.fairness_mode is not None:
                 from fairness import qualify as qualify_fairness

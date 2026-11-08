@@ -39,7 +39,7 @@ module lpddr5_mc_maintenance_tb;
     for(int round_index=0;round_index<2;round_index++) begin
       visits[0]=0;visits[1]=0;
       for(int c=0;c<3000;c++) begin
-        if(mr4_request) break;
+        if(mr4_request && zq_request) break;
         tick();assert(!fault) else $fatal(1,"coalesced poll admission fault");
       end
       assert(mr4_request && zq_request) else $fatal(1,"missing due periodic sweep");

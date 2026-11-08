@@ -507,7 +507,7 @@ module datapath_tb #(
       for(int n=0;n<32;n++) begin
         longint unsigned at;
         // Change rows under active derating and tightened refresh deadlines.
-        at=(64'(n%16)<<15)+64'd512;before_b=b_count[0];
+        at=((64'(n)%64'd16)<<15)+64'd512;before_b=b_count[0];
         check(status_value[0].temperature_mr4==13,"hot traffic temperature retained");
         send_aw(0,16'(200+n),at,64/BYTES);send_w(0,at,64/BYTES);
         wait_b(0,16'(200+n),before_b+1);wait_settled();

@@ -227,7 +227,7 @@ module datapath_tb #(
     if(raw_id) ar[p].id=id;
     do source_positive(p);while(!arready[p]);source_negative(p);arvalid[p]=0;
   endtask
-  task automatic send_w(input int p,input longint unsigned at,input int beats,start=0,limit=0,input bit sparse=0,input byte unsigned salt=0);
+  task automatic send_w(input int p,input longint unsigned at,input int beats,start=0,limit=0,input bit sparse=0,input byte unsigned salt=0,input bit update_expected=1);
     int finish_at;
     lpddr5_mc_axi_write_t value;
     finish_at=limit==0 ? beats : limit;
@@ -236,7 +236,7 @@ module datapath_tb #(
       value='0;value.last=n==beats-1;
       for(int j=0;j<BYTES;j++) begin
         value.strobe[j]=!sparse || (n+j)%3!=0;value.data[j*8+:8]=8'((at+64'(n)*64'(BYTES)+64'(j))^((at+64'(n)*64'(BYTES)+64'(j))>>8)^90)^salt;
-        if(value.strobe[j]) expected[at+64'(n)*64'(BYTES)+64'(j)]=value.data[j*8+:8];
+        if(value.strobe[j] && update_expected) expected[at+64'(n)*64'(BYTES)+64'(j)]=value.data[j*8+:8];
       end
       wd[p]=value;do source_positive(p);while(!wready[p]);written_bytes+=64'($countones(value.strobe));source_negative(p);
     end
@@ -259,12 +259,35 @@ module datapath_tb #(
   task automatic parameter_boundaries;
     int before_b;
     logic [15:0] maximum_id,invalid_id;
-    longint unsigned invalid_address;
+    longint unsigned invalid_address,region_end,last_address;
     // Use the entire configured ID range on an actual physical write/read.
     maximum_id=bus_id(16'hffff);
     before_b=b_count[0];send_aw(0,maximum_id,64'd98304,64/BYTES);send_w(0,64'd98304,64/BYTES);
     wait_b(0,maximum_id,before_b+1);wait_settled();
     send_ar(PORTS-1,maximum_id,64'd98304,64/BYTES);read_result(PORTS-1,maximum_id,64'd98304,64/BYTES);wait_settled();
+    // Transfer the last mapped granule of every channel, including rank one
+    // in the two-rank image. Keep all arithmetic wide above the 32-bit limit.
+    region_end=64'(host_cfg.regions[0].size);
+    for(int c=0;c<CHANNELS;c++) begin
+      last_address=region_end-64'(CHANNELS-c)*64'd64;
+      before_b=b_count[0];send_aw(0,maximum_id,last_address,64/BYTES);send_w(0,last_address,64/BYTES);
+      wait_b(0,maximum_id,before_b+1);wait_settled();
+      send_ar(PORTS-1,maximum_id,last_address,64/BYTES);read_result(PORTS-1,maximum_id,last_address,64/BYTES);wait_settled();
+    end
+    // A burst spanning the region end also crosses a 4-KiB boundary. Both
+    // require complete DECERR settlement before any physical write effect.
+    last_address=region_end-64'd64;before_b=b_count[0];
+    send_aw(0,maximum_id,last_address,128/BYTES);
+    send_w(.p(0),.at(last_address),.beats(128/BYTES),.salt(8'hff),.update_expected(0));
+    wait_b(0,maximum_id,before_b+1,3);wait_settled();
+    send_ar(PORTS-1,maximum_id,last_address,128/BYTES);read_result(PORTS-1,maximum_id,last_address,128/BYTES,3);wait_settled();
+    // The valid prefix must retain the earlier data, not the rejected salt.
+    send_ar(0,maximum_id,last_address,64/BYTES);read_result(0,maximum_id,last_address,64/BYTES);wait_settled();
+    before_b=b_count[0];send_aw(0,maximum_id,region_end,64/BYTES);
+    send_w(.p(0),.at(region_end),.beats(64/BYTES),.update_expected(0));
+    wait_b(0,maximum_id,before_b+1,3);wait_settled();
+    send_ar(PORTS-1,maximum_id,region_end,64/BYTES);read_result(PORTS-1,maximum_id,region_end,64/BYTES,3);wait_settled();
+    $display("DATAPATH_REGION_BOUNDARY_PASS end=%0d channels=%0d ranks=%0d: last granules, rejected cross/end bursts and unchanged valid prefix",region_end,CHANNELS,RANKS);
     if(ID_BITS<16) begin
       invalid_id=16'(1<<ID_BITS);before_b=b_count[0];
       send_aw(0,invalid_id,64'd98432,64/BYTES,1);send_w(0,64'd98432,64/BYTES);

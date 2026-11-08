@@ -6,7 +6,6 @@ uses decoded physical commands and pin memory, not queue completion signals.
 """
 
 import heapq
-from collections import deque
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -79,8 +78,7 @@ class DigitalPhy:
             "read-link PHY needs the raw parity matrix",
         )
         self.link_rows = link_rows
-        self.pending: list[tuple[int, int, ReturnedSlice]] = []
-        self.ready = [deque(), deque()]
+        self.pending: list[list[tuple[int, int, ReturnedSlice]]] = [[], []]
         self.pointer = [0, 0]
         self.serial = 0
         self.last_return = -1
@@ -200,39 +198,40 @@ class DigitalPhy:
                     dmi,
                 )
                 self.serial += 1
-                heapq.heappush(self.pending, (at, self.serial, item))
+                # Preserve physical word order at shared rounded CK edges and
+                # when an older word is delayed by allowed PHY skew/gaps.
+                heapq.heappush(self.pending[slice_index], (enable, self.serial, item))
 
     def returned(self, ck: int, quotas: tuple[int, int] | None = None) -> list[list[ReturnedSlice | None]]:
         r = self.p["ratio"]
         require(ck > self.last_return, "repeated PHY return edge")
         self.last_return = ck
-        while self.pending and self.pending[0][0] <= ck:
-            _, _, item = heapq.heappop(self.pending)
-            self.ready[item.slice].append(item)
         result: list[list[ReturnedSlice | None]] = [[None, None] for _ in range(r)]
         for slice_index in range(2):
             quota = r if quotas is None else quotas[slice_index]
             require(0 <= quota <= r, "return quota")
-            for _ in range(min(quota, len(self.ready[slice_index]))):
-                item = self.ready[slice_index].popleft()
+            queue = self.pending[slice_index]
+            for _ in range(quota):
+                if not queue or queue[0][2].available_ck > ck:
+                    break
+                _, _, item = heapq.heappop(queue)
                 require(ck <= item.deadline_ck, "missing PHY return at deadline")
                 lane = self.pointer[slice_index]
                 result[lane][slice_index] = item
                 self.pointer[slice_index] = (lane + 1) % r
             require(
-                not self.ready[slice_index] or ck < self.ready[slice_index][0].deadline_ck,
+                not queue or ck < queue[0][2].deadline_ck,
                 "delayed PHY return misses deadline",
             )
         return result
 
     def reset_pointer(self, *, fatal_abort: bool = False) -> None:
-        require(fatal_abort or not self.pending and not any(self.ready), "pointer reset loses live words")
-        self.pending.clear()
-        for queue in self.ready:
+        require(fatal_abort or not any(self.pending), "pointer reset loses live words")
+        for queue in self.pending:
             queue.clear()
         self.pointer = [0, 0]
 
     def finish(self) -> None:
         require(not self.raw_writes, "incomplete raw parity write")
-        require(not self.pending and not any(self.ready), "unreturned words at trace end")
+        require(not any(self.pending), "unreturned words at trace end")
         self.dram.finish()

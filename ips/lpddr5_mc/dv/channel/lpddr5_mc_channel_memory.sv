@@ -42,8 +42,6 @@ module lpddr5_mc_channel_memory #(
   // Bits0..127 are DQ, bits128..136 are the raw DMI parity positions.
   logic [136:0] read_fault_mask=0;
   int read_fault_group=0,read_fault_slice=0;
-  logic [127:0] read_group_data;
-  logic [1:0][1:0][8:0] read_checks;
   logic unused_debug;
   assign unused_debug=^{profile_i,write_i.link_parity};
   `include "read_link_encoder.svh"
@@ -63,11 +61,11 @@ module lpddr5_mc_channel_memory #(
   endtask
   // A word is available only after its second DRAM beat reaches the DFI
   // deserializer. Times here are half-WCK, then rounded up to sampled CK.
-  function automatic int read_ready_ck(input command_t command, input int word_index);
+  function automatic int read_ready_ck(input int command_ck, input logic split32, input int word_index);
     int half_ck,split_gap,physical;
     half_ck=2*int'(profile_i.ratio);
-    split_gap=profile_i.ratio==4 && command.bl32 && word_index>=8 ? 16 : 0;
-    physical=command.at_ck*half_ck+int'(profile_i.phy_half_wck_command)
+    split_gap=profile_i.ratio==4 && split32 && word_index>=8 ? 16 : 0;
+    physical=command_ck*half_ck+int'(profile_i.phy_half_wck_command)
       +int'(profile_i.rl_ck)*half_ck+int'(profile_i.phy_half_wck_dq_output)
       +2*word_index+split_gap+1+int'(profile_i.phy_half_wck_read);
     return (physical+half_ck-1)/half_ck;
@@ -75,23 +73,16 @@ module lpddr5_mc_channel_memory #(
   // The bench calls this before the sampling edge. Returned words advance
   // the persistent DFI rotation, including MRR and either split-BL32 group.
   task automatic prepare;
-    int emitted,return_lane;
+    int emitted,return_lane,selected_command,selected_word,first_enable;
+    int candidate_enable;
+    logic [127:0] read_group_data;
+    logic [1:0][8:0] read_checks;
     emitted=0;return_lane=0;
     ratio=int'(profile_i.ratio);return_o='0;expected_read=0;expected_write=0;
     expected_read_cs=0;expected_write_cs=0;
     words=0;offset_word=0;enable_at=0;word_at=0;byte_address=0;raw_value=0;value=0;masked=0;
     for(int c=0;c<command_count;c++) begin
       words=commands[c].bl32 ? 16 : 8;
-      read_checks=0;read_group_data=0;
-      if(profile_i.read_link && !commands[c].write_access && !commands[c].mrr) begin
-        for(int group_index=0;group_index<(commands[c].bl32 ? 2 : 1);group_index++) begin
-          for(int slice_index=0;slice_index<2;slice_index++) begin
-            for(int beat=0;beat<16;beat++)
-              read_group_data[beat*8+:8]=stored_byte(commands[c].address+64'(group_index)*32+64'(beat)*2+64'(slice_index));
-            read_checks[group_index][slice_index]=fixture_read_checks(read_group_data);
-          end
-        end
-      end
       for(int lane=0;lane<ratio;lane++) begin
         word_at=ck*ratio+lane;
         enable_at=commands[c].at_ck*ratio+(commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrcslat) : int'(profile_i.dfi_wck_tphy_rdcslat));
@@ -121,31 +112,56 @@ module lpddr5_mc_channel_memory #(
             end
           end
         end
-        if(!commands[c].write_access && !commands[c].returned[w] && ck>=read_ready_ck(commands[c],w)) begin
-          assert(emitted<ratio) else $fatal(1,"fixture read bandwidth collision");
-          return_lane=(read_pointer+emitted)%ratio;
-          emitted++;commands[c].returned[w]=1;
-          assert(ck*ratio<=enable_at+int'(profile_i.dfi_wck_tphy_rdlat))
-            else $fatal(1,"fixture missed read deadline");
-          assert(return_o.valid[return_lane]==0) else $fatal(1,"fixture return collision");return_o.valid[return_lane]=3;
-          for(int b=0;b<4;b++) begin
-            byte_address=commands[c].address+64'(w)*4+64'(b);value=0;
-            if(commands[c].mrr) begin
-              if(w<4 && b%2==0) value=commands[c].mr_address==43 ? mr43_i : {3'b0,mr4_i};
-              else value=8'hda;
-            end else value=stored_byte(byte_address);
-            if(profile_i.read_link && !commands[c].mrr) begin
-              int beat_in_group,group_index,slice_index;
-              beat_in_group=(w%8)*2+b/2;group_index=w/8;slice_index=b%2;
-              if(beat_in_group>=7) return_o.link_parity[return_lane][b]=read_checks[group_index][slice_index][beat_in_group-7];
-              if(group_index==read_fault_group && slice_index==read_fault_slice) begin
-                value^=read_fault_mask[beat_in_group*8+:8];
-                if(beat_in_group>=7) return_o.link_parity[return_lane][b]^=read_fault_mask[128+beat_in_group-7];
-              end
+      end
+    end
+    // A rounded CK snapshot can straddle two interleaved split bursts.
+    // Select the oldest DFI word, rather than returning all words belonging
+    // to the first command before looking at the next command.
+    for(int ordinal=0;ordinal<ratio;ordinal++) begin
+      selected_command=-1;selected_word=0;first_enable=32'h7fffffff;
+      for(int c=0;c<command_count;c++) begin
+        if(!commands[c].write_access) begin
+          for(int w=0;w<(commands[c].bl32 ? 16 : 8);w++) begin
+            candidate_enable=commands[c].at_ck*ratio+int'(profile_i.dfi_wck_trddata_en)
+              +w+(ratio==4 && commands[c].bl32 && w>=8 ? 8 : 0);
+            if(!commands[c].returned[w] && candidate_enable<first_enable) begin
+              selected_command=c;selected_word=w;first_enable=candidate_enable;
             end
-            return_o.data[return_lane][b*8+:8]=value;
           end
         end
+      end
+      if(selected_command<0) break;
+      if(ck<read_ready_ck(commands[selected_command].at_ck,commands[selected_command].bl32,selected_word)) break;
+      assert(ck*ratio<=first_enable+int'(profile_i.dfi_wck_tphy_rdlat))
+        else $fatal(1,"fixture missed read deadline");
+      return_lane=(read_pointer+emitted)%ratio;emitted++;
+      commands[selected_command].returned[selected_word]=1;
+      return_o.valid[return_lane]=3;
+      read_checks=0;read_group_data=0;
+      if(profile_i.read_link && !commands[selected_command].mrr) begin
+        for(int slice_index=0;slice_index<2;slice_index++) begin
+          for(int beat=0;beat<16;beat++)
+            read_group_data[beat*8+:8]=stored_byte(commands[selected_command].address
+              +(64'(selected_word)/64'd8)*32+64'(beat)*2+64'(slice_index));
+          read_checks[slice_index]=fixture_read_checks(read_group_data);
+        end
+      end
+      for(int b=0;b<4;b++) begin
+        byte_address=commands[selected_command].address+64'(selected_word)*4+64'(b);value=0;
+        if(commands[selected_command].mrr) begin
+          if(selected_word<4 && b%2==0) value=commands[selected_command].mr_address==43 ? mr43_i : {3'b0,mr4_i};
+          else value=8'hda;
+        end else value=stored_byte(byte_address);
+        if(profile_i.read_link && !commands[selected_command].mrr) begin
+          int beat_in_group,group_index,slice_index;
+          beat_in_group=(selected_word%8)*2+b/2;group_index=selected_word/8;slice_index=b%2;
+          if(beat_in_group>=7) return_o.link_parity[return_lane][b]=read_checks[slice_index][beat_in_group-7];
+          if(group_index==read_fault_group && slice_index==read_fault_slice) begin
+            value^=read_fault_mask[beat_in_group*8+:8];
+            if(beat_in_group>=7) return_o.link_parity[return_lane][b]^=read_fault_mask[128+beat_in_group-7];
+          end
+        end
+        return_o.data[return_lane][b*8+:8]=value;
       end
     end
     read_pointer=(read_pointer+emitted)%ratio;
@@ -162,10 +178,11 @@ module lpddr5_mc_channel_memory #(
       last_data=commands[c].at_ck*int'(profile_i.ratio)+span+
         (commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrlat)+int'(profile_i.dfi_wck_tphy_wrdata) : 0);
       if(!commands[c].write_access)
-        last_data=read_ready_ck(commands[c],commands[c].bl32 ? 15 : 7)*int'(profile_i.ratio);
+        last_data=read_ready_ck(commands[c].at_ck,commands[c].bl32,commands[c].bl32 ? 15 : 7)*int'(profile_i.ratio);
       last_cs=commands[c].at_ck*int'(profile_i.ratio)+span+
         (commands[c].write_access ? int'(profile_i.dfi_wck_tphy_wrcslat) : int'(profile_i.dfi_wck_tphy_rdcslat));
-      if(ck*int'(profile_i.ratio)<=last_data || ck*int'(profile_i.ratio)<=last_cs) begin
+      if(ck*int'(profile_i.ratio)<=last_data || ck*int'(profile_i.ratio)<=last_cs
+          || (!commands[c].write_access && commands[c].returned!=(commands[c].bl32 ? 16'hffff : 16'h00ff))) begin
         commands[retained]=commands[c];retained++;
       end
     end

@@ -5,7 +5,7 @@ must also wait for its two device beats and the declared deserializer delay.
 All lanes are sampled at CK, with DFI's independent per-slice word rotation.
 """
 
-from collections import deque
+import heapq
 
 from contracts.waveform_oracle import ROWS
 
@@ -20,7 +20,7 @@ class ReturnTiming:
         self.half_ck = 2 * self.ratio
         self.rl = ROWS[self.ratio, profile["read_link"]][1]
         self.rl += int(profile["read_dbi"]) * (1 if self.ratio == 4 else 2)
-        self.pending = [deque(), deque()]
+        self.pending = [[], []]
         self.pointer = [0, 0]
         self.serial = self.words = 0
         self.last_ck = -1
@@ -40,16 +40,21 @@ class ReturnTiming:
                 enable = ck * self.ratio + self.p["dfi_wck"]["trddata_en"] + word + split // 2
                 deadline = (enable + self.p["dfi_wck"]["tphy_rdlat"]) // self.ratio
                 for pending in self.pending:
-                    pending.append((self.serial, word, earliest, deadline))
+                    # Split halves may interleave with the next command.
+                    # Rounded availability alone cannot order words sharing CK.
+                    heapq.heappush(pending, (enable, self.serial, word, earliest, deadline))
         for byte_slice in range(2):
             count = 0
             for ordinal in range(self.ratio):
                 lane = (self.pointer[byte_slice] + ordinal) % self.ratio
                 if not (valid >> (lane * 2 + byte_slice) & 1):
                     continue
-                require(count == ordinal and bool(self.pending[byte_slice]), "returned word hole/identity")
+                require(
+                    count == ordinal and bool(self.pending[byte_slice]),
+                    "returned word hole/identity",
+                )
                 count += 1
-                serial, word, earliest, deadline = self.pending[byte_slice].popleft()
+                _, serial, word, earliest, deadline = heapq.heappop(self.pending[byte_slice])
                 require(
                     earliest <= ck <= deadline,
                     f"physical read return command{serial} word{word} slice{byte_slice} CK{ck} "
@@ -58,11 +63,15 @@ class ReturnTiming:
                 self.words += 1
             self.pointer[byte_slice] = (self.pointer[byte_slice] + count) % self.ratio
             require(
-                not self.pending[byte_slice] or ck < self.pending[byte_slice][0][3],
+                not self.pending[byte_slice] or ck < self.pending[byte_slice][0][4],
                 "missing returned slice at physical/DFI deadline",
             )
         require(valid >> (self.ratio * 2) == 0, "returned upper lane in ratio two")
 
     def finish(self):
         require(not any(self.pending), "missing physical read return tail")
-        return {"commands": self.serial, "returned_slices": self.words, "last_ck": self.last_ck}
+        return {
+            "commands": self.serial,
+            "returned_slices": self.words,
+            "last_ck": self.last_ck,
+        }

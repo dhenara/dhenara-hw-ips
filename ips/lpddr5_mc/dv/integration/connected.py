@@ -187,6 +187,9 @@ def check(
                             )
                         )
                 completion[c].received[serial] = {}
+            if (b is not None and not b.write) or (operation is not None and operation.kind == "MRR"):
+                for lane in range(2):
+                    completion[c].pending[lane] = deque(sorted(completion[c].pending[lane], key=lambda w: w.enable))
             raw_write, raw_read, raw_return = (number(e[k]) for k in ("write", "read", "return"))
             return_timing[c].sample(ck, e["cs"], e["ca"], (raw_return >> 32) & 255)
             write_data, write_mask = raw_write >> 48, (raw_write >> 32) & 65535

@@ -62,7 +62,7 @@ module lpddr5_mc_scheduler #(
   logic [15:0] batch_target;
   int expiry_bank,idle_bank,close_bank,write_occupancy;
   logic [1023:0] dq_calendar_q;
-  logic pick_q;
+  logic pick_q, pick_live;
   int pick_index_q;
   lpddr5_mc_tag_t pick_tag_q;
   logic [15:0] pick_generation_q;
@@ -76,7 +76,6 @@ module lpddr5_mc_scheduler #(
   logic selected, legal, free_found, hazard, hit, urgent, best_urgent;
   logic masked, opposite_eligible;
   logic candidate_eligible, candidate_cap, candidate_better;
-  logic new_group, best_new_group;
   logic policy_waiting, capped_miss_waiting;
   logic miss_lock_q,miss_locked,locked_candidate,best_locked;
   int miss_index_q;
@@ -159,7 +158,20 @@ module lpddr5_mc_scheduler #(
     endcase
   endfunction
 
+  function automatic logic selection_legal(input int index_value, input next_t operation);
+    // An ACCESS may mature between CK/2 or CK/4 selection opportunities.
+    // Keep the immediate opportunity and also admit one predicted at the
+    // next selection boundary. Actual issue rechecks all fences every CK.
+    return command_legal(index_value,operation,1)
+      || (operation==OP_ACCESS && config_i.service_div>1
+        && command_legal(index_value,operation,int'(config_i.service_div)));
+  endfunction
+
   assign pair_pending_o=pair_q!=PAIR_NONE;
+  assign pick_live=entries_q[pick_index_q].valid && entries_q[pick_index_q].granule.tag==pick_tag_q
+    && entries_q[pick_index_q].granule.generation==pick_generation_q
+    && required_operation(entries_q[pick_index_q].granule)==pick_operation_q
+    && !overlap_blocked(pick_index_q);
   assign miss_locked=miss_lock_q && entries_q[miss_index_q].valid
     && entries_q[miss_index_q].granule.tag==miss_tag_q && entries_q[miss_index_q].granule.generation==miss_generation_q;
   assign rows_closed_o=open_q==0;
@@ -202,7 +214,6 @@ module lpddr5_mc_scheduler #(
     bank_index=0; rank_index=0; group_index=0; maintenance_bank=-1;
     hazard=0; hit=0; urgent=0; masked=0; opposite_eligible=0;
     candidate_eligible=0; candidate_cap=0; candidate_better=0; live_operation=OP_ACT;
-    new_group=0;best_new_group=0;
     bytes_used=0; cap=0; final_pin_ck=0;
     for (int i=0; i<TOTAL; i++) begin
       if (!entries_q[i].valid && (i/QUEUE_DEPTH)==int'(request_i.is_write) && !free_found) begin
@@ -245,13 +256,11 @@ module lpddr5_mc_scheduler #(
               <=34'(config_i.read_cap)+34'(config_i.write_cap)) candidate_cap=1;
         end
         urgent=entries_q[i].age>=(entries_q[i].granule.is_write ? config_i.write_urgent_age : config_i.read_urgent_age);
-        candidate_eligible=!hazard && command_legal(i,live_operation,1) && candidate_cap
+        candidate_eligible=!hazard && selection_legal(i,live_operation) && candidate_cap
           && (urgent || ((entries_q[i].granule.is_write ? config_i.write_weight!=0 : config_i.read_weight!=0)
             && (miss_locked ? i==miss_index_q : ((!policy_waiting || capped_miss_waiting || entries_q[i].granule.is_write==policy_direction)
               && (!capped_miss_waiting || live_operation!=OP_ACCESS)))));
         hit=live_operation==OP_ACCESS; preferred=entries_q[i].granule.is_write==policy_direction;
-        new_group=live_operation==OP_ACT
-          && (open_q & (32'hf << (4*(bank_number(entries_q[i].granule)/4))))==0;
         capped_miss=!hit && config_i.hit_cap!=0 && hit_run_q>=config_i.hit_cap;
         locked_candidate=miss_locked && i==miss_index_q;
         candidate_better=!selected;
@@ -264,10 +273,6 @@ module lpddr5_mc_scheduler #(
           else if(preferred!=best_preferred) candidate_better=preferred;
           else if(entries_q[i].granule.qos_class!=best_qos) candidate_better=entries_q[i].granule.qos_class>best_qos;
           else if(hit!=(selected_operation==OP_ACCESS)) candidate_better=hit;
-          // Spread otherwise equal nonurgent misses across bank groups.
-          // Opening only one group after closure can strand the next CK/4
-          // access slot on tCCD even while another group's DQ slot is free.
-          else if(new_group!=best_new_group) candidate_better=new_group;
           else candidate_better=entries_q[i].order_number<best_order;
         end
         if(candidate_eligible && candidate_better) begin
@@ -276,7 +281,6 @@ module lpddr5_mc_scheduler #(
           best_qos=entries_q[i].granule.qos_class; best_preferred=preferred;
           best_capped_miss=capped_miss;
           best_locked=locked_candidate;
-          best_new_group=new_group;
         end
       end
     end
@@ -335,9 +339,7 @@ module lpddr5_mc_scheduler #(
       do_expiry_pre=1;close_bank=idle_bank;
       ca_o.cs=2'b1<<(idle_bank/16);ca_o.address=ca_maintenance(1,0,0,4'(idle_bank));
     end else if (pick_q && command_enable_i && issue_enable_i && !fault_o) begin
-      legal=entries_q[pick_index_q].valid && entries_q[pick_index_q].granule.tag==pick_tag_q
-        && entries_q[pick_index_q].granule.generation==pick_generation_q
-        && required_operation(entries_q[pick_index_q].granule)==pick_operation_q
+      legal=pick_live
         && command_legal(pick_index_q,pick_operation_q,(pick_operation_q==OP_ACCESS && wck_disabled_i) ? 1 : 0);
       if (legal && pick_operation_q==OP_ACCESS && config_i.caps_enable) begin
         bytes_used=launch_o.is_write ? write_used : read_used;
@@ -420,10 +422,19 @@ module lpddr5_mc_scheduler #(
         order_q<=order_q+1;
         if (accepted_o!='1) accepted_o<=accepted_o+1;
       end
-      pick_q<=0;
-      if (phase_q==0 && selected && pair_q==PAIR_NONE && !maintenance_valid_i && !close_i && expiry_bank<0 && issue_enable_i) begin
-        pick_q<=1; pick_index_q<=selected_index; pick_tag_q<=entries_q[selected_index].granule.tag;
-        pick_generation_q<=entries_q[selected_index].granule.generation; pick_operation_q<=selected_operation;
+      // Retain only the already selected ACCESS between selection enables.
+      // Re-arbitrate on the normal grid; maintenance, changed identity/page,
+      // disabled issue and accepted pairs invalidate the pending proposal.
+      pick_q<=pick_q && pick_operation_q==OP_ACCESS && pick_live
+        && command_enable_i && issue_enable_i && !fault_o && pair_q==PAIR_NONE
+        && !maintenance_valid_i && !close_i && expiry_bank<0;
+      if (phase_q==0) begin
+        pick_q<=0;
+        if (selected && pair_q==PAIR_NONE && !maintenance_valid_i && !close_i
+            && expiry_bank<0 && issue_enable_i && command_enable_i && !fault_o) begin
+          pick_q<=1; pick_index_q<=selected_index; pick_tag_q<=entries_q[selected_index].granule.tag;
+          pick_generation_q<=entries_q[selected_index].granule.generation; pick_operation_q<=selected_operation;
+        end
       end
       if (pick_q && !(do_act1 || do_pre || do_access || do_sync) && pair_q==PAIR_NONE)
         if (replayed_o!='1) replayed_o<=replayed_o+1;

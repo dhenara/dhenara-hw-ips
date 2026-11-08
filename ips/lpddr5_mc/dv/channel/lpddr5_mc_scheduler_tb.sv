@@ -324,19 +324,20 @@ module lpddr5_mc_scheduler_tb;
     end
     assert(completed==1 && drained && !fault) else $fatal(1,"zero weighted share lost urgent escape");
   endtask
-  // After rank closure, consecutive misses in one BG can consume the first
-  // ACT slots even though another group could overlap its shorter tCCD.
-  // Check actual startup payload cadence at every CK/4 selection phase.
-  task automatic group_startup_case(input int phase_offset);
+  // A synchronized access finishes one CK off the selection grid. Keep
+  // the next same-BG access pending until tCCD matures, rather than losing
+  // the CK/4 opportunity. Urgent admission order must remain unchanged.
+  task automatic group_startup_case(input int divisor_value,write_value,phase_offset);
     int completed,first_ck,second_ck;
     logic [2:0] seen;
     bit sync_now;
     policy_setup();
-    cfg.service_div=4;wck_write=1;
+    cfg.service_div=3'(divisor_value);cfg.read_urgent_age=0;cfg.write_urgent_age=0;wck_write=1'(write_value);
     for(int n=0;n<3;n++) begin
-      request='0;request.tag=64'(n)+1;request.generation=1;request.is_write=1;
+      request='0;request.tag=64'(n)+1;request.generation=1;request.is_write=1'(write_value);
       request.is_64_bytes=1;request.byte_enable='1;request.row=7;
-      // Older bank2/bank3 misses share a BG; bank4 can run in parallel.
+      // The two oldest urgent misses share a BG. A younger bank4 request
+      // must not displace them just to improve the startup cadence.
       request.bank_group=2'((n+2)/4);request.bank=2'((n+2)%4);
       request_valid=1;#1;assert(request_ready) else $fatal(1,"BG startup admission");tick();
     end
@@ -347,6 +348,7 @@ module lpddr5_mc_scheduler_tb;
       sync_now=sync;
       if(launch_valid) begin
         assert(launch.tag>=1 && launch.tag<=3 && !seen[int'(launch.tag)-1]) else $fatal(1,"BG startup identity");
+        assert(launch.tag==64'(completed)+1) else $fatal(1,"urgent startup order");
         seen[int'(launch.tag)-1]=1;
         if(completed==0) first_ck=cycle;
         if(completed==1) second_ck=cycle;
@@ -358,8 +360,8 @@ module lpddr5_mc_scheduler_tb;
       if(completed==3) break;
     end
     assert(completed==3 && seen=='1 && drained) else $fatal(1,"BG startup progress");
-    assert(second_ck-first_ck<=8) else $fatal(1,"BG startup missed CK/4 slot phase=%0d gap=%0d",phase_offset,second_ck-first_ck);
-    $display("BG_STARTUP_PASS phase=%0d gap=%0d",phase_offset,second_ck-first_ck);
+    assert(second_ck-first_ck==8) else $fatal(1,"BG startup cadence div=%0d write=%0d phase=%0d gap=%0d",divisor_value,write_value,phase_offset,second_ck-first_ck);
+    $display("PENDING_ACCESS_STARTUP_PASS div=%0d write=%0d phase=%0d gap=%0d",divisor_value,write_value,phase_offset,second_ck-first_ck);
   endtask
   // A rank-wide PRE also targets a closed bank still recovering from PREpb.
   // Produce the first PRE through ordinary idle policy, then request closure
@@ -408,7 +410,10 @@ module lpddr5_mc_scheduler_tb;
   endtask
   initial begin
     cfg='0; request='0;
-    for(int phase_offset=0;phase_offset<4;phase_offset++) group_startup_case(phase_offset);
+    for(int divisor_value=1;divisor_value<=4;divisor_value*=2)
+      for(int write_value=0;write_value<2;write_value++)
+        for(int phase_offset=0;phase_offset<divisor_value;phase_offset++)
+          group_startup_case(divisor_value,write_value,phase_offset);
     for(int mode_value=0;mode_value<3;mode_value++) precharge_recovery_case(mode_value);
     for (int div=1;div<=4;div*=2) begin
       run_case(div,0,0,0,0); run_case(div,1,0,0,0);

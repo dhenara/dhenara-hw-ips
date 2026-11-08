@@ -32,6 +32,11 @@ def check(path: Path, physical: dict, *, raw: Path | None = None, profile: dict 
         "cap traffic shape/eligibility inputs",
     )
     eligibility = Eligibility(raw, profile) if timed else None
+    if timed:
+        require(
+            (header["read_weight"], header["write_weight"], header["write_batch_min"]) == (1, 4, 2),
+            "concurrent cap batching configuration",
+        )
     models = [Caps(512, (64, 64), header["mode"] == 2) for _ in range(2)]
     live, seen, totals, groups, windows = {}, set(), Counter(), Counter(), Counter()
     borrowed, last_ck, ended = [0, 0], -1, False
@@ -96,6 +101,7 @@ def check(path: Path, physical: dict, *, raw: Path | None = None, profile: dict 
         "granule_bytes": granule,
         "mixed": bool(mixed),
         "opposite_live_admissions_by_channel": concurrent,
+        "batching": ({k: header[k] for k in ("read_weight", "write_weight", "write_batch_min")} if timed else None),
         "issues": len(seen),
         "read_bytes": totals[0],
         "write_bytes": totals[1],

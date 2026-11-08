@@ -52,6 +52,7 @@ module datapath_tb #(
   byte unsigned expected[longint unsigned];
   int b_count[PORTS],r_count[PORTS],checks=0,stage=0;
   int cap_mode=0,cap_stream,cap_ck=0,cap_granule_bytes=64,cap_mixed=0,zero_cap_direction=-1;
+  bit [PORTS-1:0] cap_first_write=0,cap_first_read=0;
   string cap_path;
   int zero_admissions[CHANNELS];
   int fairness_mode=-1,fairness_stream,fairness_rows=0,fairness_age=32,fairness_gap=64;
@@ -154,11 +155,25 @@ module datapath_tb #(
         @(posedge clk);
         if(cap_stream!=0 && !finish_observations) begin
           check(scheduler_ck==64'(cap_ck),"independent cap CK origin");
+          if(accepted_request || issued_request) begin
+            check(dut.channels[c].channel.backend.scheduler.config_i.caps_enable
+              && dut.channels[c].channel.backend.scheduler.config_i.work_conserving==(cap_mode==2)
+              && dut.channels[c].channel.backend.scheduler.config_i.bw_window==512
+              && dut.channels[c].channel.backend.scheduler.config_i.read_cap==(zero_cap_direction==0 ? 0 : 64)
+              && dut.channels[c].channel.backend.scheduler.config_i.write_cap==(zero_cap_direction==1 ? 0 : 64),
+              "observed active byte-cap configuration");
+            if(cap_mixed==2)
+              check(dut.channels[c].channel.backend.scheduler.config_i.write_weight==4
+                && dut.channels[c].channel.backend.scheduler.config_i.read_weight==1
+                && dut.channels[c].channel.backend.scheduler.config_i.write_batch_min==2,
+                "observed concurrent cap batching");
+          end
           if(accepted_request)
             $fdisplay(cap_stream,"{\"kind\":\"admit\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d,\"rank\":%0d,\"bank\":%0d,\"row\":%0d,\"column\":%0d}",
               cap_ck,c,request_value.tag,request_value.generation,request_value.is_write,request_value.is_64_bytes ? 64 : 32,request_value.port_index,request_value.qos_class,
               request_value.rank_index,{request_value.bank_group,request_value.bank},request_value.row,request_value.column);
           if(accepted_request && zero_cap_direction==int'(request_value.is_write)) zero_admissions[c]++;
+          if(issued_request && launch_value.is_write) cap_first_write[launch_value.port_index]=1;
           if(issued_request)
             $fdisplay(cap_stream,"{\"kind\":\"issue\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d,\"rank\":%0d,\"bank\":%0d,\"row\":%0d,\"column\":%0d}",
               cap_ck,c,launch_value.tag,launch_value.generation,launch_value.is_write,launch_value.is_64_bytes ? 64 : 32,launch_value.port_index,launch_value.qos_class,
@@ -173,13 +188,20 @@ module datapath_tb #(
   task automatic concurrent_cap_source(input int p,input bit write_direction);
     for(int n=0;n<16;n++) begin
       longint unsigned at;
-      at=64'd32768+64'(int'((n*2+p)*128+((n/4+p)%2)*64+(cap_granule_bytes==32 ? (n%2)*32 : 0)));
+      at=64'd65536+64'(int'(n*256+p*128+((n/4+p)%2)*64+(cap_granule_bytes==32 ? (n%2)*32 : 0)));
       if(write_direction) begin
         send_aw(p,16'(64+n),at,cap_granule_bytes/BYTES);send_w(p,at,cap_granule_bytes/BYTES);
-        wait_b(p,16'(64+n),n+1);
+        // Admit the first conflicting read after the first real write, then
+        // place a second row-hit write behind it while PRE is timing-blocked.
+        if(n==0) wait(cap_first_read[p]);
+        if(n%2==1) wait_b(p,16'(64+n),n+1);
       end else begin
-        at+=64'd32768;
+        if(n==0) wait(cap_first_write[p]);
+        // The first read conflicts in the write bank. Later reads use another
+        // bank so the same run also observes ready opposite work at issue.
+        at+=64'd65536+(n==0 ? 0 : 64'd16384);
         send_ar(p,16'(96+n),at,cap_granule_bytes/BYTES);
+        if(n==0) cap_first_read[p]=1;
         read_result(p,16'(96+n),at,cap_granule_bytes/BYTES);
       end
     end
@@ -518,7 +540,7 @@ module datapath_tb #(
         $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":3,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"zero_direction\":%0d,\"read_cap\":%0d,\"write_cap\":%0d,\"granule_bytes\":64}",
           cap_mode,CHANNELS,zero_cap_direction,zero_cap_direction==0 ? 0 : 64,zero_cap_direction==1 ? 0 : 64);
       else
-        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":%0d,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d}",cap_mixed==2 ? 4 : 2,cap_mode,CHANNELS,cap_granule_bytes,cap_mixed);
+        $fdisplay(cap_stream,"{\"kind\":\"header\",\"version\":%0d,\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64,\"granule_bytes\":%0d,\"mixed\":%0d,\"read_weight\":1,\"write_weight\":%0d,\"write_batch_min\":%0d}",cap_mixed==2 ? 4 : 2,cap_mode,CHANNELS,cap_granule_bytes,cap_mixed,cap_mixed==2 ? 4 : 1,cap_mixed==2 ? 2 : 0);
     end
     host_cfg='0;cfg='0;mailbox_value='0;management='0;aw='0;ar='0;wd='0;train_token=0;command='0;target_fsp=0;target_frequency=0;phy_refresh_done=0;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
@@ -539,6 +561,9 @@ module datapath_tb #(
         cfg[c].bw_window=512;cfg[c].read_cap=64;cfg[c].write_cap=64;
         if(zero_cap_direction==0) cfg[c].read_cap=0;
         if(zero_cap_direction==1) cfg[c].write_cap=0;
+        if(cap_mixed==2) begin
+          cfg[c].read_weight=1;cfg[c].write_weight=4;cfg[c].write_batch_min=2;
+        end
       end
     end
     host_cfg.granule64=GRANULE_BYTES==64;host_cfg.inline_ecc=INTEGRITY_MODE==1;host_cfg.config_epoch=1;

@@ -123,6 +123,28 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   task automatic send_command(input lpddr5_mc_channel_command_t value);
     assert(command_ready) else $fatal(1,"command not ready");command=value;command_valid=1;tick();command_valid=0;
   endtask
+  // QUIET continues maintenance. ENABLE can be declined on an urgent CK;
+  // observe that disposition before issuing any traffic and retry boundedly.
+  task automatic enable_after_maintenance;
+    int declined;
+    logic urgent_before;
+    declined=0;
+    for(int c=0;c<2000;c++) begin
+      assert(status_value.state==1 && status_value.config_valid && status_value.memory_trusted && !status_value.fault)
+        else $fatal(1,"enable retry requires trusted configured QUIET");
+      #1;urgent_before=dut.maintenance_urgent;
+      send_command(CH_CMD_ENABLE);
+      if(status_value.state==2) begin
+        assert(!command_rejected) else $fatal(1,"RUN with rejected ENABLE");
+        $display("PASS enable after maintenance CK=%0d declines=%0d",cycles,declined);
+        step();return;
+      end
+      assert(command_rejected && urgent_before && status_value.state==1 && !request_ready)
+        else $fatal(1,"ENABLE decline without urgent maintenance or quiet admission fence");
+      declined++;step();
+    end
+    $fatal(1,"ENABLE remained declined for 2000 CK");
+  endtask
   task automatic wait_quiet;
     for(int c=0;c<2000;c++) begin step();if(status_value.state==1 && status_value.drained) return;end
     $fatal(1,"quiescence timeout backend=%0d pins=%0d integrity=%0d pages=%0d wck=%0d",dut.backend_drained,dut.pin_drained,dut.integrity_drained,dut.pages_closed,dut.wck_disabled);
@@ -441,7 +463,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       row_churn();$display("stress row churn finished CK%0d REF=%0d RFM=%0d",cycles,refresh_count,rfm_count);assert(rfm_count>0) else $fatal(1,"mandatory RFM not exercised");
       send_command(CH_CMD_QUIESCE);wait_quiet();mr4=13;
       repeat(5000) step();$display("stress hot13 finished CK%0d REF=%0d MR4=%0d",cycles,refresh_count,mr4_count);assert(dut.thermal==13) else $fatal(1,"hot MR4 not observed");
-      send_command(CH_CMD_ENABLE);step();stream(1,8);stream(0,8);
+      enable_after_maintenance();stream(1,8);stream(0,8);
       send_command(CH_CMD_QUIESCE);wait_quiet();mr4=15;
       repeat(5000) step();assert(dut.thermal==15) else $fatal(1,"hottest MR4 not observed");
       $display("PASS connected stress REFpb=%0d: paired RAA/RFM bound, hot thermal refresh/derating and MR4 service",PER_BANK_REFRESH);

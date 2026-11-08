@@ -497,6 +497,12 @@ def main() -> None:
                     build / "fairness-mutant.jsonl",
                     result["external_observations"],
                 )
+            if not args.benchmark_direction:
+                from workload_costs import measure
+
+                result["workload_costs"] = measure(report.with_name("observations.jsonl"))
+                if "recovered_external_observations" in result:
+                    result["recovered_workload_costs"] = measure(report.with_name("recovery-observations.jsonl"))
         after = {
             str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [REPO / p for p in manifest]
         }

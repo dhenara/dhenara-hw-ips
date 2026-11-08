@@ -25,6 +25,13 @@ python3 ips/lpddr5_mc/dv/integration/check.py --family controller --runtime-rese
   --report "$PWD/ips/lpddr5_mc/evidence/runtime-reset/report.json" --build-name runtime-reset
 ```
 
+`--runtime-reset-matrix` implies `--runtime-reset` and selects ten recovery cases: two successive common resets; reset of either AXI source with the other source retaining an accepted write awaiting W and a read; common reset with CK or APB stopped; each AXI reset with that source clock stopped; and common reset with either surviving AXI clock stopped. Each case requires SLVERR settlement of surviving obligations, rejection of stale destructive confirmation, a fresh boot/profile epoch and renewed write/read service. The reset source's old read ledger is explicitly discarded by its bus reset. The final clean traffic segment is independently replayed; the intervening reset cases use fixture assertions and explicitly abort the memory fixture, so they do not establish memory preservation or independent pin verification through reset. A configured matrix command is not evidence that every case passed. Use a fresh report/build directory and allow for all ten boots:
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family controller --runtime-reset-matrix \
+  --report "$PWD/ips/lpddr5_mc/evidence/runtime-reset-matrix/report.json" --build-name runtime-reset-matrix
+```
+
 Example focused commands from the repository root:
 
 ```sh

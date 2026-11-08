@@ -62,6 +62,7 @@ def main() -> None:
     )
     parser.add_argument("--scenario", type=int, choices=range(4))
     parser.add_argument("--runtime-reset", action="store_true")
+    parser.add_argument("--runtime-reset-matrix", action="store_true")
     parser.add_argument("--power-policy", type=int, choices=(1, 2))
     parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
     parser.add_argument("--cap-mode", type=int, choices=(1, 2))
@@ -83,6 +84,8 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.runtime_reset_matrix:
+        args.runtime_reset = True
     configuration = {
         "PORTS": args.ports,
         "CHANNELS": args.channels,
@@ -206,6 +209,7 @@ def main() -> None:
         "benchmark_direction": args.benchmark_direction,
         "benchmark_smoke": args.benchmark_smoke,
         "runtime_reset": args.runtime_reset,
+        "runtime_reset_matrix": args.runtime_reset_matrix,
         "cap_mode": args.cap_mode,
         "cap_granule_bytes": args.cap_granule_bytes,
         "cap_traffic": args.cap_traffic,
@@ -273,6 +277,7 @@ def main() -> None:
                 else []
             ),
             *(["-GRUNTIME_RESET=1'b1"] if args.runtime_reset else []),
+            *(["-GRESET_MATRIX=1'b1"] if args.runtime_reset_matrix else []),
             *map(str, sources),
             "-j",
             "2",

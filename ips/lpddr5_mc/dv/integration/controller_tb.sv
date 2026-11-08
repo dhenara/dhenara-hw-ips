@@ -1,18 +1,19 @@
 module controller_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
   parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,
-  parameter bit BENCHMARK=0,RUNTIME_RESET=0
+  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
   import lpddr5_mc_apb_metadata_pkg::*;
   import lpddr5_mc_channel_pkg::*;
   localparam int BYTES=DATA_BITS/8;
-  logic clk=0,rst_n=0,enable;
-  always #0.625 clk<=~clk;
+  logic clk=0,rst_n=0,enable,run_ck=1,run_pclk=1;
+  logic [PORTS-1:0] run_axi='1;
+  always #0.625 if(run_ck) clk<=~clk;
   logic [PORTS-1:0] axi_clk=0,axi_rst_n=0,monitor_rst_n;
   for(genvar p=0;p<PORTS;p++) begin : clocks
-    always #(BENCHMARK ? 1.25 : 1.25+0.5*p) axi_clk[p]<=~axi_clk[p];
+    always #(BENCHMARK ? 1.25 : 1.25+0.5*p) if(run_axi[p]) axi_clk[p]<=~axi_clk[p];
     lpddr5_mc_reset_sync monitor_reset(.clk_i(axi_clk[p]),.arst_ni(axi_rst_n[p]),.rst_no(monitor_rst_n[p]));
   end
   logic settled,host_fault,irq,reset_request,external_fault=0;
@@ -25,7 +26,7 @@ module controller_tb #(
   lpddr5_mc_profile_t [2:0] qualified;
   lpddr5_mc_register_image_t staging_image;
   logic pclk=0,psel=0,penable=0,pready;
-  always #3.5 pclk<=~pclk;
+  always #3.5 if(run_pclk) pclk<=~pclk;
   lpddr5_mc_apb_request_t apb_request='0;
   lpddr5_mc_apb_response_t apb_response;
   logic [31:0] read_data;
@@ -356,5 +357,5 @@ module controller_tb #(
       stage,settled,host_fault,dut.coordinator.state_q,status_value[0].state,status_value[CHANNELS-1].state,reset_request,status_value[0].boot_epoch);
     $fflush();
   end
-  initial begin #(BENCHMARK ? 650000 : RUNTIME_RESET ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
+  initial begin #(BENCHMARK ? 650000 : RESET_MATRIX ? 600000 : RUNTIME_RESET ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
 endmodule

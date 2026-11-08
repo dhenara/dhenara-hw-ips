@@ -41,6 +41,7 @@ end
 task automatic fairness_source(input int p);
   for(int n=0;n<128;n++) begin
     longint unsigned at;
+    logic [15:0] source_id;
     // Limit each source to 32 live addresses, including both directions.
     // Thus each channel has at most 64 pending candidates for the D64 bound.
     while((fairness_mode==2 ? 2*n+2 : n+1)-b_count[p]-r_count[p]/(64/BYTES)>32) source_negative(p);
@@ -49,8 +50,11 @@ task automatic fairness_source(input int p);
     // Reads use a separate four-row set within the programmed 1-MiB region.
     // Slow row turnover creates queue pressure without forced internal stalls.
     if(fairness_rows!=0) at=64'd131072+64'(int'((n%4)*65536+(n/4)*128+p*8192+((n/4+p)%2)*64));
-    if(fairness_mode!=0) begin send_aw(p,16'(64+n%64),at,64/BYTES);send_w(p,at,64/BYTES);end
-    if(fairness_mode!=1) send_ar(p,16'(96+n%64),at+(fairness_rows!=0 ? 64'd524288 : 64'd65536),64/BYTES);
+    // Keep QoS independent of row in the churn case. A class per 32-request
+    // block lets later high-QoS work compete with older urgent low-QoS work.
+    source_id=fairness_rows!=0 ? 16'((n%32)*4+n/32) : 16'(n%64);
+    if(fairness_mode!=0) begin send_aw(p,16'd64+source_id,at,64/BYTES);send_w(p,at,64/BYTES);end
+    if(fairness_mode!=1) send_ar(p,16'd96+source_id,at+(fairness_rows!=0 ? 64'd524288 : 64'd65536),64/BYTES);
   end
 endtask
 

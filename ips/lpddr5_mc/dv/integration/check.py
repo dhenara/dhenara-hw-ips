@@ -259,7 +259,9 @@ def main() -> None:
             "--output-split-cfuncs",
             "500",
             "-MAKEFLAGS",
-            "OPT_FAST=-O2 OPT_SLOW=-O1" if args.benchmark_direction else "OPT_FAST=-O0 OPT_SLOW=-O0",
+            "OPT_FAST=-O2 OPT_SLOW=-O1"
+            if args.benchmark_direction or args.runtime_reset
+            else "OPT_FAST=-O0 OPT_SLOW=-O0",
             "--top-module",
             top,
             "--Mdir",

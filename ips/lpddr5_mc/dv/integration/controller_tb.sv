@@ -114,6 +114,16 @@ module controller_tb #(
   endtask
   task automatic source_negative(input int p);check(p>=0 && p<PORTS,"source port");if(p==0) @(negedge axi_clk[0]);else @(negedge axi_clk[PORTS-1]);endtask
   task automatic source_positive(input int p);check(p>=0 && p<PORTS,"source port");if(p==0) @(posedge axi_clk[0]);else @(posedge axi_clk[PORTS-1]);endtask
+  task automatic drive_bready(input logic ready_value);
+    // A stopped source clock changes its phase relative to the other port.
+    // Drive each READY on its own falling edge so endpoint and concurrent
+    // assertions sample the same value at the following rising edge.
+    for(int p=0;p<PORTS;p++) begin
+      source_negative(p);bready[p]=ready_value;
+      if(RUNTIME_RESET) $display("RUNTIME_RESET_BREADY ns=%0.3f port=%0d ready=%b clocks=%b valid=%b payload=%h",
+        $realtime,p,bready,axi_clk,bvalid,b);
+    end
+  endtask
   function automatic lpddr5_mc_axi_address_t address(input logic [15:0] id,input int at,beats);
     lpddr5_mc_axi_address_t value;
     value='0;value.id=16'(id);value.address=40'(at);value.len=8'(beats-1);value.size=3'($clog2(BYTES));value.burst=1;return value;
@@ -315,14 +325,14 @@ module controller_tb #(
     // Both source obligations are accepted before ownership is lost. AW has
     // no W yet; AR is still crossing CDC. Neither may disappear during reset.
     // Different low-12-bit granules avoid the intentional 4-KiB lease hash alias.
-    bready=0;before_b=b_count[0];send_aw(0,10,16384,64/BYTES);send_ar(PORTS-1,11,20544,64/BYTES);
+    drive_bready(0);before_b=b_count[0];send_aw(0,10,16384,64/BYTES);send_ar(PORTS-1,11,20544,64/BYTES);
     @(negedge clk);external_fault=1;repeat(8) @(negedge clk);
     check(host_fault && !enable && !settled,"ownership loss must fence and retain accepted work");
     write_csr(INDEX_CONTROL,8);
     repeat(20) begin @(negedge clk);check(!reset_request,"destructive reset before complete host settlement");end
     send_w(0,16384,64/BYTES);
     read_result(PORTS-1,11,20544,64/BYTES,2);
-    bready='1;wait_b(0,10,before_b+1,2);wait_settled();
+    drive_bready(1);wait_b(0,10,before_b+1,2);wait_settled();
     for(int n=0;n<100;n++) begin @(negedge clk);if(reset_request) break;end
     check(reset_request,"settled ownership loss must request destructive reset");
     repeat(8) begin @(negedge clk);check(reset_request && status_value[0].boot_epoch==0,"stale high reset confirmation accepted");end

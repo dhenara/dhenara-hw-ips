@@ -489,7 +489,7 @@ def main() -> None:
 
                 result["fairness_observations"] = qualify_fairness(
                     report.with_name("fairness-observations.jsonl"),
-                    report.with_name("fairness-mutant.jsonl"),
+                    build / "fairness-mutant.jsonl",
                     result["external_observations"],
                 )
         after = {

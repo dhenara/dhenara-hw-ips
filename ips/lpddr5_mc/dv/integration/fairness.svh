@@ -53,8 +53,9 @@ task automatic fairness_case;
     fairness_source(0);
     fairness_source(1);
     begin
-      // A real stalled source response exhausts reserved storage in the
-      // single-direction cases. No internal completion/ready is forced.
+      // Hold a real source response while the producer runs. The trace
+      // records whether physical response capacity becomes unavailable;
+      // no internal completion/ready is forced.
       if(fairness_mode==0) wait(|rvalid);
       else if(fairness_mode==1) wait(|bvalid);
       if(fairness_mode!=2) repeat(600) @(negedge clk);

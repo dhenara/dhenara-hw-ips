@@ -36,6 +36,14 @@ class EvidenceIsolationTests(unittest.TestCase):
             self.assertEqual(trace.read_text(), "earlier evidence\n")
             self.assertFalse((root / "observations.jsonl").exists())
 
+    def test_fairness_trace_is_reserved_before_compilation(self):
+        with tempfile.TemporaryDirectory(dir=os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) as temporary:
+            root = Path(temporary)
+            paths = reserve_observations(root / "report.json", "datapath", False, False, True)
+            self.assertIn(root / "fairness-observations.jsonl", paths)
+            with self.assertRaisesRegex(FileExistsError, "fresh report directory"):
+                reserve_observations(root / "other.json", "datapath", False, False, True)
+
     def test_concurrent_writers_have_one_owner(self):
         with tempfile.TemporaryDirectory(dir=os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) as temporary:
             root = Path(temporary)

@@ -109,6 +109,7 @@ def plan(evidence: Path, name: str, suite: str) -> list[dict]:
             ("wrapper-max", "lint", ["--ranks", "2", "--data-bits", "256", "--depth", "64"]),
             ("power-down", "controller", ["--power-policy", "1"]),
             ("self-refresh", "controller", ["--power-policy", "2"]),
+            ("inline-lifecycle", "controller", ["--inline-lifecycle"]),
             (
                 "ratio2-ck4",
                 "datapath",

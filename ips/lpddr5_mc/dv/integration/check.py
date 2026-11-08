@@ -78,6 +78,7 @@ def main() -> None:
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--axi-stress-seed", type=int)
     parser.add_argument("--axi-overlap", action="store_true")
+    parser.add_argument("--inline-lifecycle", action="store_true")
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
     parser.add_argument("--address-bits", type=int, choices=range(32, 41), default=40)
     parser.add_argument("--granule-bytes", type=int, choices=(32, 64), default=64)
@@ -92,6 +93,16 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.inline_lifecycle and (
+        args.family != "controller"
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy
+        or args.benchmark_direction
+        or args.integrity_mode
+    ):
+        parser.error("inline lifecycle requires the default controller fixture")
     if args.axi_overlap and (
         args.family != "datapath"
         or args.ports != 2
@@ -312,7 +323,11 @@ def main() -> None:
             "500",
             "-MAKEFLAGS",
             "OPT_FAST=-O2 OPT_SLOW=-O1"
-            if args.benchmark_direction or args.runtime_reset or args.axi_stress_seed is not None or args.axi_overlap
+            if args.benchmark_direction
+            or args.runtime_reset
+            or args.axi_stress_seed is not None
+            or args.axi_overlap
+            or args.inline_lifecycle
             else "OPT_FAST=-O0 OPT_SLOW=-O0",
             "--top-module",
             top,
@@ -336,6 +351,7 @@ def main() -> None:
             ),
             *(["-GRUNTIME_RESET=1'b1"] if args.runtime_reset else []),
             *(["-GRESET_MATRIX=1'b1"] if args.runtime_reset_matrix else []),
+            *(["-GINLINE_LIFECYCLE=1'b1"] if args.inline_lifecycle else []),
             *map(str, sources),
             "-j",
             "2",
@@ -463,6 +479,15 @@ def main() -> None:
                 )
                 if not args.benchmark_smoke:
                     require_full_performance(result["benchmark_observations"])
+            elif args.inline_lifecycle:
+                from inline_lifecycle import check as check_inline_lifecycle
+
+                result["inline_lifecycle_observations"] = check_inline_lifecycle(
+                    trace_path,
+                    report.with_name("recovery-observations.jsonl"),
+                    report.with_name(f"{report.stem}-2.log"),
+                    profiles[0],
+                )
             elif args.integrity_mode in (1, 2, 4):
                 from integrity import check as check_integrity
 
@@ -502,7 +527,12 @@ def main() -> None:
                         else None
                     ),
                 )
-            if args.family == "controller" and args.power_policy is None and not args.benchmark_direction:
+            if (
+                args.family == "controller"
+                and args.power_policy is None
+                and not args.benchmark_direction
+                and not args.inline_lifecycle
+            ):
                 result["recovered_external_observations"] = check(
                     report.with_name("recovery-observations.jsonl"),
                     profiles[0],

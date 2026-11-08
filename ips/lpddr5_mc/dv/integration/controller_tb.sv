@@ -1,7 +1,7 @@
 module controller_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
   parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,
-  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0
+  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0,INLINE_LIFECYCLE=0
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
@@ -230,6 +230,7 @@ module controller_tb #(
   endtask
   `include "benchmark.svh"
   `include "runtime_reset.svh"
+  `include "inline_lifecycle.svh"
   initial begin
     int before_b;
     string path;
@@ -254,6 +255,7 @@ module controller_tb #(
     end
     $fclose(stream);staging_image[INDEX_FSP_VALID]=7;
     staging_image[INDEX_MODE][10:8]=3'(SERVICE_DIV);
+    if(INLINE_LIFECYCLE) staging_image[INDEX_MODE][1]=1;
     staging_image[INDEX_PORT_LIMIT_0]=32'(DEPTH) | (32'(DEPTH)<<8);
     staging_image[INDEX_PORT_LIMIT_1]=staging_image[INDEX_PORT_LIMIT_0];
     staging_image[INDEX_WR_HIGH]=32'(DEPTH);staging_image[INDEX_WR_LOW]=32'(DEPTH/2);
@@ -285,6 +287,7 @@ module controller_tb #(
     publish_and_boot(0);stage=1;observe_traffic=1;
     if(BENCHMARK) benchmark_run();
     if(RUNTIME_RESET) runtime_reset_run();
+    if(INLINE_LIFECYCLE) inline_lifecycle_run();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);
     send_ar(PORTS-1,2,4096,128);read_result(PORTS-1,2,4096,128);wait_settled();stage=2;
     if(power_policy!=0) begin
@@ -368,5 +371,5 @@ module controller_tb #(
       stage,settled,host_fault,dut.coordinator.state_q,status_value[0].state,status_value[CHANNELS-1].state,reset_request,status_value[0].boot_epoch);
     $fflush();
   end
-  initial begin #(BENCHMARK ? 650000 : RESET_MATRIX ? 600000 : RUNTIME_RESET ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
+  initial begin #(BENCHMARK ? 650000 : RESET_MATRIX ? 600000 : RUNTIME_RESET || INLINE_LIFECYCLE ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
 endmodule

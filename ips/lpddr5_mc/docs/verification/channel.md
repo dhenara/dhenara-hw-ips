@@ -79,3 +79,10 @@ Development reports retain the original MR43 priority/drain/refresh interference
 Clean reproduction uses a separate full-history checkout with independent Git metadata and isolated compiler output. Reusing installed tools establishes source reproduction in that OS/tool environment; it does not establish fresh-host preparation, remote CI, synthesis or physical qualification.
 
 Reconciliation must test actual host/channel publication, response lifetimes, fault settlement, clock/reset crossings and occurrence delivery after recovery. In particular, an old-boot notification must retain its occurrence metadata without replacing current live status or being discarded by its freshness filter. Qualification retains the supported matrix, independent checker sensitivity, coverage closure, 100-period throughput criterion and conditional fairness bounds. Component compilation or bounded streams cannot close those obligations.
+
+
+## Normal periodic completion reserve
+
+At the normal all-bank interval, the REF/MR4 group reserves each rank's existing maintenance drain/recovery budget plus an exclusive MRR completion bound. For BL16, the last returned DFI word is bounded by `ceil((trddata_en + 7 + tphy_rdlat) / ratio)` CK, including slice gaps. The physical read/postamble bound is checked separately. The stronger command-origin `tMRR + tMRW` guard overlaps those prerequisites; full WCK disable follows their maximum. Sixteen CK cover request, SYNC/MRR, sampled completion, STOP/DISABLE/result and caller handoff. No 3000-CK watchdog or independent transaction-admission reserve changes. Hot and per-bank policies keep their earlier conservative lead.
+
+The register fixture exercises the bound with both WCK ratios, normal/always-on WCK, long command recovery and last-permitted DFI return timing. The maintenance fixture rejects an unnecessarily early normal benchmark poll before CK2700: this profile's derived full reserve is 292 CK. Connected maintenance and full benchmark results are separate evidence; the new reserve alone does not establish throughput.

@@ -202,6 +202,26 @@ package lpddr5_mc_channel_pkg;
       +(32'(p.dfi_wck_tphy_rdlat)+32'(p.wck_twck_dis)+7)/(p.ratio==2 ? 2 : 4)
       +32'(p.dram_ck_tmrr)+32'(p.dram_ck_tmrw)+16;
   endfunction
+  function automatic logic [31:0] periodic_register_budget(input lpddr5_mc_profile_t p);
+    logic [31:0] ratio, return_ck, physical_ck, recovery_ck;
+    logic unused_profile;
+    unused_profile=^p;
+    ratio=p.ratio==2 ? 2 : 4;
+    // MRR is BL16: its last DFI word is enable+7 WCK. Each slice must
+    // return by that word's tphy_rdlat deadline, including any valid gaps.
+    return_ck=(32'(p.dfi_wck_trddata_en)+7+32'(p.dfi_wck_tphy_rdlat)+ratio-1)/ratio;
+    physical_ck=(32'(p.phy_half_wck_command)+32'(p.rl_ck)*2*ratio
+      +32'(p.phy_half_wck_dq_output)+16+2*32'(p.wck_twck_toggle_post)+2*ratio-1)/(2*ratio);
+    if(physical_ck>return_ck) return_ck=physical_ck;
+    recovery_ck=32'(p.dram_ck_tmrr)+32'(p.dram_ck_tmrw);
+    // The command-origin guard overlaps return/physical drain. WCK disable
+    // follows the later prerequisite. Sixteen CK cover request/SYNC/MRR,
+    // sampled data completion, STOP/DISABLE/result, and caller rank handoff.
+    // This bound is for an already exclusive periodic transaction; retain
+    // the independent conservative admission reserve at other callers.
+    return (return_ck>recovery_ck ? return_ck : recovery_ck)
+      +(32'(p.wck_twck_dis)+ratio-1)/ratio+16;
+  endfunction
   function automatic logic [31:0] fsp_admission_budget(input lpddr5_mc_profile_t p);
     logic [31:0] spacing, guard_time;
     logic unused_profile;

@@ -19,23 +19,25 @@ module lpddr5_mc_register_io_tb;
     .result_address_o(result_address),.result_value_o(result_value),.ca_o(ca),.wck_o(wck),.read_request_o(read_request),.return_i(return_value),.fault_o(fault));
   task automatic tick; #1; clk=1; #1; clk=0; #1; endtask
   task automatic run_case(input int ratio_two,always_on,kind,long_guard);
-    logic [7:0] enable_history[3];
+    logic [7:0] enable_history[64];
     logic [7:0] held_value;
-    int mrr_at,zq_at,word_count,command_count,handback_at,guard_ck,ready_at;
+    int mrr_at,zq_at,word_count,command_count,handback_at,guard_ck,ready_at,return_delay;
     assert(ratio_two inside {0,1} && always_on inside {0,1}) else $fatal(1,"profile selector");
     profile=fixture_profile(1'(ratio_two),0,0,1'(always_on),0,0);
     if(long_guard!=0) begin profile.dram_ck_tmrr=80;profile.dram_ck_tmrw=60; end
     guard_ck=int'(profile.dram_ck_tmrr)+int'(profile.dram_ck_tmrw);
+    return_delay=kind==7 ? int'(profile.dfi_wck_tphy_rdlat)/int'(profile.ratio) : 2;
+    assert(return_delay>0 && return_delay<=64) else $fatal(1,"return delay fixture capacity");
     rst_n=0; request_valid=0; result_ready=0; return_value='0; tick(); rst_n=1;
-    for(int h=0;h<3;h++) enable_history[h]=0;
+    for(int h=0;h<64;h++) enable_history[h]=0;
     request_rank=1; request_zq=kind==1; address=kind==0 ? 7'd43 : kind==5 ? 7'd44 : kind==6 ? 7'd45 : 7'd4;
     exclusive=0; #1; assert(!request_ready) else $fatal(1,"exclusive pin ownership"); exclusive=1;
     request_valid=1; tick(); request_valid=0;
     mrr_at=-1; zq_at=-1; word_count=0; command_count=0; handback_at=-1;
     for(int cycle=0;cycle<500;cycle++) begin
       return_value='0;
-      for(int lane=0;lane<4;lane++) if(enable_history[1][lane*2+:2]!=0 && kind!=2) begin
-        return_value.valid[lane]=enable_history[1][lane*2+:2];
+      for(int lane=0;lane<4;lane++) if(enable_history[return_delay-1][lane*2+:2]!=0 && kind!=2) begin
+        return_value.valid[lane]=enable_history[return_delay-1][lane*2+:2];
         // First eight UI have defined low-byte opcode data; later UI and
         // the high byte are deliberately different undefined test values.
         return_value.data[lane]=word_count<4 ? 32'hda35bc35 : 32'h12345678;
@@ -56,7 +58,7 @@ module lpddr5_mc_register_io_tb;
           default: $fatal(1,"unexpected register CA %h",ca.address);
         endcase
       end
-      for(int h=2;h>0;h--) enable_history[h]=enable_history[h-1];
+      for(int h=63;h>0;h--) enable_history[h]=enable_history[h-1];
       enable_history[0]=read_request.enable;
       tick();
       if(result_valid || fault) begin
@@ -65,6 +67,8 @@ module lpddr5_mc_register_io_tb;
           assert(result_valid && !fault && result_rank==request_rank && result_zq==request_zq && result_address==address) else $fatal(1,"register result identity");
           if(request_zq) assert(cycle-zq_at>=24 && command_count==1) else $fatal(1,"ZQ recovery");
           else begin
+            assert(cycle<=int'(periodic_register_budget(profile)))
+              else $fatal(1,"periodic register completion exceeded reserve result=%0d budget=%0d",cycle,periodic_register_budget(profile));
             assert(result_value==8'h35 && result_failed==(kind==3) && word_count==8 && cycle-mrr_at>=guard_ck)
               else $fatal(1,"MRR opcode/return/guard");
             ready_at=handback_at>mrr_at+guard_ck ? handback_at : mrr_at+guard_ck;
@@ -84,7 +88,7 @@ module lpddr5_mc_register_io_tb;
   initial begin
     profile='0; return_value='0;
     for(int ratio_two=0;ratio_two<2;ratio_two++) for(int always_on=0;always_on<2;always_on++)
-      for(int kind=0;kind<7;kind++) for(int long_guard=0;long_guard<2;long_guard++) run_case(ratio_two,always_on,kind,long_guard);
+      for(int kind=0;kind<8;kind++) for(int long_guard=0;long_guard<2;long_guard++) run_case(ratio_two,always_on,kind,long_guard);
     $display("PASS register IO: actual MRR/return data, command-origin guards, WCK/data handback, defined UI, rank, ZQ latch/recovery, result stalls, DNV and missing-return faults"); $finish;
   end
 endmodule

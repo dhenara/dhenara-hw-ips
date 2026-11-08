@@ -18,7 +18,7 @@ endtask
 task automatic inline_image(input string phase_name,input int channel,at);
   logic [511:0] data_value,check_value;
   longint unsigned local_at;
-  local_at=64'((at&63)|((at>>7)<<6));data_value=0;check_value=0;
+  local_at=(64'(at)&64'd63)|((64'(at)>>7)<<6);data_value=0;check_value=0;
   // Constant generate indices are required by the qualified simulator.
   for(int j=0;j<64;j++) begin
     if(channel==0) begin

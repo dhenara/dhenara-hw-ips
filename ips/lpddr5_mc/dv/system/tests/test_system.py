@@ -52,6 +52,38 @@ def capture(wave):
 
 
 class HostTests(unittest.TestCase):
+    def test_configured_id_and_address_bounds_settle_every_beat(self):
+        for id_bits, address_bits in ((4, 32), (8, 36), (16, 40)):
+            with self.subTest(id_bits=id_bits, address_bits=address_bits):
+                h = HostScoreboard(id_bits=id_bits, address_bits=address_bits, mapped_end=1 << address_bits)
+                # The highest admitted ID and final aligned bus beat are valid.
+                a = Address(0, (1 << id_bits) - 1, (1 << address_bits) - 16, size=4)
+                tag = h.admit(a, False)
+                self.assertEqual(h.transactions[tag].error, 0)
+                h.physical_done(tag)
+                h.integrity_done(tag)
+                h.offer(tag, 0, 0, True)
+                h.handshake(tag)
+                invalid = [Address(0, 1, 1 << address_bits, length=3, size=4)]
+                if id_bits < 16:
+                    invalid.append(Address(0, 1 << id_bits, 0, length=3, size=4))
+                for descriptor in invalid:
+                    for write_access in (False, True):
+                        tag = h.admit(descriptor, write_access)
+                        self.assertEqual(h.transactions[tag].error, 3)
+                        if write_access:
+                            for beat in range(4):
+                                h.w(0, 1, 65535, beat == 3)
+                            with self.assertRaisesRegex(Violation, "response code"):
+                                h.offer(tag, 0, 0, True)
+                            h.offer(tag, 0, 3, True)
+                            h.handshake(tag)
+                        else:
+                            for beat in range(4):
+                                h.offer(tag, 0, 3, beat == 3)
+                                h.handshake(tag)
+                h.finish()
+
     def test_write_read_pin_effects_and_backpressure(self):
         h = HostScoreboard()
         t = write(h, length=3)

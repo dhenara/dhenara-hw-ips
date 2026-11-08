@@ -1,6 +1,7 @@
 module datapath_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
-  parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,INTEGRITY_MODE=0
+  parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,INTEGRITY_MODE=0,
+  parameter int ID_BITS=8,ADDRESS_BITS=40,GRANULE_BYTES=64
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
@@ -59,7 +60,7 @@ module datapath_tb #(
   assign unused_debug=^{axi_clk,command_rejected,prepare_error,fsp_ready,fsp_declined,prepared_epoch,committed_epoch,notification_valid,
     notifications,management_out,wck,late_error,stale,accepted,grants};
   lpddr5_mc_datapath #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH),
-    .ID_BITS(INTEGRITY_MODE==4 ? 16 : 8)) dut (
+    .ID_BITS(ID_BITS),.ADDRESS_BITS(ADDRESS_BITS)) dut (
     .clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n || (|axi_rst_n)),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),.rearm_i(rearm),
     .host_config_valid_i(cfg_valid),.host_config_ready_o(cfg_ready),.host_config_i(host_cfg),.rearm_ready_o(rearm_ready),
     .initialized_o(initialized),.host_config_valid_o(host_cfg_valid),.host_fault_o(host_fault),.host_settled_o(settled),.late_error_o(late_error),.stale_completions_o(stale),
@@ -117,15 +118,19 @@ module datapath_tb #(
   endtask
   task automatic source_negative(input int p);check(p>=0 && p<PORTS,"source port");if(p==0) @(negedge axi_clk[0]);else @(negedge axi_clk[PORTS-1]);endtask
   task automatic source_positive(input int p);check(p>=0 && p<PORTS,"source port");if(p==0) @(posedge axi_clk[0]);else @(posedge axi_clk[PORTS-1]);endtask
+  function automatic logic [15:0] bus_id(input logic [15:0] id);
+    return id & (16'hffff>>(16-ID_BITS));
+  endfunction
   function automatic lpddr5_mc_axi_address_t address(input logic [15:0] id,input longint unsigned at,input int beats);
     lpddr5_mc_axi_address_t value;
     assert(at<64'd1<<40 && beats>=1 && beats<=256) else $fatal(1,"source address/length bounds");
-    value='0;value.id=16'(id);value.address=40'(at);value.len=8'(beats-1);value.size=3'($clog2(BYTES));value.burst=1;
+    value='0;value.id=bus_id(id);value.address=40'(at);value.len=8'(beats-1);value.size=3'($clog2(BYTES));value.burst=1;
     if(cap_mode!=0) value.qos={2'b0,id[1:0]};
     return value;
   endfunction
-  task automatic send_aw(input int p,input logic [15:0] id,input longint unsigned at,input int beats);
+  task automatic send_aw(input int p,input logic [15:0] id,input longint unsigned at,input int beats,input bit raw_id=0);
     source_negative(p);aw[p]=address(id,at,beats);awvalid[p]=1;
+    if(raw_id) aw[p].id=id;
     do source_positive(p);while(!awready[p]);source_negative(p);awvalid[p]=0;
   endtask
   // Observe accepted physical descriptors and actual ACCESS launches. The
@@ -217,8 +222,9 @@ module datapath_tb #(
     $display("DATAPATH_CAP_PASS mode=%0d granule=%0d mixed=%0d checks=%0d",cap_mode,cap_granule_bytes,cap_mixed,checks);
     $display("DATAPATH_INTEGRATION_PASS checks=%0d",checks);$finish;
   endtask
-  task automatic send_ar(input int p,input logic [15:0] id,input longint unsigned at,input int beats);
+  task automatic send_ar(input int p,input logic [15:0] id,input longint unsigned at,input int beats,input bit raw_id=0);
     source_negative(p);ar[p]=address(id,at,beats);arvalid[p]=1;
+    if(raw_id) ar[p].id=id;
     do source_positive(p);while(!arready[p]);source_negative(p);arvalid[p]=0;
   endtask
   task automatic send_w(input int p,input longint unsigned at,input int beats,start=0,limit=0,input bit sparse=0,input byte unsigned salt=0);
@@ -236,19 +242,45 @@ module datapath_tb #(
     end
     wvalid[p]=0;
   endtask
-  task automatic wait_b(input int p,input logic [15:0] id,input int count,input logic [1:0] response=0);
+  task automatic wait_b(input int p,input logic [15:0] id,input int count,input logic [1:0] response=0,input bit raw_id=0);
     while(b_count[p]<count) source_negative(p);
-    check(last_bid[p]==16'(id) && last_bresponse[p]==2'(response),"B identity/status");
+    check(last_bid[p]==(raw_id ? id : bus_id(id)) && last_bresponse[p]==2'(response),"B identity/status");
   endtask
-  task automatic read_result(input int p,input logic [15:0] id,input longint unsigned at,input int beats,input logic [1:0] response=0);
+  task automatic read_result(input int p,input logic [15:0] id,input longint unsigned at,input int beats,input logic [1:0] response=0,input bit raw_id=0);
     source_negative(p);rready[p]=1;
     for(int n=0;n<beats;n++) begin
       do source_positive(p);while(!rvalid[p]);
-      check(r[p].id==16'(id) && r[p].last==(n==beats-1) && r[p].response==2'(response),"R identity/count/status");
+      check(r[p].id==(raw_id ? id : bus_id(id)) && r[p].last==(n==beats-1) && r[p].response==2'(response),"R identity/count/status");
       for(int j=0;j<BYTES;j++) check(r[p].data[j*8+:8]==(response==0 ? (expected.exists(at+64'(n)*64'(BYTES)+64'(j))!=0 ? expected[at+64'(n)*64'(BYTES)+64'(j)] : 8'd0) : 8'd0),"independent byte scoreboard");
       source_negative(p);
     end
     rready[p]=0;
+  endtask
+  task automatic parameter_boundaries;
+    int before_b;
+    logic [15:0] maximum_id,invalid_id;
+    longint unsigned invalid_address;
+    // Use the entire configured ID range on an actual physical write/read.
+    maximum_id=bus_id(16'hffff);
+    before_b=b_count[0];send_aw(0,maximum_id,64'd98304,64/BYTES);send_w(0,64'd98304,64/BYTES);
+    wait_b(0,maximum_id,before_b+1);wait_settled();
+    send_ar(PORTS-1,maximum_id,64'd98304,64/BYTES);read_result(PORTS-1,maximum_id,64'd98304,64/BYTES);wait_settled();
+    if(ID_BITS<16) begin
+      invalid_id=16'(1<<ID_BITS);before_b=b_count[0];
+      send_aw(0,invalid_id,64'd98432,64/BYTES,1);send_w(0,64'd98432,64/BYTES);
+      wait_b(0,invalid_id,before_b+1,3,1);wait_settled();
+      send_ar(PORTS-1,invalid_id,64'd98432,64/BYTES,1);read_result(PORTS-1,invalid_id,64'd98432,64/BYTES,3,1);wait_settled();
+      for(int n=0;n<64;n++) expected.delete(64'd98432+64'(n));
+      send_ar(0,maximum_id,64'd98432,64/BYTES);read_result(0,maximum_id,64'd98432,64/BYTES);wait_settled();
+    end
+    if(ADDRESS_BITS<40) begin
+      invalid_address=64'd1<<ADDRESS_BITS;before_b=b_count[0];
+      send_aw(0,maximum_id,invalid_address,64/BYTES);send_w(0,invalid_address,64/BYTES);
+      wait_b(0,maximum_id,before_b+1,3);wait_settled();
+      send_ar(PORTS-1,maximum_id,invalid_address,64/BYTES);read_result(PORTS-1,maximum_id,invalid_address,64/BYTES,3);wait_settled();
+    end
+    check(!host_fault && stale==0,"parameter-boundary health");
+    $display("DATAPATH_PARAMETER_PASS id_bits=%0d address_bits=%0d granule=%0d: maximum ID, full DECERR settlement and no rejected-write effect",ID_BITS,ADDRESS_BITS,GRANULE_BYTES);
   endtask
   task automatic send_command(input lpddr5_mc_channel_command_t value);
     @(negedge clk);check(&command_ready,"channel command readiness");
@@ -419,7 +451,7 @@ module datapath_tb #(
         cfg[c].bw_window=512;cfg[c].read_cap=64;cfg[c].write_cap=64;
       end
     end
-    host_cfg.granule64=1;host_cfg.inline_ecc=INTEGRITY_MODE==1;host_cfg.config_epoch=1;
+    host_cfg.granule64=GRANULE_BYTES==64;host_cfg.inline_ecc=INTEGRITY_MODE==1;host_cfg.config_epoch=1;
     if(cap_mode!=0) host_cfg.granule64=cap_granule_bytes==64;
     if(cap_mode!=0) for(int q=0;q<16;q++) host_cfg.qos_map[q]=2'(q%4);
     host_cfg.read_limit='{default:8'(DEPTH)};host_cfg.write_limit='{default:8'(DEPTH)};
@@ -462,6 +494,7 @@ module datapath_tb #(
       end
       $display("DATAPATH_RANK_SWITCH_PASS ranks=2 transfers=8");
     end
+    parameter_boundaries();
     @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
     $display("DATAPATH_INTEGRATION_PASS checks=%0d ports=%0d channels=%0d ranks=%0d width=%0d depth=%0d profile=%0d div=%0d",checks,PORTS,CHANNELS,RANKS,DATA_BITS,DEPTH,PROFILE_NUMBER,SERVICE_DIV);$finish;
   end

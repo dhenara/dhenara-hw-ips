@@ -46,6 +46,9 @@ def main() -> None:
     parser.add_argument("--cap-traffic", choices=("phase", "mixed"), default="phase")
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-smoke", action="store_true")
+    parser.add_argument("--id-bits", type=int, choices=range(4, 17))
+    parser.add_argument("--address-bits", type=int, choices=range(32, 41), default=40)
+    parser.add_argument("--granule-bytes", type=int, choices=(32, 64), default=64)
     for flag, values, default in (
         ("ports", (1, 2), 2),
         ("channels", (1, 2), 2),
@@ -67,6 +70,20 @@ def main() -> None:
         "SERVICE_DIV": args.service_div,
         "INTEGRITY_MODE": args.integrity_mode,
     }
+    if args.family in ("datapath", "lint"):
+        configuration.update(
+            ID_BITS=args.id_bits if args.id_bits is not None else 16 if args.integrity_mode == 4 else 8,
+            ADDRESS_BITS=args.address_bits,
+            GRANULE_BYTES=args.granule_bytes,
+        )
+    elif args.id_bits is not None or args.address_bits != 40 or args.granule_bytes != 64:
+        parser.error("ID/address/granule selection applies only to datapath and wrapper lint")
+    if args.family == "lint" and args.granule_bytes != 64:
+        parser.error("granule size is a runtime configuration; use datapath for its behavior check")
+    if args.cap_mode is not None and args.granule_bytes != 64:
+        parser.error("cap workloads select their granule with --cap-granule-bytes")
+    if args.integrity_mode and (args.id_bits is not None or args.address_bits != 40 or args.granule_bytes != 64):
+        parser.error("focused integrity workloads use their fixed ID/address/granule configuration")
     if args.runtime_reset and (args.family != "controller" or args.power_policy or args.benchmark_direction):
         parser.error("runtime reset requires the normal controller fixture")
     if args.cap_mode is not None and (
@@ -220,7 +237,7 @@ def main() -> None:
                 [
                     f"-G{key}={value}"
                     for key, value in configuration.items()
-                    if key not in ("PROFILE_NUMBER", "SERVICE_DIV", "INTEGRITY_MODE")
+                    if key not in ("PROFILE_NUMBER", "SERVICE_DIV", "INTEGRITY_MODE", "GRANULE_BYTES")
                 ]
                 if args.family == "lint"
                 else [f"-G{key}={value}" for key, value in configuration.items()]
@@ -336,6 +353,8 @@ def main() -> None:
                     ranks=args.ranks,
                     depth=args.depth,
                     mapped_end=(1 << 30) * args.channels * args.ranks if args.ranks == 2 else 1 << 20,
+                    id_bits=configuration.get("ID_BITS", 8),
+                    address_bits=args.address_bits,
                     mr4_change_ck=(
                         int(
                             re.search(

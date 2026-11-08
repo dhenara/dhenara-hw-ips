@@ -75,9 +75,20 @@ class Transaction:
 
 
 class HostScoreboard:
-    def __init__(self, bus_bytes: int = 16, ports: int = 2, capacity: int = 64, mapped_end: int = 1 << 30):
+    def __init__(
+        self,
+        bus_bytes: int = 16,
+        ports: int = 2,
+        capacity: int = 64,
+        mapped_end: int = 1 << 30,
+        *,
+        id_bits: int = 16,
+        address_bits: int = 40,
+    ):
         require(ports in (1, 2) and capacity > 0 and bus_bytes in (8, 16, 32), "host configuration")
+        require(4 <= id_bits <= 16 and 32 <= address_bits <= 40, "host ID/address widths")
         self.bus_bytes, self.ports, self.capacity, self.mapped_end = bus_bytes, ports, capacity, mapped_end
+        self.id_bits, self.address_bits = id_bits, address_bits
         self.transactions: dict[int, Transaction] = {}
         self.aw = [deque() for _ in range(ports)]
         self.memory: dict[int, int] = {}
@@ -93,7 +104,8 @@ class HostScoreboard:
         require(sum(not t.done for t in self.transactions.values()) < self.capacity, "response credit overflow")
         require(0 <= a.length <= 255, "AXI LEN representation")
         try:
-            ranges = byte_ranges(a, self.bus_bytes)
+            require(a.id < 1 << self.id_bits, "configured ID width")
+            ranges = byte_ranges(a, self.bus_bytes, self.address_bits)
             decoded = all(b < self.mapped_end for beat in ranges for b in beat)
         except Violation:
             # Invalid bursts still settle the full admitted AXI count.

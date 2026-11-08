@@ -30,6 +30,8 @@ def check(
     depth: int,
     mapped_end: int = 1 << 20,
     mr4_change_ck: int | None = None,
+    id_bits: int = 16,
+    address_bits: int = 40,
 ) -> dict:
     profile = copy.deepcopy(profile)
     profile["ranks"] = ranks
@@ -45,7 +47,9 @@ def check(
     # The test's programmed identity region, including channel/rank striping,
     # owns admission. The serial oracle's one-GiB default excludes rank one.
     require(0 < mapped_end <= (1 << 30) * channels * ranks, "identity region capacity")
-    host = HostScoreboard(header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end)
+    host = HostScoreboard(
+        header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end, id_bits=id_bits, address_bits=address_bits
+    )
     phy = [DigitalPhy(profile) for _ in range(channels)]
     return_timing = [ReturnTiming(profile) for _ in range(channels)]
     completion = [CompletionOracle([], 16, profile["dfi_wck"]["tphy_rdlat"]) for _ in range(channels)]
@@ -310,6 +314,7 @@ def check(
         "write_bytes": host.handshaken_bytes[True],
         "read_bytes": host.handshaken_bytes[False],
         "limitations": [
-            "Plain identity-mapped clean traffic only; ECC, reset and full WCK-edge qualification remain separate."
+            "Plain identity-mapped data and configured admission errors; ECC, reset and full WCK-edge "
+            "qualification remain separate."
         ],
     }

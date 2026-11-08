@@ -86,6 +86,15 @@ python3 ips/lpddr5_mc/dv/integration/check.py --family datapath --cap-mode 2 --z
   --report "$PWD/ips/lpddr5_mc/evidence/zero-read-borrow/report.json" --build-name zero-read-borrow
 ```
 
+The datapath's `--fairness-mode 0`, `1` and `2` selections configure read, write and mixed traffic respectively. They require two AXI128 ports, two channels, one rank, depth64, profile zero and 64-byte granules. Each active direction sends 128 disjoint transactions per port, covering all four QoS classes on both channels. At most 32 source addresses per port remain outstanding, so the combined pending population is bounded by 64. Single-direction cases stall actual source responses for 600 CK before releasing them; mixed traffic keeps responses ready. Read/write weights are seven/one, with urgent age32 and tick8. These settings exercise actual AXI, CDC, scheduling, data and maintenance paths. No internal ready or completion is forced.
+
+The [combined fairness replay](../../dv/integration/fairness.py) tracks actual scheduler admissions and ACCESS issues at every CK through the settled tail. It checks the 4360 eligible-CK wait bound and measures `G` against 64. Row, timing and WCK delays stay inside the measured gap. It records actual maintenance ownership and unavailable response capacity as suspensions; an unexpected ownership suspension with live traffic fails. Independent pin/host replay must also establish the expected completed payload. The report identifies aged grants and cases with higher-QoS traffic still pending; absent aged groups are unproved, rather than inferred from aggregate progress. Mutations must detect duplicate issue, starvation through the tail, inconsistent suspension and a missing final boundary. Synthetic replay tests qualify the checker only. Run each desired mode/service selection with fresh paths and inspect its actual result:
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family datapath --depth 64 --fairness-mode 0 --service-div 2 \
+  --report "$PWD/ips/lpddr5_mc/evidence/fairness-read-ck2/report.json" --build-name fairness-read-ck2
+```
+
 ## Combined check command
 
 The controller regression polls dedicated TRAIN_DONE before ENABLE and reads actual per-channel device capabilities through APB, including nonzero paired-bank MR57. Its normal recovery scenario observes two changing MR4 values per channel through the real memory/channel/status/CDC/APB path, then checks that destructive recovery clears old observations and a fresh boot publishes its new capability descriptor and fresh temperature. The notification regression additionally rejects wrong-boot and wrong-configuration snapshots while retaining error detail. The [C example behavior test](../../dv/integration/control_example_test.c) compiles the delivered helper itself and covers cold/quiesced publication, running/fault rejection, changed boot, valid/epoch prerequisites, one-command bounded timeout and invalid callbacks. This callback fixture complements real APB admission checks; it does not replace them.

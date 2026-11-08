@@ -18,7 +18,7 @@ REPO = Path(__file__).resolve().parents[4]
 IP = REPO / "ips/lpddr5_mc"
 
 
-def reserve_observations(report: Path, family: str, benchmark: bool, caps: bool) -> list[Path]:
+def reserve_observations(report: Path, family: str, benchmark: bool, caps: bool, fairness: bool = False) -> list[Path]:
     """Reserve shared trace names before compilation or another writer can start.
 
     Different report filenames do not isolate observations in one directory.
@@ -32,6 +32,8 @@ def reserve_observations(report: Path, family: str, benchmark: bool, caps: bool)
         paths.append(report.with_name("recovery-observations.jsonl"))
     if caps:
         paths.append(report.with_name("cap-observations.jsonl"))
+    if fairness:
+        paths.append(report.with_name("fairness-observations.jsonl"))
     for path in paths:
         if path.exists():
             raise FileExistsError(f"Refusing to overwrite retained observations: {path}; use a fresh report directory")
@@ -70,6 +72,7 @@ def main() -> None:
     parser.add_argument("--cap-granule-bytes", type=int, choices=(32, 64), default=64)
     parser.add_argument("--cap-traffic", choices=("phase", "mixed"), default="phase")
     parser.add_argument("--zero-cap-direction", choices=("read", "write"))
+    parser.add_argument("--fairness-mode", type=int, choices=(0, 1, 2))
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
@@ -128,6 +131,14 @@ def main() -> None:
         args.cap_mode is None or args.cap_traffic != "phase" or args.cap_granule_bytes != 64
     ):
         parser.error("zero-cap checks require --cap-mode and the default phase/64-byte selections")
+    if args.fairness_mode is not None and (
+        args.family != "datapath"
+        or args.cap_mode is not None
+        or (args.ports, args.channels, args.ranks, args.data_bits, args.depth, args.profile_number, args.integrity_mode)
+        != (2, 2, 1, 128, 64, 0, 0)
+        or args.granule_bytes != 64
+    ):
+        parser.error("fairness requires two plain AXI128 ports/channels, one rank, depth64/profile0/64-byte granules")
     if args.benchmark_smoke and not args.benchmark_direction:
         parser.error("benchmark smoke requires an explicit benchmark direction")
     if args.benchmark_direction and (
@@ -176,7 +187,9 @@ def main() -> None:
     build = storage / "lpddr5-integration" / args.build_name
     build.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
-    reserved = reserve_observations(report, args.family, bool(args.benchmark_direction), args.cap_mode is not None)
+    reserved = reserve_observations(
+        report, args.family, bool(args.benchmark_direction), args.cap_mode is not None, args.fairness_mode is not None
+    )
     sys.pycache_prefix = str(storage / "lpddr5-integration/pycache")
     from vectors import generate
 
@@ -224,6 +237,7 @@ def main() -> None:
         "cap_granule_bytes": args.cap_granule_bytes,
         "cap_traffic": args.cap_traffic,
         "zero_cap_direction": args.zero_cap_direction,
+        "fairness_mode": args.fairness_mode,
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "source_sha256": manifest,
         "commands": [],
@@ -332,6 +346,13 @@ def main() -> None:
         )
         if args.zero_cap_direction is not None:
             commands[-1].append(f"+zero_cap_direction={int(args.zero_cap_direction == 'write')}")
+    if args.fairness_mode is not None:
+        commands[-1].extend(
+            [
+                f"+fairness_mode={args.fairness_mode}",
+                "+fairness_observations=" + str(report.with_name("fairness-observations.jsonl")),
+            ]
+        )
     if args.family == "apb_publication":
         simulation = commands.pop()
         scenarios = range(4) if args.scenario is None else [args.scenario]
@@ -461,6 +482,14 @@ def main() -> None:
                 result["cap_observations"] = qualify_caps(
                     report.with_name("cap-observations.jsonl"),
                     build / "cap-mutant.jsonl",
+                    result["external_observations"],
+                )
+            if args.fairness_mode is not None:
+                from fairness import qualify as qualify_fairness
+
+                result["fairness_observations"] = qualify_fairness(
+                    report.with_name("fairness-observations.jsonl"),
+                    report.with_name("fairness-mutant.jsonl"),
                     result["external_observations"],
                 )
         after = {

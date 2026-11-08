@@ -54,6 +54,8 @@ module datapath_tb #(
   int cap_mode=0,cap_stream,cap_ck=0,cap_granule_bytes=64,cap_mixed=0,zero_cap_direction=-1;
   string cap_path;
   int zero_admissions[CHANNELS];
+  int fairness_mode=-1,fairness_stream;
+  string fairness_path;
   longint unsigned written_bytes=0;
   logic [PORTS-1:0][15:0] last_bid;
   logic [PORTS-1:0][1:0] last_bresponse;
@@ -126,7 +128,7 @@ module datapath_tb #(
     lpddr5_mc_axi_address_t value;
     assert(at<64'd1<<40 && beats>=1 && beats<=256) else $fatal(1,"source address/length bounds");
     value='0;value.id=bus_id(id);value.address=40'(at);value.len=8'(beats-1);value.size=3'($clog2(BYTES));value.burst=1;
-    if(cap_mode!=0) value.qos={2'b0,id[1:0]};
+    if(cap_mode!=0 || fairness_mode>=0) value.qos={2'b0,id[1:0]};
     return value;
   endfunction
   task automatic send_aw(input int p,input logic [15:0] id,input longint unsigned at,input int beats,input bit raw_id=0);
@@ -164,6 +166,7 @@ module datapath_tb #(
   end
   always @(posedge clk or negedge rst_n) if(!rst_n) cap_ck<=0;else cap_ck<=cap_ck+1;
   `include "zero_caps.svh"
+  `include "fairness.svh"
   task automatic cap_case;
     bit all_drained;
     check(PORTS==2 && CHANNELS==2 && INTEGRITY_MODE==0,"cap workload shape");
@@ -456,6 +459,12 @@ module datapath_tb #(
   endtask
   initial begin
     int before_b;
+    if($value$plusargs("fairness_mode=%d",fairness_mode)) begin
+      check(fairness_mode inside {0,1,2} && cap_mode==0,"fairness selection");
+      check($value$plusargs("fairness_observations=%s",fairness_path),"fairness observation path");
+      fairness_stream=$fopen(fairness_path,"w");check(fairness_stream!=0,"fairness trace open");
+      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":1,\"mode\":%0d,\"divisor\":%0d,\"depth\":64,\"age\":32,\"tick\":8,\"gap\":64}",fairness_mode,SERVICE_DIV);
+    end
     if($value$plusargs("cap_mode=%d",cap_mode)) begin
       check(cap_mode==1 || cap_mode==2,"cap mode");
       if($value$plusargs("cap_granule_bytes=%d",cap_granule_bytes))
@@ -479,6 +488,10 @@ module datapath_tb #(
     for(int c=0;c<CHANNELS;c++) begin
       cfg[c].profile=profile;cfg[c].inline_ecc=INTEGRITY_MODE==1;cfg[c].service_div=3'(SERVICE_DIV);cfg[c].age_tick_div=8;cfg[c].read_urgent_age=32;cfg[c].write_urgent_age=32;
       cfg[c].read_weight=1;cfg[c].write_weight=1;cfg[c].bw_window=3000;cfg[c].config_epoch=1;
+      if(fairness_mode>=0) begin
+        cfg[c].read_weight=7;cfg[c].write_weight=1;
+        cfg[c].read_batch_min=1;cfg[c].write_batch_min=1;cfg[c].write_batch_max=4;
+      end
       if(cap_mode!=0) begin
         cfg[c].caps_enable=1;cfg[c].work_conserving=cap_mode==2;
         cfg[c].bw_window=512;cfg[c].read_cap=64;cfg[c].write_cap=64;
@@ -488,11 +501,12 @@ module datapath_tb #(
     end
     host_cfg.granule64=GRANULE_BYTES==64;host_cfg.inline_ecc=INTEGRITY_MODE==1;host_cfg.config_epoch=1;
     if(cap_mode!=0) host_cfg.granule64=cap_granule_bytes==64;
-    if(cap_mode!=0) for(int q=0;q<16;q++) host_cfg.qos_map[q]=2'(q%4);
+    if(cap_mode!=0 || fairness_mode>=0) for(int q=0;q<16;q++) host_cfg.qos_map[q]=2'(q%4);
     host_cfg.read_limit='{default:8'(DEPTH)};host_cfg.write_limit='{default:8'(DEPTH)};
     host_cfg.regions[0].enable=1;host_cfg.regions[0].size=RANKS==2 ? 41'd1<<(30+$clog2(CHANNELS)+$clog2(RANKS)) : 41'd1<<20;
     for(int bit_index=0;bit_index<40;bit_index++) host_cfg.regions[0].permutation[bit_index]=6'(bit_index);
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;publish_and_boot();stage=1;
+    if(fairness_mode>=0) fairness_case();
     if(zero_cap_direction>=0) zero_cap_case();
     if(cap_mode!=0) cap_case();
     if(INTEGRITY_MODE!=0) integrity_case();

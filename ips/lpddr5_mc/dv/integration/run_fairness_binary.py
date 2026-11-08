@@ -25,12 +25,8 @@ def main():
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--source-report", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
-    parser.add_argument(
-        "--modes", type=int, nargs="+", choices=(0, 1, 2), default=[0, 1, 2]
-    )
-    parser.add_argument(
-        "--services", type=int, nargs="+", choices=(1, 2, 4), default=[1, 2, 4]
-    )
+    parser.add_argument("--modes", type=int, nargs="+", choices=(0, 1, 2), default=[0, 1, 2])
+    parser.add_argument("--services", type=int, nargs="+", choices=(1, 2, 4), default=[1, 2, 4])
     parser.add_argument("--traffic", choices=("balanced", "row-churn"))
     args = parser.parse_args()
     checkout = args.checkout.resolve()
@@ -44,10 +40,7 @@ def main():
     assert traffic in ("balanced", "row-churn")
     rows = int(traffic == "row-churn")
     assert all(c["exit_code"] == 0 for c in source["commands"])
-    assert (
-        source["tooling_check"]["exit_code"] == 0
-        and len(source["source_sha256"]) >= 112
-    )
+    assert source["tooling_check"]["exit_code"] == 0 and len(source["source_sha256"]) >= 112
     assert len(set(args.modes)) == len(args.modes)
     assert len(set(args.services)) == len(args.services)
     binary = Path(source["commands"][2]["argv"][0])
@@ -56,14 +49,9 @@ def main():
 
     def verify_source():
         assert (
-            subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=checkout, text=True
-            ).strip()
-            == source["commit"]
+            subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip() == source["commit"]
         )
-        assert not subprocess.check_output(
-            ["git", "status", "--porcelain"], cwd=checkout
-        )
+        assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout)
         assert all(sha(checkout / n) == h for n, h in source["source_sha256"].items())
         assert sha(binary) == binary_sha and sha(origin) == origin_sha
 
@@ -75,16 +63,10 @@ def main():
     from connected import check
     from fairness import qualify
 
-    profile = json.loads(
-        (checkout / "ips/lpddr5_mc/config/contracts/profiles.json").read_text()
-    )["profiles"][4]
+    profile = json.loads((checkout / "ips/lpddr5_mc/config/contracts/profiles.json").read_text())["profiles"][4]
     root = args.destination.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    temporary = (
-        Path(os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"])
-        / "lpddr5-integration"
-        / root.name
-    )
+    temporary = Path(os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) / "lpddr5-integration" / root.name
     temporary.mkdir(parents=True, exist_ok=False)
     result = {
         "source_commit": source["commit"],
@@ -100,9 +82,7 @@ def main():
         "services": args.services,
         "status": "running",
         "cases": {},
-        "limits": [
-            "Focused combined fairness cases only; unobserved age/suspension witnesses remain pending."
-        ],
+        "limits": ["Focused combined fairness cases only; unobserved age/suspension witnesses remain pending."],
     }
     matrix = root / "matrix.json"
     try:
@@ -150,14 +130,9 @@ def main():
                     exit_code=process.returncode,
                     simulation_seconds=time.monotonic() - start,
                 )
-                assert (
-                    process.returncode == 0
-                    and "DATAPATH_FAIRNESS_PASS" in log.read_text()
-                )
+                assert process.returncode == 0 and "DATAPATH_FAIRNESS_PASS" in log.read_text()
                 assert "DATAPATH_INTEGRATION_PASS" in log.read_text()
-                case["external_observations"] = check(
-                    trace, profile, ranks=1, depth=64, id_bits=8, address_bits=40
-                )
+                case["external_observations"] = check(trace, profile, ranks=1, depth=64, id_bits=8, address_bits=40)
                 case["fairness_observations"] = qualify(
                     fairness, temporary / "mutant.jsonl", case["external_observations"]
                 )
@@ -171,11 +146,7 @@ def main():
                 raise
             finally:
                 case["total_seconds"] = time.monotonic() - start
-                case["files"] = {
-                    str(path): sha(path)
-                    for path in (trace, fairness, log)
-                    if path.is_file()
-                }
+                case["files"] = {str(path): sha(path) for path in (trace, fairness, log) if path.is_file()}
                 report.write_text(json.dumps(case, indent=2) + "\n")
                 result["cases"][key] = {
                     "report": str(report),

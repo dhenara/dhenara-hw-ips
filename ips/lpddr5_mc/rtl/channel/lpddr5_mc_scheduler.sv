@@ -294,8 +294,15 @@ module lpddr5_mc_scheduler #(
         if (open_q[int'(maintenance_rank_i)*16+b] && (close_i || maintenance_all_i || b%8==int'(maintenance_pair_i)) && maintenance_bank<0) maintenance_bank=int'(maintenance_rank_i)*16+b;
       if (maintenance_bank>=0) begin
         legal=ck_q>=precharge_ready_q;
-        for(int b=0;b<16;b++) if(open_q[int'(maintenance_rank_i)*16+b]
-            && (maint_pre_all || b%8==int'(maintenance_pair_i)) && ck_q<pre_ready_q[int'(maintenance_rank_i)*16+b]) legal=0;
+        for(int b=0;b<16;b++) begin
+          if(open_q[int'(maintenance_rank_i)*16+b]
+              && (maint_pre_all || b%8==int'(maintenance_pair_i)) && ck_q<pre_ready_q[int'(maintenance_rank_i)*16+b]) legal=0;
+          // PREab also reaches banks closed by an earlier PREpb or auto-PRE.
+          // Their recovery survives open_q clearing, including a later tRC
+          // fence; tPPD alone cannot make the rank-wide command legal.
+          if(maint_pre_all && !open_q[int'(maintenance_rank_i)*16+b]
+              && ck_q<act_ready_q[int'(maintenance_rank_i)*16+b]) legal=0;
+        end
         if (legal) begin
           do_maint_pre=1; ca_o.address=ca_maintenance(1,0,maint_pre_all,4'(maintenance_bank));
           ca_o.cs=2'b1<<maintenance_rank_i;

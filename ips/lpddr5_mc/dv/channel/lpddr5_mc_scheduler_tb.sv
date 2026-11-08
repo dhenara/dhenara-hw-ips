@@ -9,7 +9,7 @@ module lpddr5_mc_scheduler_tb;
   lpddr5_mc_event_t event_value;
   logic sync,sync_write,sync_rank,wck_disabled=1,wck_reusable=0,wck_rank=0,wck_write=0;
   logic drained,pair_pending,fault,maintenance_valid=0,maintenance_rfm=0,maintenance_rank=0;
-  logic maintenance_ready,pages_closed,rows_closed,stop_requested;
+  logic maintenance_ready,pages_closed,rows_closed,stop_requested,close_requested=0;
   logic [63:0] accepted,issued,replayed,max_wait;
   logic unused_debug;
   assign unused_debug=^{event_value,pair_pending,accepted,issued,replayed,sync_rank,stop_requested,rows_closed,max_wait};
@@ -20,7 +20,7 @@ module lpddr5_mc_scheduler_tb;
     .sync_o(sync),.sync_write_o(sync_write),.sync_rank_o(sync_rank),.wck_disabled_i(wck_disabled),
     .wck_reusable_i(wck_reusable),.wck_rank_i(wck_rank),.wck_write_i(wck_write),
     .drained_o(drained),.pair_pending_o(pair_pending),.fault_o(fault),.maintenance_valid_i(maintenance_valid),
-    .maintenance_all_i(1'b1),.maintenance_pair_i(3'd0),.activate_allowed_i('1),.close_i(1'b0),.stop_requested_o(stop_requested),.maintenance_rfm_i(maintenance_rfm),.maintenance_rank_i(maintenance_rank),.maintenance_ready_o(maintenance_ready),
+    .maintenance_all_i(1'b1),.maintenance_pair_i(3'd0),.activate_allowed_i('1),.close_i(close_requested),.stop_requested_o(stop_requested),.maintenance_rfm_i(maintenance_rfm),.maintenance_rank_i(maintenance_rank),.maintenance_ready_o(maintenance_ready),
     .pages_closed_o(pages_closed),.rows_closed_o(rows_closed),.accepted_o(accepted),.issued_o(issued),.replayed_o(replayed),.max_wait_o(max_wait));
   task automatic tick;
     #1; clk=1; #1; clk=0; #1;
@@ -324,8 +324,54 @@ module lpddr5_mc_scheduler_tb;
     end
     assert(completed==1 && drained && !fault) else $fatal(1,"zero weighted share lost urgent escape");
   endtask
+  // A rank-wide PRE also targets a closed bank still recovering from PREpb.
+  // Produce the first PRE through ordinary idle policy, then request closure
+  // while another bank is open. Check emitted commands rather than timer RAM.
+  task automatic precharge_recovery_case(input int mode_value);
+    int completed,single_ck,all_ck,refresh_ck;
+    policy_setup();cfg.page_idle_ck=100;
+    for(int bank_value=0;bank_value<2;bank_value++) begin
+      request='0;request.tag=64'(bank_value)+64'd1;request.generation=1;
+      request.is_64_bytes=1;request.byte_enable='1;request.bank=2'(bank_value);
+      request_valid=1;#1;assert(request_ready) else $fatal(1,"precharge recovery admission");tick();
+    end
+    request_valid=0;issue_enable=1;completed=0;single_ck=-1;all_ck=-1;refresh_ck=-1;
+    for(int cycle=0;cycle<400;cycle++) begin
+      bit single_now;
+      single_now=0;#1;
+      if(launch_valid) completed++;
+      if(ca.cs!=0 && ca.address[6:0]==120) begin
+        if(!ca.address[13]) begin
+          assert(single_ck<0 && completed==2) else $fatal(1,"precharge recovery stimulus");
+          single_ck=cycle;single_now=1;
+        end else begin
+          assert(single_ck>=0 && all_ck<0) else $fatal(1,"unexpected rank-wide precharge");
+          assert(cycle-single_ck>=int'(cfg.profile.dram_ck_trp_pb))
+            else $fatal(1,"PREab overlapped closed-bank PREpb recovery mode=%0d gap=%0d",mode_value,cycle-single_ck);
+          all_ck=cycle;
+        end
+      end
+      if(maintenance_ready) begin
+        assert(all_ck>=0 && cycle-all_ck>=int'(cfg.profile.dram_ck_trp_ab))
+          else $fatal(1,"maintenance before PREab recovery");
+        refresh_ck=cycle;
+      end
+      tick();assert(!fault) else $fatal(1,"precharge recovery fault");
+      if(single_now) begin
+        cfg.page_idle_ck=0;issue_enable=0;wck_disabled=1;wck_reusable=0;
+        maintenance_valid=mode_value!=2;maintenance_rfm=mode_value==1;close_requested=mode_value==2;
+      end
+      if(refresh_ck>=0 || (mode_value==2 && all_ck>=0 && pages_closed)) break;
+    end
+    assert(single_ck>=0 && all_ck>=single_ck+int'(cfg.profile.dram_ck_trp_pb)
+      && all_ck<=single_ck+int'(cfg.profile.dram_ck_trp_pb)+1
+      && (mode_value==2 || refresh_ck>=0)) else $fatal(1,"precharge recovery failed progress");
+    maintenance_valid=0;maintenance_rfm=0;close_requested=0;issue_enable=1;
+    $display("PRECHARGE_RECOVERY_PASS mode=%0d gap=%0d",mode_value,all_ck-single_ck);
+  endtask
   initial begin
     cfg='0; request='0;
+    for(int mode_value=0;mode_value<3;mode_value++) precharge_recovery_case(mode_value);
     for (int div=1;div<=4;div*=2) begin
       run_case(div,0,0,0,0); run_case(div,1,0,0,0);
       mixed_case(div,0);mixed_case(div,1);

@@ -58,6 +58,13 @@ def first_write_observation(prefill, port, ps, accepted, outstanding):
     return {"ps": ps, "accepted_addresses": accepted, "outstanding_addresses": outstanding}
 
 
+def require_full_performance(observed):
+    """The full runner must enforce both independent performance verdicts."""
+    require(not observed["smoke_only"], "smoke cannot establish full performance")
+    require(observed["threshold_passed"], "Actual controller payload is below the agreed 99% threshold")
+    require(observed["steady_backlog_endpoint_passed"], "Actual controller steady backlog grew across the window")
+
+
 def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool = False) -> dict:
     log_text = log.read_text()
     match = re.search(r"BENCHMARK_START ps=(\d+) direction=(\d+) service=(\d+) periods=(\d+)", log_text)

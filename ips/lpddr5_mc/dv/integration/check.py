@@ -425,6 +425,7 @@ def main() -> None:
             profiles = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"]
             if args.benchmark_direction:
                 from benchmark import check as check_benchmark
+                from benchmark import require_full_performance
 
                 result["benchmark_observations"] = check_benchmark(
                     trace_path,
@@ -433,8 +434,8 @@ def main() -> None:
                     args.service_div,
                     smoke=args.benchmark_smoke,
                 )
-                if not args.benchmark_smoke and not result["benchmark_observations"]["threshold_passed"]:
-                    raise RuntimeError("Actual controller payload is below the agreed 99% threshold")
+                if not args.benchmark_smoke:
+                    require_full_performance(result["benchmark_observations"])
             elif args.integrity_mode in (1, 2, 4):
                 from integrity import check as check_integrity
 

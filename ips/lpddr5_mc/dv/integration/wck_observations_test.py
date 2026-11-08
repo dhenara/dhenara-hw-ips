@@ -167,3 +167,14 @@ class WckObservationTests(unittest.TestCase):
             samples = [[e["ck"], e["cs"], e["ca"], int(e["wck"], 16)] for e in changed]
             with self.subTest(name=name), self.assertRaises(Violation):
                 self.replay(p, samples)
+
+    def test_new_cas_waits_for_the_actual_final_disable_phase(self):
+        p = PROFILES[4]
+        rows, _, _ = fixture(p, True)
+        release = len(rows) - 3
+        # Keep both byte slices selected in phase zero, releasing only at
+        # phase one. A CAS sampled at this CK's start is still too early.
+        rows[release][3] = rows[release - 1][3] & ((3 << 32) | (15 << 16) | 15)
+        rows[release][1:3] = [1, commands.cas("read")]
+        with self.assertRaisesRegex(Violation, "precedes final phase disable"):
+            self.replay(p, rows)

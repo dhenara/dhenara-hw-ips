@@ -15,6 +15,7 @@ class WckObservations:
         self.ratio = profile["ratio"]
         self.ck = 2 * self.ratio
         self.last_ck = -1
+        self.last_disabled = -1
         self.epoch = None
         self.epochs = self.accesses = self.samples = self.disabled = 0
 
@@ -40,6 +41,7 @@ class WckObservations:
                 self.samples += 2
         e = self.epoch
         if e is not None and all(e["released"]):
+            self.last_disabled = max(e["released_at"])
             self.disabled += 1
             self.epoch = e = None
         if op is None:
@@ -55,6 +57,7 @@ class WckObservations:
                 require(op.operand in (1, 2) and e is None, "WCK synchronization before full disable")
                 direction = "write" if op.operand == 1 else "read"
                 origin = ck * self.ck + self.p["phy_half_wck"]["command"]
+                require(origin >= self.last_disabled, "WCK fresh CAS precedes final phase disable")
                 # JEDEC Tables 204/205/208/209, independently transcribed in
                 # the accepted waveform oracle. Static preamble is four CK,
                 # followed by one CK of half-rate toggling.
@@ -80,6 +83,7 @@ class WckObservations:
                     "seen": [False, False],
                     "stopped": [False, False],
                     "released": [False, False],
+                    "released_at": [None, None],
                 }
                 self.epochs += 1
         elif op.kind in ("RD", "WR", "MWR", "MRR"):
@@ -120,7 +124,9 @@ class WckObservations:
             require(e["post"] is not None and at >= e["post"], "WCK rank release before physical postamble")
             if self.p["always_on"]:
                 require(e["off"] is not None and at >= e["off"] + 5 * self.ck, "WCK disable before WS_OFF recovery")
-            e["released"][s] = True
+            if not e["released"][s]:
+                e["released_at"][s] = at
+                e["released"][s] = True
             return
         require(rank == e["rank"] and not e["released"][s], "WCK rank change before full disable")
         e["seen"][s] = True

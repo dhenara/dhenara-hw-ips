@@ -22,7 +22,7 @@ module lpddr5_mc_lifecycle_tb;
   logic [7:0] fault_code;
   logic unused_debug, maintenance_enable;
   assign unused_debug=^{update_window,maintenance_enable,command_ready,issue_enable,stop_wck,maintenance_start,sr_enter,sr_exit,external_refresh,extra_service,syscs,refresh_request,first_fault,fault_code};
-  lpddr5_mc_lifecycle dut(.clk_ck_i(clk),.rst_ni(rst_n),.profile_i(profile),.profile_valid_i(profile_ready),.profile_epoch_i(profile_epoch),
+  lpddr5_mc_lifecycle dut(.clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n),.profile_i(profile),.profile_valid_i(profile_ready),.profile_epoch_i(profile_epoch),
     .command_valid_i(command_valid),.command_i(command),.command_ready_o(command_ready),.command_rejected_o(rejected),
     .host_settled_i(host_settled),.backend_drained_i(backend_drained),.integrity_drained_i(integrity_drained),.pages_closed_i(pages_closed),
     .wck_disabled_i(wck_disabled),.maintenance_urgent_i(urgent),.extra_refresh_i(extra),.refresh_budget_i(budget),.fault_i(fault_input),.reset_confirmed_i(reset_confirmed),

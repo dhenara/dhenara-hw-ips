@@ -2,6 +2,7 @@
 // are explicit integration attestations; a timer cannot manufacture either.
 module lpddr5_mc_lifecycle (
   input logic clk_ck_i, rst_ni,
+  input logic cold_rst_ni,
   input lpddr5_mc_channel_pkg::lpddr5_mc_profile_t profile_i,
   input logic profile_valid_i,
   input logic [31:0] profile_epoch_i,
@@ -120,6 +121,12 @@ module lpddr5_mc_lifecycle (
     state_q<=FAILED; trusted_o<=0; fault_code_o<=code_value;
     if(first_fault_o==0) first_fault_o<={code_value,boot_epoch_o[7:0],profile_epoch_i[7:0],3'b0,state_q};
   endtask
+  // Identity must outlive every source ledger that can still reject its reuse.
+  always_ff @(posedge clk_ck_i or negedge cold_rst_ni) begin
+    if(!cold_rst_ni) boot_epoch_o<=0;
+    else if(state_q==FAILED && command_valid_i && command_i==CH_CMD_RECOVER
+      && host_settled_i && reset_confirmed_i && boot_epoch_o!='1) boot_epoch_o<=boot_epoch_o+1;
+  end
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin
     if(!rst_ni) begin
       state_q<=BOOT; operation_q<=CH_CMD_NONE; elapsed_q<=0;
@@ -128,7 +135,7 @@ module lpddr5_mc_lifecycle (
       master_age_q<=0; master_elapsed_q<=0; master_type_q<=0; master_choices_q<=0;
       master_sel_q<=0; chosen_sr_q<=0; boot_sr_q<=0; report_low_q<=0; refresh_age_q<=0;
       lp_ctrl_request_o<=0; lp_data_request_o<=0; master_ack_o<=0; syscs_state_o<=0; phy_refresh_request_o<=0;
-      trusted_o<=0; train_request_o<=0; train_done_o<=0; boot_epoch_o<=0; first_fault_o<=0; fault_code_o<=0;
+      trusted_o<=0; train_request_o<=0; train_done_o<=0; first_fault_o<=0; fault_code_o<=0;
       command_rejected_o<=0; destructive_reset_o<=0; maintenance_start_o<=0;
       self_refresh_enter_o<=0; self_refresh_exit_o<=0; external_refresh_o<=0;
     end else begin
@@ -271,7 +278,7 @@ module lpddr5_mc_lifecycle (
         FAILED: if(command_valid_i && command_i==CH_CMD_RECOVER) begin
           if(!host_settled_i || !reset_confirmed_i || boot_epoch_o=='1) command_rejected_o<=1;
           else begin
-            destructive_reset_o<=1; boot_epoch_o<=boot_epoch_o+1;
+            destructive_reset_o<=1;
             if(profile_valid_i && (!retired_valid_q || profile_epoch_i>retired_epoch_q)) begin retired_epoch_q<=profile_epoch_i; retired_valid_q<=1; end
             state_q<=BOOT; trusted_o<=0; train_done_o<=0; train_request_o<=0; init_low_q<=0; boot_attested_q<=0; elapsed_q<=0;
             lp_ctrl_request_o<=0; lp_data_request_o<=0; master_ack_o<=0; syscs_state_o<=0; phy_refresh_request_o<=0;

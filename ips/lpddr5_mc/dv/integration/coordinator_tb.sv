@@ -25,7 +25,7 @@ module coordinator_tb;
   logic unused_values;
   assign unused_values=^{host_config,profile_ready,trained,train_request,trusted,state_value};
   lpddr5_mc_coordinator dut (
-    .clk_i(clk),.rst_ni(rst_n),.command_valid_i(valid),.command_ready_o(ready),.command_i(request),
+    .clk_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n),.command_valid_i(valid),.command_ready_o(ready),.command_i(request),
     .publication_busy_i(busy),.control_fault_i(1'b0),.external_fault_i(external_fault),.management_request_i(management_request),.wake_request_i(wake_request),
     .configuration_valid_i(cfg_valid),.configuration_ready_o(cfg_ready),.configuration_i(config_value),
     .host_config_valid_o(host_cfg_valid),.host_config_ready_i(host_cfg_ready),.host_config_valid_i(host_cfg_active),.host_config_o(host_config),

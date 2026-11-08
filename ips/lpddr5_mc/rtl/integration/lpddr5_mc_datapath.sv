@@ -6,7 +6,7 @@ module lpddr5_mc_datapath #(
   parameter int ID_BITS=8,ADDRESS_BITS=40,DEPTH=64,
   parameter bit PER_BANK_REFRESH=0
 ) (
-  input logic clk_ck_i,rst_ni,enable_i,fatal_i,recover_i,rearm_i,
+  input logic clk_ck_i,rst_ni,cold_rst_ni,enable_i,fatal_i,recover_i,rearm_i,
   input logic host_config_valid_i,
   output logic host_config_ready_o,
   input lpddr5_mc_host_pkg::lpddr5_mc_host_config_t host_config_i,
@@ -59,7 +59,7 @@ module lpddr5_mc_datapath #(
   lpddr5_mc_channel_response_feedback_t [CHANNELS-1:0] channel_feedback_value;
   lpddr5_mc_host #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),
     .ID_BITS(ID_BITS),.ADDRESS_BITS(ADDRESS_BITS),.DEPTH(DEPTH)) host (
-    .clk_i(clk_ck_i),.rst_ni,.enable_i,.fatal_i,.recover_i,
+    .clk_i(clk_ck_i),.rst_ni,.cold_rst_ni,.enable_i,.fatal_i,.recover_i,
     .cfg_valid_i(host_config_valid_i),.cfg_ready_o(host_config_ready_o),.cfg_i(host_config_i),
     .rearm_i,.rearm_ready_o,.initialized_o,.config_valid_o(host_config_valid_o),.fault_o(host_fault_o),.host_settled_o,.late_error_o,.stale_completions_o,
     .axi_clk_i,.axi_rst_ni,.awvalid_i,.arvalid_i,.wvalid_i,.awready_o,.arready_o,.wready_o,.aw_i,.ar_i,.w_i,
@@ -79,7 +79,7 @@ module lpddr5_mc_datapath #(
     assign host_completions[c]=host_completion(channel_completions[c]);
     assign channel_feedback_value[c]=channel_feedback(feedback[c]);
     lpddr5_mc_channel #(.DEPTH(DEPTH),.CHANNEL_INDEX(c),.PER_BANK_REFRESH(PER_BANK_REFRESH)) channel (
-      .clk_ck_i,.rst_ni,.force_fault_i(fatal_i),.request_valid_i(request_valid[c]),.request_ready_o(request_ready[c]),.request_i(requests[c]),
+      .clk_ck_i,.rst_ni,.cold_rst_ni,.force_fault_i(fatal_i),.request_valid_i(request_valid[c]),.request_ready_o(request_ready[c]),.request_i(requests[c]),
       .request_boot_epoch_i(request_boot[c]),.request_config_epoch_i(request_epoch[c]),
       .completion_valid_o(completion_valid[c]),.completion_ready_i(completion_ready[c]),.completion_o(channel_completions[c]),
       .feedback_valid_i(feedback_valid[c]),.feedback_i(channel_feedback_value[c]),.host_settled_i(host_settled_o),.reset_confirmed_i(reset_confirmed_i[c]),

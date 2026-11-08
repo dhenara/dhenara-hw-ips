@@ -4,7 +4,7 @@ module lpddr5_mc_host #(
   parameter int PORTS=2, CHANNELS=2, RANKS=1, DATA_BITS=128,
   parameter int ID_BITS=8, ADDRESS_BITS=40, DEPTH=64
 ) (
-  input logic clk_i, rst_ni, enable_i, fatal_i,
+  input logic clk_i, rst_ni, cold_rst_ni,enable_i, fatal_i,
   // Owner asserts only after host settlement and confirmed destructive recovery.
   input logic recover_i,
   input logic cfg_valid_i,
@@ -66,16 +66,22 @@ module lpddr5_mc_host #(
   assign fault_o = core_fault || (monitor_q && bridge_fault) || fatal_i;
   assign late_error_o = core_late || (|endpoint_late);
   always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin committed_config_q <= '0; monitor_q <= 0; end
+    if (!rst_ni) committed_config_q <= '0;
     else begin
       if (cfg_valid_i && cfg_ready_o) committed_config_q <= cfg_i;
+    end
+  end
+  // Preserve fault observation across core reset until explicit recovery.
+  always_ff @(posedge clk_i or negedge cold_rst_ni) begin
+    if (!cold_rst_ni) monitor_q <= 0;
+    else begin
       if (initialized_o) monitor_q <= 1;
       if (recover_allowed) monitor_q <= 0;
     end
   end
   lpddr5_mc_axi_bridge #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),
     .ID_BITS(ID_BITS),.ADDRESS_BITS(ADDRESS_BITS),.DEPTH(DEPTH)) bridge (
-    .core_clk_i(clk_i),.core_rst_ni(rst_ni),.enable_i,.fatal_i(transport_abort),.core_settled_i(core_settled),
+    .core_clk_i(clk_i),.core_rst_ni(rst_ni),.cold_rst_ni,.enable_i,.fatal_i(transport_abort),.core_settled_i(core_settled),
     .rearm_i,.rearm_ready_o,.initialized_o,.fault_o(bridge_fault),.host_settled_o(bridge_settled),
     .admission_busy_o(admission_busy),.cfg_i(committed_config_q),.cfg_valid_i(config_valid_o),
     .abort_settled_o(abort_settled),

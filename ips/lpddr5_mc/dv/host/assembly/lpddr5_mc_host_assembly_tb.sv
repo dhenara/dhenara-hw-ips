@@ -41,7 +41,7 @@ module lpddr5_mc_host_assembly_tb;
   initial begin #0.375; forever #1.75 clk1=~clk1; end
 
   lpddr5_mc_host #(.DEPTH(16)) dut (
-    .clk_i(clk),.rst_ni(rst_n),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),
+    .clk_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n || (|axi_rst_n)),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),
     .cfg_valid_i(cfg_valid),.cfg_ready_o(cfg_ready),.cfg_i(cfg),.rearm_i(rearm),
     .rearm_ready_o(rearm_ready),.initialized_o(initialized),.config_valid_o(config_valid),
     .fault_o(fault),.host_settled_o(settled),.late_error_o(late_error),.stale_completions_o(stale),
@@ -240,7 +240,9 @@ module lpddr5_mc_host_assembly_tb;
     // Core reset flushes transport while the source still owes W and B.
     send_aw(0,9,24576,4);send_w(0,24576,2);
     @(negedge clk);enable=0;rst_n=0;repeat(8)@(negedge clk);rst_n=1;
-    send_w(0,24576,4,2);wait_settled();cfg.boot_epoch++;cfg.config_epoch++;publish();
+    send_w(0,24576,4,2);wait_settled();
+    assert(fault)else $fatal(1,"core reset lost fault observation");
+    recover_host();
     send_ar(1,10,4096,4);read_result(1,10,4096,4);wait_settled();tests++;
     assert(tests==7&&stale==0)else $fatal(1,"assembly checks/count");
     $display("HOST_ASSEMBLY_PASS tests=%0d requests=%0d B=%0d/%0d Rbeats=%0d/%0d",tests,requests,b_count[0],b_count[1],r_count[0],r_count[1]);

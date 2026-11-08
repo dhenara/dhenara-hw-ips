@@ -5,6 +5,7 @@ module lpddr5_mc_coordinator #(
   parameter int COMMAND_TIMEOUT=65536
 ) (
   input logic clk_i,rst_ni,
+  input logic cold_rst_ni,
   input logic command_valid_i,
   output logic command_ready_o,
   input lpddr5_mc_apb_pkg::lpddr5_mc_control_command_t command_i,
@@ -116,16 +117,23 @@ module lpddr5_mc_coordinator #(
     assign command_o[c]=state_q==SEND_RECOVER ? CH_CMD_RECOVER : state_q==SEND_WAKE ? CH_CMD_WAKE : operation_q;
     assign channel_reset_confirmed_o[c]=state_q==SEND_RECOVER && pending_q[c] && reset_confirmed_q[c];
   end
+  // Preserve fault observation across core reset until explicit recovery.
+  always_ff @(posedge clk_i or negedge cold_rst_ni) begin
+    if(!cold_rst_ni) host_monitored_q<=0;
+    else begin
+      if(host_initialized_i) host_monitored_q<=1;
+      if(state_q==RECOVER_HOST && recover_sent_q && !host_fault_i) host_monitored_q<=0;
+    end
+  end
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if(!rst_ni) begin
       state_q<=IDLE;operation_q<=CH_CMD_NONE;pending_q<=0;reset_low_q<=0;reset_confirmed_q<=0;
-      requested_enable_q<=0;fault_q<=0;control_fault_seen_q<=0;rearm_sent_q<=0;recover_sent_q<=0;host_monitored_q<=0;
+      requested_enable_q<=0;fault_q<=0;control_fault_seen_q<=0;rearm_sent_q<=0;recover_sent_q<=0;
       sequence_q<=0;recovery_boot_q<=0;timer_q<=0;installed_boot_q<=0;installed_epoch_q<=0;idle_q<=0;sleep_mask_q<=0;
       host_recover_o<=0;host_rearm_o<=0;train_ack_o<=0;train_token_o<=0;
       rejected_o<=0;recovery_complete_o<=0;
     end else begin
       control_fault_seen_q<=control_fault_i;
-      if(host_initialized_i) host_monitored_q<=1;
       host_recover_o<=0;host_rearm_o<=0;train_ack_o<=0;
       rejected_o<=0;recovery_complete_o<=0;
       if(state_q==IDLE || state_q==SLEEP) timer_q<=0;else timer_q<=timer_q+1;
@@ -219,7 +227,7 @@ module lpddr5_mc_coordinator #(
         end
         WAIT_BOOT: if(all_boot && host_settled_i) begin host_recover_o<=1;recover_sent_q<=1;state_q<=RECOVER_HOST;end
         RECOVER_HOST: if(recover_sent_q && !host_fault_i) begin
-          fault_q<=0;rearm_sent_q<=0;recover_sent_q<=0;host_monitored_q<=0;
+          fault_q<=0;rearm_sent_q<=0;recover_sent_q<=0;
           installed_epoch_q<=0;installed_boot_q<=boot_epoch_o;
           recovery_complete_o<=1;state_q<=IDLE;
         end

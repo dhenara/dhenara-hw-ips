@@ -38,6 +38,7 @@ def main() -> None:
         default="notification",
     )
     parser.add_argument("--scenario", type=int, choices=range(4))
+    parser.add_argument("--runtime-reset", action="store_true")
     parser.add_argument("--power-policy", type=int, choices=(1, 2))
     parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
@@ -63,6 +64,8 @@ def main() -> None:
         "SERVICE_DIV": args.service_div,
         "INTEGRITY_MODE": args.integrity_mode,
     }
+    if args.runtime_reset and (args.family != "controller" or args.power_policy or args.benchmark_direction):
+        parser.error("runtime reset requires the normal controller fixture")
     if args.benchmark_smoke and not args.benchmark_direction:
         parser.error("benchmark smoke requires an explicit benchmark direction")
     if args.benchmark_direction and (
@@ -150,6 +153,7 @@ def main() -> None:
         "power_policy": args.power_policy,
         "benchmark_direction": args.benchmark_direction,
         "benchmark_smoke": args.benchmark_smoke,
+        "runtime_reset": args.runtime_reset,
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "source_sha256": manifest,
         "commands": [],
@@ -212,6 +216,7 @@ def main() -> None:
                 if args.benchmark_direction
                 else []
             ),
+            *(["-GRUNTIME_RESET=1'b1"] if args.runtime_reset else []),
             *map(str, sources),
             "-j",
             "2",

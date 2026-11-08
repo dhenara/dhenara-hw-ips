@@ -37,7 +37,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   logic unused_debug;
   assign unused_debug=^{fsp_snapshot,notification_valid,notification_error_valid,notification_events,notification_boot,notification_epoch,notification_error,first_error_valid,first_error_version,first_error_boot,first_error_epoch,status_value,command_rejected,fsp_ready,fsp_declined,wck,prepared_epoch,committed_epoch,management_out};
   lpddr5_mc_channel #(.DEPTH(16),.PER_BANK_REFRESH(PER_BANK_REFRESH)) dut (
-    .clk_ck_i(clk),.rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(request_valid),.request_ready_o(request_ready),.request_i(request),.request_boot_epoch_i(request_boot),.request_config_epoch_i(request_epoch),
+    .clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(request_valid),.request_ready_o(request_ready),.request_i(request),.request_boot_epoch_i(request_boot),.request_config_epoch_i(request_epoch),
     .completion_valid_o(completion_valid),.completion_ready_i(completion_ready),.completion_o(completion),
     .feedback_valid_i(1'b0),.feedback_i(lpddr5_mc_channel_response_feedback_t'('0)),.host_settled_i(host_settled),.reset_confirmed_i(reset_confirmed),
     .command_valid_i(command_valid),.command_i(command),.command_ready_o(command_ready),.command_rejected_o(command_rejected),.train_ack_i(train_ack),.train_token_i(train_token),

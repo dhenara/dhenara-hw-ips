@@ -58,7 +58,7 @@ module datapath_tb #(
     notifications,management_out,wck,late_error,stale,accepted,grants};
   lpddr5_mc_datapath #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),.DEPTH(DEPTH),
     .ID_BITS(INTEGRITY_MODE==4 ? 16 : 8)) dut (
-    .clk_ck_i(clk),.rst_ni(rst_n),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),.rearm_i(rearm),
+    .clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n || (|axi_rst_n)),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),.rearm_i(rearm),
     .host_config_valid_i(cfg_valid),.host_config_ready_o(cfg_ready),.host_config_i(host_cfg),.rearm_ready_o(rearm_ready),
     .initialized_o(initialized),.host_config_valid_o(host_cfg_valid),.host_fault_o(host_fault),.host_settled_o(settled),.late_error_o(late_error),.stale_completions_o(stale),
     .axi_clk_i(axi_clk[PORTS-1:0]),.axi_rst_ni(axi_rst_n),.awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_o(awready),.arready_o(arready),.wready_o(wready),

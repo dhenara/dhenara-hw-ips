@@ -43,7 +43,11 @@ module lpddr5_mc #(
   import lpddr5_mc_apb_pkg::*;
   import lpddr5_mc_host_pkg::*;
   import lpddr5_mc_channel_pkg::*;
-  logic crst_n,prst_n;
+  logic crst_n,prst_n,cold_rst_n;
+  // Epoch custody survives a core/APB reset while any AXI ledger survives.
+  // Cold startup must assert the common reset and every AXI reset together.
+  lpddr5_mc_reset_sync cold_reset(.clk_i(clk_ck_i),
+    .arst_ni(rst_ni || (|axi_rst_ni)),.rst_no(cold_rst_n));
   lpddr5_mc_reset_sync c_reset(.clk_i(clk_ck_i),.arst_ni(rst_ni),.rst_no(crst_n));
   lpddr5_mc_reset_sync p_reset(.clk_i(pclk_i),.arst_ni(rst_ni),.rst_no(prst_n));
   logic [CHANNELS-1:0] p_fault,c_fault,p_ready,c_ready;
@@ -222,7 +226,7 @@ module lpddr5_mc #(
       .notification_i(notification[c]),.valid_o(c_status_valid[c]),.ready_i(c_status_ready[c]),.status_o(c_status[c]));
   end
   lpddr5_mc_coordinator #(.CHANNELS(CHANNELS)) coordinator (
-    .clk_i(clk_ck_i),.rst_ni(crst_n),.command_valid_i(c_command_valid),.command_ready_o(c_command_ready),.command_i(c_command),
+    .clk_i(clk_ck_i),.rst_ni(crst_n),.cold_rst_ni(cold_rst_n),.command_valid_i(c_command_valid),.command_ready_o(c_command_ready),.command_i(c_command),
     .publication_busy_i(busy_cq[1]),.external_fault_i(external_fault_i || c_transport_fault),.control_fault_i(fault_cq[1] || (|adapter_fault)),
     .management_request_i(management_request),.wake_request_i(|wake_sync_q),.configuration_valid_i(host_cfg_dvalid),.configuration_ready_o(host_cfg_dready),.configuration_i(host_cfg_d),
     .host_config_valid_o(host_config_valid),.host_config_ready_i(host_config_ready),.host_config_valid_i(host_config_active),.host_config_o(installed_host),
@@ -235,7 +239,7 @@ module lpddr5_mc #(
     .profile_valid_o(profile_ready),.trained_o(trained),.train_request_o(train_request),.quiesced_o(quiesced),.trusted_o(trusted),.state_o(state_value));
   lpddr5_mc_datapath #(.PORTS(PORTS),.CHANNELS(CHANNELS),.RANKS(RANKS),.DATA_BITS(DATA_BITS),
     .ID_BITS(ID_BITS),.ADDRESS_BITS(ADDRESS_BITS),.DEPTH(DEPTH),.PER_BANK_REFRESH(PER_BANK_REFRESH)) datapath (
-    .clk_ck_i,.rst_ni(crst_n),.enable_i(enabled_o),.fatal_i(host_fatal),.recover_i(host_recover),.rearm_i(host_rearm),
+    .clk_ck_i,.rst_ni(crst_n),.cold_rst_ni(cold_rst_n),.enable_i(enabled_o),.fatal_i(host_fatal),.recover_i(host_recover),.rearm_i(host_rearm),
     .host_config_valid_i(host_config_valid),.host_config_ready_o(host_config_ready),.host_config_i(installed_host),
     .rearm_ready_o(host_rearm_ready),.initialized_o(host_initialized),.host_config_valid_o(host_config_active),.host_fault_o(host_fault),.host_settled_o,.late_error_o(late_error),.stale_completions_o(stale_completions),
     .axi_clk_i,.axi_rst_ni,.awvalid_i,.arvalid_i,.wvalid_i,.awready_o,.arready_o,.wready_o,.aw_i,.ar_i,.w_i,

@@ -104,7 +104,7 @@ module apb_publication_tb;
       .fsp_command_valid_o(fsp_command[c]),.command_ready_i(command_ready[c]),.command_rejected_i(rejected[c]),
       .target_fsp_o(target_fsp[c]),.target_frequency_o(frequency[c]),.fault_o(adapter_fault[c]));
     lpddr5_mc_channel #(.DEPTH(16),.CHANNEL_INDEX(c)) channel (
-      .clk_ck_i(clk),.rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(1'b0),.request_ready_o(request_ready),.request_i(lpddr5_mc_granule_t'('0)),
+      .clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n),.force_fault_i(1'b0),.request_valid_i(1'b0),.request_ready_o(request_ready),.request_i(lpddr5_mc_granule_t'('0)),
       .request_boot_epoch_i(32'd0),.request_config_epoch_i(32'd0),.completion_valid_o(completion_valid),.completion_ready_i(1'b1),.completion_o(completion),
       .feedback_valid_i(1'b0),.feedback_i(lpddr5_mc_channel_response_feedback_t'('0)),.host_settled_i(1'b1),.reset_confirmed_i(1'b0),
       .command_valid_i(fsp_command[c] || command_valid[c]),.command_i(fsp_command[c] ? CH_CMD_FSP : command[c]),.command_ready_o(command_ready[c]),.command_rejected_o(rejected[c]),

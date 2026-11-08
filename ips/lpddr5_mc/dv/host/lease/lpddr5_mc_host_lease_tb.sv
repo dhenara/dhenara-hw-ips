@@ -58,7 +58,7 @@ module lpddr5_mc_host_lease_tb;
   always #1.25 if(run0)clk0=~clk0;
   initial begin #0.375;forever #1.25 if(run1)clk1=~clk1;end
   lpddr5_mc_host #(.DEPTH(16)) dut (
-    .clk_i(clk),.rst_ni(rst_n),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),
+    .clk_i(clk),.rst_ni(rst_n),.cold_rst_ni(rst_n || (|axi_rst_n)),.enable_i(enable),.fatal_i(fatal),.recover_i(recover),
     .cfg_valid_i(cfg_valid),.cfg_ready_o(cfg_ready),.cfg_i(cfg),.rearm_i(rearm),
     .rearm_ready_o(rearm_ready),.initialized_o(initialized),.config_valid_o(config_valid),
     .fault_o(fault),.host_settled_o(settled),.late_error_o(late_error),.stale_completions_o(stale),

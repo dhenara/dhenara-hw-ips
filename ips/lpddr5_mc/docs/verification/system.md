@@ -14,6 +14,13 @@ The [sensitivity check](../../dv/integration/check_observations.py) requires a p
 
 Focused families cover retained notifications through actual asynchronous control links and APB, canonical image decoding, publication adapters with actual FSP/channel engines, actual APB all-channel publication, common coordinator sequencing, and the actual AXI/channel datapath. The controller family additionally drives boot, fault settlement and destructive recovery through APB in the full wrapper. A directed iteration passes complete accepted-read/write settlement, fresh destructive reset, profile invalidation, stale-token rejection and new service. Its two independent clean-traffic traces surround the separately asserted fault/recovery sequence. The first trace starts at completed PHY/software handover; the independent controller refresh model does not own PHY initialization. The second starts after fresh recovery handover. The intervening failure/reset sequence is asserted by the fixture, rather than inferred from a clean-traffic checker pass. Final committed-source reproduction and broader fault coverage remain required.
 
+The controller's `--runtime-reset` selection exercises two successive fractional core/APB reset pulses while AXI resets remain released. It retains an AW awaiting W and a read on the other port, requires complete SLVERR settlement, rejects a stale high destructive-reset confirmation, advances the boot epoch, reloads staging and proves fresh training/service after each recovery. The final clean traffic segment is independently replayed. This selection explicitly aborts the memory fixture's tracking at raw reset; it makes no memory-preservation claim. Run it with a fresh report and build name:
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family controller --runtime-reset \
+  --report "$PWD/ips/lpddr5_mc/evidence/runtime-reset/report.json" --build-name runtime-reset
+```
+
 Example focused commands from the repository root:
 
 ```sh

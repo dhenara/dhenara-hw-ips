@@ -7,6 +7,7 @@ module lpddr5_mc_channel #(
   parameter int NOTIFICATION_DEPTH=16
 ) (
   input logic clk_ck_i,rst_ni,
+  input logic cold_rst_ni,
   input logic force_fault_i,
   input logic request_valid_i,
   output logic request_ready_o,
@@ -222,7 +223,7 @@ module lpddr5_mc_channel #(
     .busy_o(fsp_busy),.declined_o(fsp_declined),.fault_o(fsp_fault),.clock_change_done_o(fsp_clock_done),.target_ready_o(fsp_target_ready),
     .publish_i(mailbox_i.commit && mailbox_i.destinations[CHANNEL_INDEX] && config_drained && prepared_valid_o),.publish_epoch_i(mailbox_i.epoch),.published_o(fsp_published),.frozen_target_o(frozen_target));
   lpddr5_mc_lifecycle lifecycle (
-    .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.profile_i(effective_profile),.profile_valid_i(active_valid),.profile_epoch_i(committed_epoch_o),
+    .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.cold_rst_ni,.profile_i(effective_profile),.profile_valid_i(active_valid),.profile_epoch_i(committed_epoch_o),
     .command_valid_i(command_valid_i),.command_i(command_i),.command_ready_o(command_ready_o),.command_rejected_o(command_rejected_o),
     .host_settled_i(host_settled_i),.backend_drained_i(backend_drained),.integrity_drained_i(integrity_drained && inline_drained),.pages_closed_i(pages_closed),.wck_disabled_i(wck_disabled),
     .maintenance_urgent_i(maintenance_urgent),.extra_refresh_i(extra_refresh),.refresh_budget_i(refresh_budget),.fault_i(external_fault),.reset_confirmed_i(reset_confirmed_i),

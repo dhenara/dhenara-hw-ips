@@ -1,7 +1,7 @@
 module controller_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
   parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,
-  parameter bit BENCHMARK=0
+  parameter bit BENCHMARK=0,RUNTIME_RESET=0
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
@@ -217,6 +217,7 @@ module controller_tb #(
     $fatal(1,"stage%0d accepted work failed to drain",stage);
   endtask
   `include "benchmark.svh"
+  `include "runtime_reset.svh"
   initial begin
     int before_b;
     string path;
@@ -271,6 +272,7 @@ module controller_tb #(
     // checked by this fixture; no controller refresh clock runs before it.
     publish_and_boot(0);stage=1;observe_traffic=1;
     if(BENCHMARK) benchmark_run();
+    if(RUNTIME_RESET) runtime_reset_run();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);
     send_ar(PORTS-1,2,4096,128);read_result(PORTS-1,2,4096,128);wait_settled();stage=2;
     if(power_policy!=0) begin
@@ -354,5 +356,5 @@ module controller_tb #(
       stage,settled,host_fault,dut.coordinator.state_q,status_value[0].state,status_value[CHANNELS-1].state,reset_request,status_value[0].boot_epoch);
     $fflush();
   end
-  initial begin #(BENCHMARK ? 650000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
+  initial begin #(BENCHMARK ? 650000 : RUNTIME_RESET ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
 endmodule

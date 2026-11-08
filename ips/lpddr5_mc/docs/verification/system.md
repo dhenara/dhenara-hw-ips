@@ -255,6 +255,8 @@ python3 ips/lpddr5_mc/dv/integration/check.py --family controller \
 
 The explicit `--benchmark-smoke` option runs two periods and returns no throughput verdict. Omit it for the specified 100 periods. `--benchmark-direction read` selects independently initialized deterministic memory contents; write traffic must provide complete validated W before physical issue. Both directions use finite, distinct successive addresses and drain after the measurement window. [run_benchmark_binary.py](../../dv/integration/run_benchmark_binary.py) can run another direction/service using the same executable only if all retained compilation inputs still match. Its report covers simulation; use the replay command below to check its independent observations. Benchmark builds allow normal Verilator optimization; their explicit diagnostic references retain only the internal observations needed for stall analysis.
 
+The write source first admits 64 AW addresses per port before offering W, filling the declared address credits during the existing recorded warm-up. Response READY stays high from `BENCHMARK_START`; the ten warm-up periods, 90 measured periods and backlog comparison are unchanged. The replay checks each startup marker against the actual number of accepted and outstanding AW addresses before the first W handshake and records those observations. Historical traces without this startup marker retain their original startup behavior and are reported without a prefill claim. This stimulus change does not itself establish steady backlog or throughput; the complete measurement must still pass both checks.
+
 ```sh
 python3 ips/lpddr5_mc/dv/integration/check_benchmark.py \
   ips/lpddr5_mc/evidence/benchmark-smoke/observations.jsonl.gz \

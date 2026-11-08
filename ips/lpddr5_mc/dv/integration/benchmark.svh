@@ -41,6 +41,13 @@ for(genvar bp=0;bp<PORTS;bp++) begin : benchmark_ports
     if(BENCHMARK) begin
       wait(benchmark_started);
       if(benchmark_direction==1) begin
+        // Populate the declared source address credits before starting W.
+        // Otherwise AW/W startup can leave the fixed ten-period warm-up with
+        // a partly filled source queue even though later service is saturated.
+        // This remains inside the recorded warm-up: no window is shifted and
+        // responses stay ready from BENCHMARK_START through final settlement.
+        wait(benchmark_admitted[bp]==DEPTH);
+        $display("BENCHMARK_WRITE_PREFILL port=%0d admitted=%0d ps=%0d",bp,benchmark_admitted[bp],longint'($realtime*1000.0));
         forever begin
           source_negative(bp);
           if(benchmark_address_done[bp] && seq==benchmark_admitted[bp]) break;

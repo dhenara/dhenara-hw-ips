@@ -33,8 +33,34 @@ def number(value):
     return int(value, 0) if isinstance(value, str) else value
 
 
+def write_prefill(log_text, direction, start, smoke):
+    """Admit optional startup claims; old traces retain their original startup."""
+    markers = re.findall(r"BENCHMARK_WRITE_PREFILL port=(\d+) admitted=(\d+) ps=(\d+)", log_text)
+    if not markers:
+        return None
+    require(direction == "write" and len(markers) == 2, "benchmark write prefill markers")
+    result = {}
+    for port, admitted, ps in markers:
+        port, admitted, ps = int(port), int(admitted), int(ps)
+        require(port in (0, 1) and port not in result and admitted == 64, "benchmark write prefill credits")
+        require(start <= ps < start + (2 if smoke else 10) * 3_750_000, "benchmark prefill outside warm-up")
+        result[port] = ps
+    return result
+
+
+def first_write_observation(prefill, port, ps, accepted, outstanding):
+    """Validate a claimed prefill against actual AW handshakes before first W."""
+    if prefill is not None:
+        require(
+            ps > prefill[port] and accepted == outstanding == 64,
+            "benchmark first W before observed address prefill",
+        )
+    return {"ps": ps, "accepted_addresses": accepted, "outstanding_addresses": outstanding}
+
+
 def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool = False) -> dict:
-    match = re.search(r"BENCHMARK_START ps=(\d+) direction=(\d+) service=(\d+) periods=(\d+)", log.read_text())
+    log_text = log.read_text()
+    match = re.search(r"BENCHMARK_START ps=(\d+) direction=(\d+) service=(\d+) periods=(\d+)", log_text)
     require(match is not None, "missing benchmark start")
     start, selected_direction, selected_service, periods = map(int, match.groups())
     require(
@@ -44,6 +70,8 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
         "benchmark settings",
     )
     live, wqueue = [{}, {}], [deque(), deque()]
+    prefill = write_prefill(log_text, direction, start, smoke)
+    first_write = [None, None]
     accepted, completed, wbytes = [0, 0], [0, 0], [0, 0]
     counts = [[0] * periods for _ in range(2)]
     profiles = json.loads((Path(__file__).resolve().parents[2] / "config/contracts/profiles.json").read_text())[
@@ -152,9 +180,13 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
                 if direction == "write":
                     wqueue[p].append(identity)
                 accepted[p] += 1
+                if prefill is not None and accepted[p] == 64:
+                    require(e["ps"] == prefill[p], "benchmark prefill marker disagrees with AW observation")
                 maximum[p] = max(maximum[p], len(live[p]))
             elif kind == "w":
                 require(direction == "write" and bool(wqueue[p]), "benchmark W without AW")
+                if first_write[p] is None:
+                    first_write[p] = first_write_observation(prefill, p, e["ps"], accepted[p], len(live[p]))
                 identity = wqueue[p][0]
                 at = live[p][identity]["w"]
                 require(
@@ -246,6 +278,8 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
         "accepted_by_port": accepted,
         "completed_by_port": completed,
         "write_bytes_by_port": wbytes,
+        "write_prefill_claim_ps": prefill,
+        "first_write_by_port": first_write,
         "controller_qualified": False,
         "limits": [
             "The engine reason counts partition observed cycles; overlapping pipeline costs "

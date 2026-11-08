@@ -62,9 +62,28 @@ class WorkloadCostsTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "observations.jsonl"
 
-    def replay(self, events):
+    def replay(self, events, **selection):
         self.path.write_text("".join(json.dumps(e) + "\n" for e in events))
-        return measure(self.path)
+        return measure(self.path, **selection)
+
+    def test_segment_requires_complete_transactions_and_real_trace_end(self):
+        events = observations()
+        events.insert(11, {"kind": "phy", "ps": 37, "ck": 37, "channel": 0, "cs": 0, "ca": 0})
+        result = self.replay(events, start_ps=36, end_ps=75)
+        for direction in ("read", "write"):
+            self.assertEqual(result[direction]["admitted_transactions"], 1)
+            self.assertEqual(result[direction]["completed_transactions"], 1)
+            self.assertEqual(result[direction]["failed_transactions"], 1)
+        self.assertEqual(result["elapsed_ps"], 30)
+        for start, end, marker in (
+            (12, 75, "crosses segment start"),
+            (0, 34, "crosses segment end"),
+            (36, 69, "crosses segment end"),
+            (36, 90, "uncovered/unsettled end"),
+        ):
+            with self.subTest(start=start, end=end):
+                with self.assertRaisesRegex(Violation, marker):
+                    self.replay(observations(), start_ps=start, end_ps=end)
 
     def test_partial_unaligned_narrow_errors_and_stalls(self):
         result = self.replay(observations())

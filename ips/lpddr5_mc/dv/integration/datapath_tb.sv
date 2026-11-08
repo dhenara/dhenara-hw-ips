@@ -498,7 +498,29 @@ module datapath_tb #(
       wait(status_value[0].state==1 && status_value[0].drained);
       @(negedge clk);mr4=13;$display("THERMAL_CHANGE ck=%0d",observer.ck);
       send_command(CH_CMD_ENABLE);@(negedge clk);enable=1;
-      repeat(3500) @(negedge clk);
+      for(int n=0;n<6000;n++) begin
+        @(negedge clk);if(status_value[0].temperature_mr4==13) break;
+      end
+      check(status_value[0].temperature_mr4==13,"completed hot MR4 before hot traffic");
+      wait_settled();
+      $display("HOT_WORKLOAD_START ps=%0d",observer.timestamp_ps());
+      for(int n=0;n<32;n++) begin
+        longint unsigned at;
+        // Change rows under active derating and tightened refresh deadlines.
+        at=(64'(n%16)<<15)+64'd512;before_b=b_count[0];
+        check(status_value[0].temperature_mr4==13,"hot traffic temperature retained");
+        send_aw(0,16'(200+n),at,64/BYTES);send_w(0,at,64/BYTES);
+        wait_b(0,16'(200+n),before_b+1);wait_settled();
+        send_ar(0,16'(240+n),at,64/BYTES);read_result(0,16'(240+n),at,64/BYTES);wait_settled();
+      end
+      $display("HOT_WORKLOAD_END ps=%0d",observer.timestamp_ps());
+      // Finish at a real simultaneous host/pin/maintenance drain, including
+      // any MR4 return independently due after the last host response.
+      @(negedge clk);enable=0;send_command(CH_CMD_QUIESCE);
+      for(int n=0;n<3000;n++) begin
+        @(negedge clk);if(status_value[0].state==1 && status_value[0].drained) break;
+      end
+      check(status_value[0].state==1 && status_value[0].drained,"hot workload physical tail drain");
       $display("management commands RFM=%0d MR4=%0d REF=%0d ZQ=%0d",memories[0].rfm_count,memories[0].mr4_count,memories[0].refresh_count,memories[0].zq_count);
       check(memories[0].rfm_count>0 && memories[0].mr4_count>0 && memories[0].refresh_count>0 && memories[0].zq_count>0,"physical RFM/MR4/REF/ZQ execution");
       check(!status_value[0].fault && !host_fault,"management remains healthy");

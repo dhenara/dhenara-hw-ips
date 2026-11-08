@@ -16,6 +16,7 @@ from system.host import Address, HostScoreboard, require
 from system.phy import DigitalPhy
 from system.return_timing import ReturnTiming
 from system.trace import source_order
+from thermal import ThermalReturns
 
 
 def number(value):
@@ -52,6 +53,7 @@ def check(
         header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end, id_bits=id_bits, address_bits=address_bits
     )
     phy = [DigitalPhy(profile) for _ in range(channels)]
+    thermal = [ThermalReturns(p.dram.maintenance) for p in phy]
     return_timing = [ReturnTiming(profile) for _ in range(channels)]
     completion = [CompletionOracle([], 16, profile["dfi_wck"]["tphy_rdlat"]) for _ in range(channels)]
     bus = [ReadBusOracle(profile["ratio"], c) for c in completion]
@@ -179,6 +181,7 @@ def check(
             # MRR returns share the same physical word-rotation owner.
             if operation is not None and operation.kind == "MRR":
                 serial += 1
+                thermal[c].begin(serial, ck, e["cs"], operation.operand)
                 mrr_windows[c].append((ck, e["cs"]))
                 for w in range(8):
                     byte = (
@@ -289,6 +292,7 @@ def check(
                         value == expected,
                         "actual returned slice disagrees with physical memory",
                     )
+                    thermal[c].receive(tag, w, lane, value, ck, ps)
                     if (tag, w) in word_owner[c]:
                         for half in range(2):
                             address = word_owner[c][tag, w] + lane + 2 * half
@@ -309,6 +313,8 @@ def check(
             )
             for model in [*phy, *return_timing]:
                 model.finish()
+            for observer in thermal:
+                observer.finish()
             ended = True
         else:
             raise ValueError("unknown raw observation kind")
@@ -318,6 +324,7 @@ def check(
         "physical_write_words": writes,
         "returned_slices": reads,
         "physical_return_timing": [t.finish() for t in return_timing],
+        "temperature_returns_by_channel": [t.finish() for t in thermal],
         "write_bytes": host.handshaken_bytes[True],
         "read_bytes": host.handshaken_bytes[False],
         "limitations": [

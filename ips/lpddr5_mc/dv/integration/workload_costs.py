@@ -53,7 +53,44 @@ class Direction:
         }
 
 
-def measure(path: Path) -> dict:
+def segment(events, start: int, end: int):
+    """Select a sampled interval only at empty source-transaction boundaries.
+
+    Inspect the full source ledger so a transaction spanning either boundary
+    cannot disappear from a cost report. The original end marker must cover
+    the selected interval. Correctness still belongs to the full trace replay.
+    """
+    require(type(start) is int and type(end) is int and 0 <= start < end, "workload segment bounds")
+    yield next(events)
+    pending = Counter()
+    entered = exited = ended = False
+    last = -1
+    for event in events:
+        kind, ps = event["kind"], event["ps"]
+        require(not ended and type(ps) is int and ps >= last, "workload segment time/order/tail")
+        last = ps
+        if not entered and ps >= start:
+            require(not any(pending.values()), "workload transaction crosses segment start")
+            entered = True
+        if not exited and ps > end:
+            require(not any(pending.values()), "workload transaction crosses segment end")
+            exited = True
+        if kind in ("aw", "ar"):
+            pending[event["port"], kind == "aw", event["id"]] += 1
+        elif kind in ("b", "r") and event["ready"] and (kind == "b" or event["last"]):
+            key = event["port"], kind == "b", event["id"]
+            require(pending[key] > 0, "workload segment unmatched response")
+            pending[key] -= 1
+        elif kind == "end":
+            require(ps >= end and not any(pending.values()), "workload segment uncovered/unsettled end")
+            ended = True
+        if start <= ps <= end and kind != "end":
+            yield event
+    require(entered and ended, "workload segment truncated trace")
+    yield {"kind": "end", "ps": end}
+
+
+def measure(path: Path, *, start_ps: int | None = None, end_ps: int | None = None) -> dict:
     """Account for complete AW-before-W traces, including partial/error traffic.
 
     The current connected binding observes W in AW order. B/R may complete
@@ -70,6 +107,8 @@ def measure(path: Path) -> dict:
     transferred_strobes = fault_events = physical_events = 0
     with path.open() as stream:
         events = source_order(stream)
+        if start_ps is not None or end_ps is not None:
+            events = segment(events, start_ps, end_ps)
         header = next(events)
         require(header["kind"] == "header" and header["version"] == 1, "workload observation header")
         bus_bytes, ports, channels = header["bus_bytes"], header["ports"], header["channels"]

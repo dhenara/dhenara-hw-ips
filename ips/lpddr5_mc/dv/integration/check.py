@@ -512,6 +512,25 @@ def main() -> None:
                 from workload_costs import measure
 
                 result["workload_costs"] = measure(report.with_name("observations.jsonl"))
+                if args.integrity_mode == 3:
+                    text = report.with_name(f"{report.stem}-2.log").read_text()
+                    start = int(re.search(r"HOT_WORKLOAD_START ps=(\d+)", text)[1])
+                    end = int(re.search(r"HOT_WORKLOAD_END ps=(\d+)", text)[1])
+                    temperatures = result["external_observations"]["temperature_returns_by_channel"][0]
+                    before = [t for t in temperatures if t["completed_ps"] <= start]
+                    if (
+                        not before
+                        or before[-1]["mr4"] != 13
+                        or any(t["mr4"] != 13 for t in temperatures if start < t["completed_ps"] <= end)
+                    ):
+                        raise RuntimeError("Hot segment lacks independently completed temperature13")
+                    result["hot_workload_costs"] = measure(
+                        report.with_name("observations.jsonl"), start_ps=start, end_ps=end
+                    )
+                    for direction in ("read", "write"):
+                        stats = result["hot_workload_costs"][direction]
+                        if stats["completed_transactions"] != 32 or stats["successful_payload_bytes"] != 2048:
+                            raise RuntimeError("Hot segment incomplete payload")
                 if "recovered_external_observations" in result:
                     result["recovered_workload_costs"] = measure(report.with_name("recovery-observations.jsonl"))
         after = {

@@ -50,6 +50,8 @@ module datapath_tb #(
   int ce_count=0,ue_count=0;
   byte unsigned expected[longint unsigned];
   int b_count[PORTS],r_count[PORTS],checks=0,stage=0;
+  int cap_mode=0,cap_stream,cap_ck=0;
+  string cap_path;
   longint unsigned written_bytes=0;
   logic [PORTS-1:0][15:0] last_bid;
   logic [PORTS-1:0][1:0] last_bresponse;
@@ -118,11 +120,82 @@ module datapath_tb #(
   function automatic lpddr5_mc_axi_address_t address(input logic [15:0] id,input longint unsigned at,input int beats);
     lpddr5_mc_axi_address_t value;
     assert(at<64'd1<<40 && beats>=1 && beats<=256) else $fatal(1,"source address/length bounds");
-    value='0;value.id=16'(id);value.address=40'(at);value.len=8'(beats-1);value.size=3'($clog2(BYTES));value.burst=1;return value;
+    value='0;value.id=16'(id);value.address=40'(at);value.len=8'(beats-1);value.size=3'($clog2(BYTES));value.burst=1;
+    if(cap_mode!=0) value.qos={2'b0,id[1:0]};
+    return value;
   endfunction
   task automatic send_aw(input int p,input logic [15:0] id,input longint unsigned at,input int beats);
     source_negative(p);aw[p]=address(id,at,beats);awvalid[p]=1;
     do source_positive(p);while(!awready[p]);source_negative(p);awvalid[p]=0;
+  endtask
+  // Observe accepted physical descriptors and actual ACCESS launches. The
+  // replay reconstructs live identities and charges bytes at issue CK, rather
+  // than trusting the scheduler's counters or configuration-window state.
+  for(genvar c=0;c<CHANNELS;c++) begin : cap_observers
+    wire accepted_request=dut.channels[c].channel.backend.scheduler.request_valid_i
+      && dut.channels[c].channel.backend.scheduler.request_ready_o;
+    wire issued_request=dut.channels[c].channel.backend.scheduler.launch_valid_o;
+    wire [63:0] scheduler_ck=dut.channels[c].channel.backend.scheduler.ck_q;
+    lpddr5_mc_granule_t request_value,launch_value;
+    assign request_value=dut.channels[c].channel.backend.scheduler.request_i;
+    assign launch_value=dut.channels[c].channel.backend.scheduler.launch_o;
+    initial begin
+      wait(rst_n);
+      forever begin
+        @(posedge clk);
+        if(cap_stream!=0 && !finish_observations) begin
+          check(scheduler_ck==64'(cap_ck),"independent cap CK origin");
+          if(accepted_request)
+            $fdisplay(cap_stream,"{\"kind\":\"admit\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d}",
+              cap_ck,c,request_value.tag,request_value.generation,request_value.is_write,request_value.is_64_bytes ? 64 : 32,request_value.port_index,request_value.qos_class);
+          if(issued_request)
+            $fdisplay(cap_stream,"{\"kind\":\"issue\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"bytes\":%0d,\"port\":%0d,\"qos\":%0d}",
+              cap_ck,c,launch_value.tag,launch_value.generation,launch_value.is_write,launch_value.is_64_bytes ? 64 : 32,launch_value.port_index,launch_value.qos_class);
+        end
+      end
+    end
+  end
+  always @(posedge clk or negedge rst_n) if(!rst_n) cap_ck<=0;else cap_ck<=cap_ck+1;
+  task automatic cap_case;
+    bit all_drained;
+    check(PORTS==2 && CHANNELS==2 && INTEGRITY_MODE==0,"cap workload shape");
+    // Disjoint addresses and phase drain make opposite-direction eligibility
+    // unambiguous from admissions alone. Each source clock remains independent.
+    for(int phase_number=0;phase_number<2;phase_number++) begin
+      stage=10+phase_number;
+      for(int n=0;n<16;n++) begin
+        for(int p=0;p<PORTS;p++) begin
+          longint unsigned at;
+          logic [15:0] id;
+          at=64'd32768+64'(n*128+p*64);id=16'(64+n);
+          if(phase_number==0) begin
+            send_aw(p,id,at,64/BYTES);send_w(p,at,64/BYTES);wait_b(p,id,n+1);
+          end else begin
+            send_ar(p,id,at,64/BYTES);read_result(p,id,at,64/BYTES);
+          end
+        end
+      end
+      wait_settled();
+    end
+    check(!host_fault && stale==0,"cap traffic health");
+    for(int c=0;c<CHANNELS;c++) check(!status_value[c].fault,"cap channel health");
+    // Host settlement does not include an independently due MR4 return.
+    // Quiesce the real channel owners before terminating either observation.
+    @(negedge clk);enable=0;send_command(CH_CMD_QUIESCE);
+    all_drained=0;
+    for(int n=0;n<3000;n++) begin
+      @(negedge clk);all_drained=1;
+      for(int c=0;c<CHANNELS;c++) all_drained&=status_value[c].state==1 && status_value[c].drained;
+      if(all_drained) break;
+    end
+    // Maintenance remains enabled while quiesced. End at this shared sampled
+    // boundary; waiting on channels separately can admit another MR4 on one.
+    check(all_drained,"cap simultaneous physical/maintenance tail drain");
+    finish_observations=1;
+    $fdisplay(cap_stream,"{\"kind\":\"end\",\"ck\":%0d}",cap_ck);$fclose(cap_stream);cap_stream=0;
+    repeat(2) @(negedge clk);
+    $display("DATAPATH_CAP_PASS mode=%0d checks=%0d",cap_mode,checks);
+    $display("DATAPATH_INTEGRATION_PASS checks=%0d",checks);$finish;
   endtask
   task automatic send_ar(input int p,input logic [15:0] id,input longint unsigned at,input int beats);
     source_negative(p);ar[p]=address(id,at,beats);arvalid[p]=1;
@@ -305,6 +378,12 @@ module datapath_tb #(
   endtask
   initial begin
     int before_b;
+    if($value$plusargs("cap_mode=%d",cap_mode)) begin
+      check(cap_mode==1 || cap_mode==2,"cap mode");
+      check($value$plusargs("cap_observations=%s",cap_path),"cap observation path");
+      cap_stream=$fopen(cap_path,"w");check(cap_stream!=0,"cap trace open");
+      $fdisplay(cap_stream,"{\"kind\":\"header\",\"mode\":%0d,\"channels\":%0d,\"window\":512,\"read_cap\":64,\"write_cap\":64}",cap_mode,CHANNELS);
+    end
     host_cfg='0;cfg='0;mailbox_value='0;management='0;aw='0;ar='0;wd='0;train_token=0;command='0;target_fsp=0;target_frequency=0;phy_refresh_done=0;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
     expected.delete();
@@ -312,12 +391,18 @@ module datapath_tb #(
     for(int c=0;c<CHANNELS;c++) begin
       cfg[c].profile=profile;cfg[c].inline_ecc=INTEGRITY_MODE==1;cfg[c].service_div=3'(SERVICE_DIV);cfg[c].age_tick_div=8;cfg[c].read_urgent_age=32;cfg[c].write_urgent_age=32;
       cfg[c].read_weight=1;cfg[c].write_weight=1;cfg[c].bw_window=3000;cfg[c].config_epoch=1;
+      if(cap_mode!=0) begin
+        cfg[c].caps_enable=1;cfg[c].work_conserving=cap_mode==2;
+        cfg[c].bw_window=512;cfg[c].read_cap=64;cfg[c].write_cap=64;
+      end
     end
     host_cfg.granule64=1;host_cfg.inline_ecc=INTEGRITY_MODE==1;host_cfg.config_epoch=1;
+    if(cap_mode!=0) for(int q=0;q<16;q++) host_cfg.qos_map[q]=2'(q%4);
     host_cfg.read_limit='{default:8'(DEPTH)};host_cfg.write_limit='{default:8'(DEPTH)};
     host_cfg.regions[0].enable=1;host_cfg.regions[0].size=RANKS==2 ? 41'd1<<(30+$clog2(CHANNELS)+$clog2(RANKS)) : 41'd1<<20;
     for(int bit_index=0;bit_index<40;bit_index++) host_cfg.regions[0].permutation[bit_index]=6'(bit_index);
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;publish_and_boot();stage=1;
+    if(cap_mode!=0) cap_case();
     if(INTEGRITY_MODE!=0) integrity_case();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);
     send_ar(PORTS-1,2,4096,128);read_result(PORTS-1,2,4096,128);wait_settled();stage=2;

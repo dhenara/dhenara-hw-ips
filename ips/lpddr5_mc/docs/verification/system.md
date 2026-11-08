@@ -45,6 +45,15 @@ python3 ips/lpddr5_mc/dv/integration/check.py --family datapath \
 
 The memory fixture retains commands until their last data and continuous-CS slots, then removes expired records. This bounds command tracking in sustained simulations while retaining stored bytes. Optional initial-pattern storage is fixture-only; normal tests still start with zero memory.
 
+The datapath's `--cap-mode 1` (strict) and `--cap-mode 2` (work-conserving) selections drive two independent AXI sources through the actual CDC, host and channel engines with 64-byte caps per direction in 512-CK windows. Each source writes sixteen disjoint full granules, then reads them after complete write settlement. Both channels and all four mapped QoS classes participate. The fixture observes accepted physical descriptors and actual ACCESS launches and checks the scheduler's CK origin against a separate counter. The [cap replay](../../dv/integration/caps.py) reconstructs live identities, charges actual issued bytes, checks every window and the settled tail, and compares byte totals with the independent command/pin/host replay. Before ending observation, the fixture quiesces both channel owners and waits for physical/maintenance drain; host settlement alone can leave a periodic MR4 read in flight. Active mutations must detect duplicate issue, budget excess, unserved work and a missing final boundary. Work-conserving runs must demonstrate borrowing on both channels. These commands configure focused checks; their reports establish whether they passed. This workload does not establish mixed-direction eligibility, zero-cap blocking, 32-byte cap charging or combined-controller fairness.
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family datapath --cap-mode 1 \
+  --report "$PWD/ips/lpddr5_mc/evidence/caps-strict/report.json" --build-name caps-strict
+python3 ips/lpddr5_mc/dv/integration/check.py --family datapath --cap-mode 2 \
+  --report "$PWD/ips/lpddr5_mc/evidence/caps-borrow/report.json" --build-name caps-borrow
+```
+
 ## Combined check command
 
 The controller regression polls dedicated TRAIN_DONE before ENABLE and reads actual per-channel device capabilities through APB, including nonzero paired-bank MR57. Its normal recovery scenario observes two changing MR4 values per channel through the real memory/channel/status/CDC/APB path, then checks that destructive recovery clears old observations and a fresh boot publishes its new capability descriptor and fresh temperature. The notification regression additionally rejects wrong-boot and wrong-configuration snapshots while retaining error detail. The [C example behavior test](../../dv/integration/control_example_test.c) compiles the delivered helper itself and covers cold/quiesced publication, running/fault rejection, changed boot, valid/epoch prerequisites, one-command bounded timeout and invalid callbacks. This callback fixture complements real APB admission checks; it does not replace them.

@@ -41,6 +41,7 @@ def main() -> None:
     parser.add_argument("--runtime-reset", action="store_true")
     parser.add_argument("--power-policy", type=int, choices=(1, 2))
     parser.add_argument("--integrity-mode", type=int, choices=range(5), default=0)
+    parser.add_argument("--cap-mode", type=int, choices=(1, 2))
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-smoke", action="store_true")
     for flag, values, default in (
@@ -66,6 +67,10 @@ def main() -> None:
     }
     if args.runtime_reset and (args.family != "controller" or args.power_policy or args.benchmark_direction):
         parser.error("runtime reset requires the normal controller fixture")
+    if args.cap_mode is not None and (
+        args.family != "datapath" or (args.ports, args.channels, args.integrity_mode) != (2, 2, 0)
+    ):
+        parser.error("cap modes require the plain two-port/two-channel datapath")
     if args.benchmark_smoke and not args.benchmark_direction:
         parser.error("benchmark smoke requires an explicit benchmark direction")
     if args.benchmark_direction and (
@@ -154,6 +159,7 @@ def main() -> None:
         "benchmark_direction": args.benchmark_direction,
         "benchmark_smoke": args.benchmark_smoke,
         "runtime_reset": args.runtime_reset,
+        "cap_mode": args.cap_mode,
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "source_sha256": manifest,
         "commands": [],
@@ -245,6 +251,10 @@ def main() -> None:
                     f"+benchmark_service={args.service_div}",
                 ]
             )
+    if args.cap_mode is not None:
+        commands[-1].extend(
+            [f"+cap_mode={args.cap_mode}", "+cap_observations=" + str(report.with_name("cap-observations.jsonl"))]
+        )
     if args.family == "apb_publication":
         simulation = commands.pop()
         scenarios = range(4) if args.scenario is None else [args.scenario]
@@ -330,6 +340,14 @@ def main() -> None:
                     profiles[0],
                     ranks=1,
                     depth=16,
+                )
+            if args.cap_mode is not None:
+                from caps import qualify as qualify_caps
+
+                result["cap_observations"] = qualify_caps(
+                    report.with_name("cap-observations.jsonl"),
+                    build / "cap-mutant.jsonl",
+                    result["external_observations"],
                 )
         after = {
             str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [REPO / p for p in manifest]

@@ -469,10 +469,14 @@ module datapath_tb #(
       // Mixed row/direction changes have separate measured costs. A1 churn
       // deliberately exercises every class's urgency without forced stalls.
       fairness_age=fairness_rows!=0 ? 1 : 32;
-      fairness_gap=fairness_mode==2 ? 128 : 64;
+      // Profile4 same-bank BL32 writes need at least 76 CK through write
+      // recovery, PRE, ACT and tRCD. Keep the balanced/read G64 baseline;
+      // the separately declared write-churn budget must be established by
+      // independent replay, including the tail, at every selected divisor.
+      fairness_gap=fairness_mode==2 ? 128 : fairness_rows!=0 && fairness_mode==1 ? 96 : 64;
       check($value$plusargs("fairness_observations=%s",fairness_path),"fairness observation path");
       fairness_stream=$fopen(fairness_path,"w");check(fairness_stream!=0,"fairness trace open");
-      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":4,\"mode\":%0d,\"divisor\":%0d,\"profile\":%0d,\"rows\":%0d,\"depth\":64,\"age\":%0d,\"tick\":8,\"gap\":%0d}",fairness_mode,fairness_service,PROFILE_NUMBER,fairness_rows,fairness_age,fairness_gap);
+      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":5,\"mode\":%0d,\"divisor\":%0d,\"profile\":%0d,\"rows\":%0d,\"depth\":64,\"age\":%0d,\"tick\":8,\"gap\":%0d}",fairness_mode,fairness_service,PROFILE_NUMBER,fairness_rows,fairness_age,fairness_gap);
     end
     if($value$plusargs("cap_mode=%d",cap_mode)) begin
       check(cap_mode==1 || cap_mode==2,"cap mode");

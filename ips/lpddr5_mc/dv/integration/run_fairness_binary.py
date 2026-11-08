@@ -139,6 +139,15 @@ def main():
                 assert case["fairness_observations"]["divisor"] == service
                 assert case["fairness_observations"]["mode"] == mode
                 assert case["fairness_observations"]["row_churn"] == bool(rows)
+                if "ips/lpddr5_mc/dv/integration/workload_costs.py" in source["source_sha256"]:
+                    from workload_costs import measure
+
+                    case["workload_costs"] = measure(trace)
+                    for direction in ("read", "write"):
+                        assert (
+                            case["workload_costs"][direction]["successful_payload_bytes"]
+                            == case["external_observations"][direction + "_bytes"]
+                        )
                 verify_source()
                 case["status"] = "passed"
             except BaseException as error:

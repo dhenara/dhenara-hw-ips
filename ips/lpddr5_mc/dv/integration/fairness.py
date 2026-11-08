@@ -35,7 +35,7 @@ def check(path: Path, physical: dict) -> dict:
             if header is None:
                 require(
                     kind == "header"
-                    and event["version"] in (2, 3, 4)
+                    and event["version"] in (2, 3, 4, 5)
                     and (event["version"] == 2 or event["rows"] in (0, 1))
                     and event["profile"] == 4
                     and event["mode"] in (0, 1, 2)
@@ -43,8 +43,15 @@ def check(path: Path, physical: dict) -> dict:
                     and (event["depth"], event["tick"]) == (64, 8)
                     and (event["age"], event["gap"])
                     == (
-                        (1 if event["rows"] else 32, 128 if event["mode"] == 2 else 64)
-                        if event["version"] == 4
+                        (
+                            1 if event["rows"] else 32,
+                            128
+                            if event["mode"] == 2
+                            else 96
+                            if event["version"] == 5 and event["rows"] and event["mode"] == 1
+                            else 64,
+                        )
+                        if event["version"] >= 4
                         else (32, 64)
                     ),
                     "combined fairness configuration",
@@ -157,30 +164,54 @@ def qualify(path: Path, temporary: Path, physical: dict) -> dict:
     issues = [i for i, e in enumerate(events) if e.get("issue") is not None]
     first = issues[0]
     second = next(i for i in issues[1:] if events[i]["channel"] == events[first]["channel"])
+
+    def replaced(replacements):
+        return [replacements.get(i, event) for i, event in enumerate(events) if replacements.get(i, event) is not None]
+
+    # Starve the final admitted issue, then observe a complete eligible tail.
+    # Removing every issue can instead overflow D64 before a longer workload
+    # gap expires, testing capacity rather than sensitivity to starvation.
+    tail_ck = events[issues[-1]]["ck"]
+    starved = [
+        {**event, "issue": None} if i == issues[-1] else event
+        for i, event in enumerate(events)
+        if event["kind"] == "header" or event["kind"] == "cycle" and event["ck"] <= tail_ck
+    ]
+    for ck in range(tail_ck + 1, tail_ck + events[0]["gap"] + 2):
+        for channel in range(2):
+            starved.append(
+                {
+                    "kind": "cycle",
+                    "ck": ck,
+                    "channel": channel,
+                    "admit": None,
+                    "issue": None,
+                    "pair": 0,
+                    "maintenance": 0,
+                    "ownership": 0,
+                    "response": 0,
+                    "pause": 0,
+                }
+            )
+    starved.append({"kind": "end", "ck": tail_ck + events[0]["gap"] + 2})
     variants = (
         (
             "duplicate_issue",
-            {second: {**events[second], "issue": events[first]["issue"]}},
+            replaced({second: {**events[second], "issue": events[first]["issue"]}}),
             "unmatched/duplicate combined fairness issue",
         ),
         (
             "starved_eligible_tail",
-            {i: {**events[i], "issue": None} for i in issues},
+            starved,
             "issue gap G including trace tail",
         ),
-        ("false_suspension", {first: {**events[first], "pause": 3}}, "suspension disagrees"),
-        ("missing_final_boundary", {len(events) - 1: None}, "missing combined fairness final boundary"),
+        ("false_suspension", replaced({first: {**events[first], "pause": 3}}), "suspension disagrees"),
+        ("missing_final_boundary", events[:-1], "missing combined fairness final boundary"),
     )
     result["trace_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     result["negative_cases"] = {}
-    for name, replacements, marker in variants:
-        temporary.write_text(
-            "".join(
-                json.dumps(replacements.get(i, event)) + "\n"
-                for i, event in enumerate(events)
-                if replacements.get(i, event) is not None
-            )
-        )
+    for name, altered, marker in variants:
+        temporary.write_text("".join(json.dumps(event) + "\n" for event in altered))
         try:
             check(temporary, physical)
         except Violation as error:

@@ -1,12 +1,15 @@
 """Synthetic traces qualify the accountant; actual RTL evidence is separate."""
 
+import copy
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
+from contracts.commands import access, activate, maintenance
 from fairness import check, qualify
+from system.dram import DramModel
 from system.host import Violation
 
 
@@ -74,6 +77,26 @@ def observations(mode):
 
 
 class CombinedFairnessTests(unittest.TestCase):
+    def test_profile_four_write_row_transition_cannot_meet_g64(self):
+        profile = json.loads((Path(__file__).resolve().parents[2] / "config/contracts/profiles.json").read_text())[
+            "profiles"
+        ][4]
+        profile = profile | {"ranks": 1}
+        model = DramModel(profile)
+        model.command(0, 1, activate(0, 0)[0])
+        model.command(1, 1, activate(0, 0)[1])
+        model.command(15, 1, access(True, 32, 0, 0))
+        # WL9 + split span8 + one CK + tWR28 = 46 before PRE.
+        # tRP15 and tRCD15 then make the minimum WR-to-WR gap 76.
+        with self.assertRaisesRegex(Violation, "PRE/REF recovery"):
+            copy.deepcopy(model).command(60, 1, maintenance("PRE", 0, False))
+        model.command(61, 1, maintenance("PRE", 0, False))
+        model.command(76, 1, activate(1, 0)[0])
+        model.command(77, 1, activate(1, 0)[1])
+        with self.assertRaisesRegex(Violation, "access without ready open row"):
+            copy.deepcopy(model).command(90, 1, access(True, 32, 0, 0))
+        self.assertIsNotNone(model.command(91, 1, access(True, 32, 0, 0)))
+
     def test_explicit_mixed_gap_and_legacy_failure(self):
         """New mixed costs never reinterpret the original G64 counterexample."""
         with tempfile.TemporaryDirectory(dir=os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) as temporary:
@@ -208,6 +231,36 @@ class CombinedFairnessTests(unittest.TestCase):
             result = check(path, physical)
             self.assertEqual(result["conditional_bound_ck"], 4112)
             self.assertEqual(len(result["aged_grants_by_channel_direction_port_class"]), 16)
+
+            # Version5 gives only same-bank write churn its separate G96
+            # workload ceiling. Keep all original G64 failures observable.
+            shifted = [{**events[0], "version": 5, "mode": 1, "gap": 96}]
+            for event in events[1:]:
+                if event["kind"] == "cycle" and event["ck"] == 63 and event["channel"] == 0:
+                    for ck in range(63, 83):
+                        for channel in range(2):
+                            shifted.append({**event, "ck": ck, "channel": channel, "admit": None, "issue": None})
+                altered = {**event, "ck": event["ck"] + (20 if event["ck"] >= 63 else 0)}
+                for field in ("admit", "issue"):
+                    if altered.get(field) is not None:
+                        altered[field] = {**altered[field], "write": 1}
+                shifted.append(altered)
+            physical = {"read_bytes": 0, "write_bytes": 16384}
+            path.write_text("".join(json.dumps(e) + "\n" for e in shifted))
+            result = qualify(path, Path(temporary) / "mutant.jsonl", physical)
+            self.assertEqual(result["conditional_bound_ck"], 6160)
+            self.assertEqual(result["measured_issue_gap_ck"], [84, 84])
+            for header, marker in (
+                ({"version": 4, "gap": 64}, "issue gap G including trace tail"),
+                ({"version": 4, "gap": 96}, "fairness configuration"),
+                ({"mode": 0}, "fairness configuration"),
+                ({"rows": 0, "age": 32}, "fairness configuration"),
+            ):
+                shifted[0] = shifted[0] | header
+                path.write_text("".join(json.dumps(e) + "\n" for e in shifted))
+                with self.assertRaisesRegex(Violation, marker):
+                    check(path, physical)
+                shifted[0] = {**events[0], "version": 5, "mode": 1, "gap": 96}
 
 
 if __name__ == "__main__":

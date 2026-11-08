@@ -24,6 +24,11 @@ for(genvar f=0;f<CHANNELS;f++) begin : fairness_observers
       issued=$sformatf("{\"tag\":%0d,\"generation\":%0d,\"write\":%0d,\"port\":%0d,\"qos\":%0d,\"bytes\":%0d,\"address\":%0d}",
         issue_value.tag,issue_value.generation,issue_value.is_write,issue_value.port_index,issue_value.qos_class,
         issue_value.is_64_bytes ? 64 : 32,issue_value.address);
+    if(admitted!="null" || issued!="null") begin
+      check(dut.channels[f].channel.backend.scheduler.config_i.read_urgent_age==16'(fairness_age)
+        && dut.channels[f].channel.backend.scheduler.config_i.write_urgent_age==16'(fairness_age)
+        && dut.channels[f].channel.backend.scheduler.config_i.age_tick_div==8,"fairness active age configuration");
+    end
     pair_live=dut.channels[f].channel.backend.scheduler.pair_pending_o;
     maintenance_pause=dut.channels[f].channel.backend.register_pending_i
       || dut.channels[f].channel.backend.register_owner_q

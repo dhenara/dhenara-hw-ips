@@ -35,15 +35,22 @@ def check(path: Path, physical: dict) -> dict:
             if header is None:
                 require(
                     kind == "header"
-                    and event["version"] in (2, 3)
+                    and event["version"] in (2, 3, 4)
                     and (event["version"] == 2 or event["rows"] in (0, 1))
                     and event["profile"] == 4
                     and event["mode"] in (0, 1, 2)
                     and event["divisor"] in (1, 2, 4)
-                    and (event["depth"], event["age"], event["tick"], event["gap"]) == (64, 32, 8, 64),
+                    and (event["depth"], event["tick"]) == (64, 8)
+                    and (event["age"], event["gap"])
+                    == (
+                        (1 if event["rows"] else 32, 128 if event["mode"] == 2 else 64)
+                        if event["version"] == 4
+                        else (32, 64)
+                    ),
                     "combined fairness configuration",
                 )
                 header = event
+                models = [Fairness(age_threshold=event["age"], issue_gap=event["gap"]) for _ in range(2)]
                 continue
             if kind == "end":
                 require(all(v is not None and event["ck"] == v + 1 for v in last), "fairness final CK boundary")
@@ -102,7 +109,7 @@ def check(path: Path, physical: dict) -> dict:
                 worst_wait[c] = max(worst_wait[c], eligible[c] - admission_eligible)
                 group = c, issue["write"], issue["port"], issue["qos"]
                 grants[group] += 1
-                if ck - admission_ck >= 264:
+                if ck - admission_ck >= (header["age"] + 1) * header["tick"]:
                     urgent[group] += 1
                     if any(item[0]["qos"] > issue["qos"] for item in live[c].values()):
                         escapes[group] += 1
@@ -122,8 +129,9 @@ def check(path: Path, physical: dict) -> dict:
         "divisor": header["divisor"],
         "profile": header["profile"],
         "row_churn": bool(header.get("rows", 0)),
+        "age_threshold_ticks": header["age"],
         "conditional_bound_ck": models[0].bound,
-        "maximum_issue_gap_ck": 64,
+        "maximum_issue_gap_ck": header["gap"],
         "measured_issue_gap_ck": [m.worst_gap for m in models],
         "maximum_eligible_wait_ck": worst_wait,
         "maximum_live_by_channel": maximum,

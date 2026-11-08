@@ -74,6 +74,56 @@ def observations(mode):
 
 
 class CombinedFairnessTests(unittest.TestCase):
+    def test_explicit_mixed_gap_and_legacy_failure(self):
+        """New mixed costs never reinterpret the original G64 counterexample."""
+        with tempfile.TemporaryDirectory(dir=os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) as temporary:
+            path = Path(temporary) / "observations.jsonl"
+            for delay in (80, 129):
+                events, physical = observations(2)
+                first = {e["channel"]: e["admit"] for e in events[1:3]}
+                delayed = [events[0]]
+                for ck in range(delay):
+                    for channel in range(2):
+                        delayed.append(
+                            {
+                                **events[channel + 1],
+                                "ck": ck,
+                                "admit": first[channel] if ck == 0 else None,
+                                "issue": None,
+                            }
+                        )
+                for event in events[1:]:
+                    delayed.append({**event, "ck": event["ck"] + delay})
+                    if event.get("ck") == 0:
+                        delayed[-1]["admit"] = None
+                path.write_text("".join(json.dumps(e) + "\n" for e in delayed))
+                with self.assertRaisesRegex(Violation, "issue gap G including trace tail"):
+                    check(path, physical)
+                delayed[0].update(version=4, rows=0, gap=128)
+                path.write_text("".join(json.dumps(e) + "\n" for e in delayed))
+                if delay == 80:
+                    result = check(path, physical)
+                    self.assertEqual(result["maximum_issue_gap_ck"], 128)
+                    self.assertEqual(result["measured_issue_gap_ck"], [81, 81])
+                    self.assertEqual(result["conditional_bound_ck"], 8456)
+                else:
+                    with self.assertRaisesRegex(Violation, "issue gap G including trace tail"):
+                        check(path, physical)
+
+    def test_low_age_churn_still_requires_every_class(self):
+        with tempfile.TemporaryDirectory(dir=os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) as temporary:
+            path = Path(temporary) / "observations.jsonl"
+            events, physical = observations(0)
+            events[0].update(version=4, rows=1, age=1)
+            path.write_text("".join(json.dumps(e) + "\n" for e in events))
+            with self.assertRaisesRegex(Violation, "missing row-churn aged source/class grants"):
+                check(path, physical)
+            # Single-direction reference G64 cannot be widened by the header.
+            events[0].update(gap=128)
+            path.write_text("".join(json.dumps(e) + "\n" for e in events))
+            with self.assertRaisesRegex(Violation, "fairness configuration"):
+                check(path, physical)
+
     def test_modes_and_active_mutations(self):
         with tempfile.TemporaryDirectory(dir=os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) as temporary:
             path = Path(temporary) / "observations.jsonl"
@@ -153,6 +203,11 @@ class CombinedFairnessTests(unittest.TestCase):
             result = check(path, physical)
             self.assertEqual(len(result["aged_grants_by_channel_direction_port_class"]), 16)
             self.assertEqual(result["maximum_live_by_channel"], [64, 64])
+            events[0].update(version=4, age=1)
+            path.write_text("".join(json.dumps(e) + "\n" for e in events))
+            result = check(path, physical)
+            self.assertEqual(result["conditional_bound_ck"], 4112)
+            self.assertEqual(len(result["aged_grants_by_channel_direction_port_class"]), 16)
 
 
 if __name__ == "__main__":

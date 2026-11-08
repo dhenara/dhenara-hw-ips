@@ -66,7 +66,9 @@ The register fixture extends the recovery sum beyond physical return time and ch
 
 Use `--channel-case 7` for exactly one MR4/ZQ visit per populated rank in each of two successive sweeps, including changed returned temperature. Both one- and two-rank cases check the quiet interval after completion. The write-link case with REFpb also checks periodic MR4 through staggered two-rank refresh rounds; a missed 3000-CK watchdog remains a failure.
 
-Use `--channel-case 8` for the MR4-to-due-ZQ handoff under row-changing traffic with one and two ranks. The monitor arms on final-rank MR4 completion only when ZQ is still pending, requires a nonempty checked window, and rejects ACT at the CA pins until the first ZQ latch. This scheduling regression uses the internal pending indication to select its window; it is separate from independent protocol legality and final throughput checks.
+The maintenance fixture checks two successive normal-interval REF/MR4/ZQ groups with one/two ranks, exact REF membership and suppression of repeated pull-in while ZQ remains pending. The existing REFpb, hot fallback, thermal/retention faults, self-refresh and destructive recovery cases remain active.
+
+Use `--channel-case 8` for the MR4-to-due-ZQ handoff under row-changing traffic with one and two ranks. The monitor arms on final-rank MR4 completion only when ZQ is still pending, requires a nonempty checked window, and rejects ACT at the CA pins until the first ZQ latch. With all-bank refresh it also samples actual CA REF membership before MR4, requires at least one complete observed group and rejects repeated or partial REF membership. This scheduling regression uses internal pending/request indications to select its window; it is separate from independent protocol legality and final throughput checks.
 
 Use `--channel-case 1` for write link, `2` for link plus inline, `3` for normal WCK, `4` for malformed ingress, `5` for management/recovery and `6` for RFM/thermal stress. `--per-bank-refresh` elaborates the channel's REFpb preference; thermal admission may select the documented all-bank fallback. `--trace-epochs` adds physical member/register diagnostics.
 

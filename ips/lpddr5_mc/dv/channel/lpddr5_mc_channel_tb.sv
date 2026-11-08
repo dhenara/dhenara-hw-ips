@@ -27,6 +27,9 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   int mr43_count,mr4_count,zq_count,refresh_count,rfm_count,cycles;
   bit check_poll_handoff=0,poll_handoff_pending=0;
   int poll_handoff_windows=0,poll_handoff_zq;
+  bit check_poll_coalesce=0,poll_coalesce_pending=0,poll_request_seen=0;
+  logic [1:0] poll_refresh_seen=0;
+  int poll_coalesce_windows=0;
   logic notification_valid,notification_error_valid,first_error_valid;
   logic notification_ready=1,memory_reset=0,check_fsp=0,mrw_pending=0;
   int mrw_count=0,mrw_address=0,last_mrw=0,sre_count=0,srx_count=0,last_srx=0;
@@ -86,6 +89,26 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   end
   task automatic check_control_pins;
     logic [7:0] expected_value;
+    if(check_poll_coalesce) begin
+      if(dut.mr4_request && !poll_request_seen) begin
+        assert(!poll_coalesce_pending) else $fatal(1,"overlapping periodic sweep");
+        poll_coalesce_pending=1;poll_refresh_seen=0;
+      end
+      poll_request_seen=dut.mr4_request;
+      if(poll_coalesce_pending && ca.cs!=0) begin
+        if(ca.address[6:0]==56 && !ca.address[10]) begin
+          assert(ca.address[13] && !poll_refresh_seen[ca.cs==2 ? 1 : 0]) else $fatal(1,"duplicate/partial coalesced REF");
+          poll_refresh_seen[ca.cs==2 ? 1 : 0]=1;
+        end
+        if(ca.address[6:0]==24 && ca.address[13:7]==4)
+          assert(poll_refresh_seen==2'((1<<int'(cfg.profile.ranks))-1))
+            else $fatal(1,"periodic MR4 preceded its full REF rank group");
+      end
+      if(poll_coalesce_pending && dut.mr4_done) begin
+        assert(poll_refresh_seen==2'((1<<int'(cfg.profile.ranks))-1)) else $fatal(1,"missing coalesced REF membership");
+        poll_coalesce_pending=0;poll_coalesce_windows++;
+      end
+    end
     if(check_poll_handoff && dut.mr4_done) begin
       $display("periodic handoff sample CK=%0d ranks=%0d pendingZQ=%0d MR4=%0d ZQ=%0d",cycles,cfg.profile.ranks,dut.zq_request,mr4_count,zq_count);
       if(dut.zq_request) begin
@@ -331,13 +354,21 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     for(int rank_count=1;rank_count<=2;rank_count++) begin
       setup_control(rank_count);check_poll_handoff=1;
       poll_handoff_pending=0;poll_handoff_windows=0;
+      check_poll_coalesce=!PER_BANK_REFRESH;poll_request_seen=dut.mr4_request;
+      poll_coalesce_pending=0;poll_refresh_seen=0;poll_coalesce_windows=0;
       // Boot may have serviced the initial sweep in QUIET already. Arm on
       // actual final-rank MR4 completion only when ZQ is still due, then
       // observe CA until its first latch. Require a nonempty checked window.
-      row_churn();check_poll_handoff=0;
+      row_churn();
+      for(int c=0;c<1000 && poll_coalesce_pending;c++) step();
+      check_poll_handoff=0;check_poll_coalesce=0;
       assert(poll_handoff_windows>0 && !poll_handoff_pending)
         else $fatal(1,"periodic handoff not exercised ranks=%0d windows=%0d pending=%0d",rank_count,poll_handoff_windows,poll_handoff_pending);
       $display("PASS periodic MR4 to due ZQ handoff ranks=%0d windows=%0d MR4=%0d ZQ=%0d",rank_count,poll_handoff_windows,mr4_count,zq_count);
+      if(!PER_BANK_REFRESH) begin
+        assert(poll_coalesce_windows>0 && !poll_coalesce_pending) else $fatal(1,"no complete coalesced periodic window");
+        $display("PASS pin REF group before periodic MR4 ranks=%0d windows=%0d",rank_count,poll_coalesce_windows);
+      end
     end
   endtask
   task automatic wait_low_power;

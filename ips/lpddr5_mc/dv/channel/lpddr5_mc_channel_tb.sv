@@ -25,6 +25,8 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   lpddr5_mc_read_request4_t read_value;
   lpddr5_mc_return4_t return_value;
   int mr43_count,mr4_count,zq_count,refresh_count,rfm_count,cycles;
+  bit check_poll_handoff=0,poll_handoff_pending=0;
+  int poll_handoff_windows=0,poll_handoff_zq;
   logic notification_valid,notification_error_valid,first_error_valid;
   logic notification_ready=1,memory_reset=0,check_fsp=0,mrw_pending=0;
   int mrw_count=0,mrw_address=0,last_mrw=0,sre_count=0,srx_count=0,last_srx=0;
@@ -84,7 +86,17 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   end
   task automatic check_control_pins;
     logic [7:0] expected_value;
+    if(check_poll_handoff && dut.mr4_done) begin
+      $display("periodic handoff sample CK=%0d ranks=%0d pendingZQ=%0d MR4=%0d ZQ=%0d",cycles,cfg.profile.ranks,dut.zq_request,mr4_count,zq_count);
+      if(dut.zq_request) begin
+        poll_handoff_pending=1;poll_handoff_zq=zq_count;poll_handoff_windows++;
+      end
+    end
+    if(poll_handoff_pending && zq_count>poll_handoff_zq) poll_handoff_pending=0;
     if(ca.cs!=0) begin
+      if(check_poll_handoff && poll_handoff_pending)
+        assert(!(ca.address[2:0] inside {3'b111,3'b011}))
+          else $fatal(1,"periodic handoff reopened a row before due ZQ CK=%0d",cycles);
       if(ca.address[6:0]==104) sre_count++;
       if(ca.address[6:0]==40) begin srx_count++;last_srx=cycles;end
       if(check_fsp) begin
@@ -315,6 +327,19 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       $display("PASS single periodic MR4/ZQ visit ranks=%0d MR4=%0d ZQ=%0d temperature=%0d",rank_count,mr4_count,zq_count,status_value.temperature_mr4);
     end
   endtask
+  task automatic poll_handoff_case;
+    for(int rank_count=1;rank_count<=2;rank_count++) begin
+      setup_control(rank_count);check_poll_handoff=1;
+      poll_handoff_pending=0;poll_handoff_windows=0;
+      // Boot may have serviced the initial sweep in QUIET already. Arm on
+      // actual final-rank MR4 completion only when ZQ is still due, then
+      // observe CA until its first latch. Require a nonempty checked window.
+      row_churn();check_poll_handoff=0;
+      assert(poll_handoff_windows>0 && !poll_handoff_pending)
+        else $fatal(1,"periodic handoff not exercised ranks=%0d windows=%0d pending=%0d",rank_count,poll_handoff_windows,poll_handoff_pending);
+      $display("PASS periodic MR4 to due ZQ handoff ranks=%0d windows=%0d MR4=%0d ZQ=%0d",rank_count,poll_handoff_windows,mr4_count,zq_count);
+    end
+  endtask
   task automatic wait_low_power;
     for(int c=0;c<2000;c++) begin
       if(management_out.lp_ctrl_req && management_out.lp_data_req) return;
@@ -482,6 +507,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     for(int c=0;c<5;c++)
       if(selected_case==0 || (selected_case==5 && c<4) || (selected_case==6 && c==4)) control_case(c);
     if(selected_case inside {0,7}) poll_once_case();
+    if(selected_case inside {0,8}) poll_handoff_case();
     $display("PASS selected channel cases selection=%0d",selected_case);$finish;
   end
 endmodule

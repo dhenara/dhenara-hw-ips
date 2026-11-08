@@ -73,6 +73,7 @@ def main() -> None:
     parser.add_argument("--cap-traffic", choices=("phase", "mixed"), default="phase")
     parser.add_argument("--zero-cap-direction", choices=("read", "write"))
     parser.add_argument("--fairness-mode", type=int, choices=(0, 1, 2))
+    parser.add_argument("--fairness-traffic", choices=("balanced", "row-churn"), default="balanced")
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
@@ -139,6 +140,8 @@ def main() -> None:
         or args.granule_bytes != 64
     ):
         parser.error("fairness requires two plain AXI128 ports/channels, one rank, depth64/profile4/64-byte granules")
+    if args.fairness_traffic != "balanced" and args.fairness_mode is None:
+        parser.error("fairness traffic selection requires --fairness-mode")
     if args.benchmark_smoke and not args.benchmark_direction:
         parser.error("benchmark smoke requires an explicit benchmark direction")
     if args.benchmark_direction and (
@@ -238,6 +241,7 @@ def main() -> None:
         "cap_traffic": args.cap_traffic,
         "zero_cap_direction": args.zero_cap_direction,
         "fairness_mode": args.fairness_mode,
+        "fairness_traffic": args.fairness_traffic,
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "source_sha256": manifest,
         "commands": [],
@@ -350,6 +354,7 @@ def main() -> None:
         commands[-1].extend(
             [
                 f"+fairness_mode={args.fairness_mode}",
+                f"+fairness_rows={int(args.fairness_traffic == 'row-churn')}",
                 "+fairness_observations=" + str(report.with_name("fairness-observations.jsonl")),
             ]
         )

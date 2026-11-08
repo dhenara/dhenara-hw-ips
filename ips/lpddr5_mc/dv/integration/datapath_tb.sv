@@ -54,7 +54,7 @@ module datapath_tb #(
   int cap_mode=0,cap_stream,cap_ck=0,cap_granule_bytes=64,cap_mixed=0,zero_cap_direction=-1;
   string cap_path;
   int zero_admissions[CHANNELS];
-  int fairness_mode=-1,fairness_stream;
+  int fairness_mode=-1,fairness_stream,fairness_rows=0;
   string fairness_path;
   longint unsigned written_bytes=0;
   logic [PORTS-1:0][15:0] last_bid;
@@ -461,9 +461,10 @@ module datapath_tb #(
     int before_b;
     if($value$plusargs("fairness_mode=%d",fairness_mode)) begin
       check(fairness_mode inside {0,1,2} && cap_mode==0,"fairness selection");
+      if($value$plusargs("fairness_rows=%d",fairness_rows)) check(fairness_rows inside {0,1},"fairness traffic selection");
       check($value$plusargs("fairness_observations=%s",fairness_path),"fairness observation path");
       fairness_stream=$fopen(fairness_path,"w");check(fairness_stream!=0,"fairness trace open");
-      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":2,\"mode\":%0d,\"divisor\":%0d,\"profile\":%0d,\"depth\":64,\"age\":32,\"tick\":8,\"gap\":64}",fairness_mode,SERVICE_DIV,PROFILE_NUMBER);
+      $fdisplay(fairness_stream,"{\"kind\":\"header\",\"version\":3,\"mode\":%0d,\"divisor\":%0d,\"profile\":%0d,\"rows\":%0d,\"depth\":64,\"age\":32,\"tick\":8,\"gap\":64}",fairness_mode,SERVICE_DIV,PROFILE_NUMBER,fairness_rows);
     end
     if($value$plusargs("cap_mode=%d",cap_mode)) begin
       check(cap_mode==1 || cap_mode==2,"cap mode");

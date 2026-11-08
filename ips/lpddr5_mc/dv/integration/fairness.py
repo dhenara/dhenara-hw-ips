@@ -35,7 +35,8 @@ def check(path: Path, physical: dict) -> dict:
             if header is None:
                 require(
                     kind == "header"
-                    and event["version"] == 2
+                    and event["version"] in (2, 3)
+                    and (event["version"] == 2 or event["rows"] in (0, 1))
                     and event["profile"] == 4
                     and event["mode"] in (0, 1, 2)
                     and event["divisor"] in (1, 2, 4)
@@ -112,12 +113,15 @@ def check(path: Path, physical: dict) -> dict:
     groups = {(c, d, p, q) for c in range(2) for d in directions for p in range(2) for q in range(4)}
     require(set(grants) == groups and set(admitted) == groups, "combined fairness source/class coverage")
     require(all(grants[g] == admitted[g] == 16 for g in groups), "combined fairness source/class totals")
+    if header.get("rows", 0):
+        require(set(urgent) == groups, "missing row-churn aged source/class grants")
     payload = [16384 if d in directions else 0 for d in range(2)]
     require([physical["read_bytes"], physical["write_bytes"]] == payload, "combined fairness physical payload")
     return {
         "mode": header["mode"],
         "divisor": header["divisor"],
         "profile": header["profile"],
+        "row_churn": bool(header.get("rows", 0)),
         "conditional_bound_ck": models[0].bound,
         "maximum_issue_gap_ck": 64,
         "measured_issue_gap_ck": [m.worst_gap for m in models],

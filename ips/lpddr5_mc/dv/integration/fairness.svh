@@ -43,10 +43,14 @@ task automatic fairness_source(input int p);
     longint unsigned at;
     // Limit each source to 32 live addresses, including both directions.
     // Thus each channel has at most 64 pending candidates for the D64 bound.
-    while((fairness_mode==2 ? 2*n : n)-b_count[p]-r_count[p]/(64/BYTES)>=32) source_negative(p);
+    while((fairness_mode==2 ? 2*n+2 : n+1)-b_count[p]-r_count[p]/(64/BYTES)>32) source_negative(p);
     at=64'd131072+64'(int'(n*256+p*128+((n/4+p)%2)*64));
+    // Four rows in one bank per source, with distinct columns/addresses.
+    // Reads use a separate four-row set within the programmed 1-MiB region.
+    // Slow row turnover creates queue pressure without forced internal stalls.
+    if(fairness_rows!=0) at=64'd131072+64'(int'((n%4)*65536+(n/4)*128+p*8192+((n/4+p)%2)*64));
     if(fairness_mode!=0) begin send_aw(p,16'(64+n%64),at,64/BYTES);send_w(p,at,64/BYTES);end
-    if(fairness_mode!=1) send_ar(p,16'(96+n%64),at+64'd65536,64/BYTES);
+    if(fairness_mode!=1) send_ar(p,16'(96+n%64),at+(fairness_rows!=0 ? 64'd524288 : 64'd65536),64/BYTES);
   end
 endtask
 

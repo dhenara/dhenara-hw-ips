@@ -58,9 +58,11 @@ The table describes assertions present in source. Passing claims additionally re
 - An 8,000-CK self-refresh hold, actual update release before SRX, tXSR and extra REF before reentry.
 - PHY update and IDLE/SR master windows with fresh rank reports.
 - Destructive recovery after an actual late update acknowledgement, explicit host settlement/reset confirmation, retained old-boot diagnostics, stale initialization/token rejection and fresh traffic.
-- Mandatory RFM from row churn followed by thermal codes 13/15, refresh service and MR4 progress.
+- Mandatory RFM from row churn followed by thermal codes 13/15, refresh service and MR4 progress. The thermal restart observes ENABLE acceptance, checks that urgent-maintenance rejection keeps QUIET admission closed, and retries for at most 2000 CK before starting traffic.
 
 A quiesce wait requires both QUIET and actual drained status, because background register work can start while the lifecycle remains QUIET. The CA-driven memory fixture independently counts ACT and REF/RFM decrements and rejects an ACT beyond its paired-bank bound. A component lifecycle check separately supplies actual rank-specific PHY refresh execution within the admitted two-CK bound and verifies a missing-execution fault retains PHY acknowledgement.
+
+Use `--channel-case 7` for exactly one MR4/ZQ visit per populated rank in each of two successive sweeps, including changed returned temperature. Both one- and two-rank cases check the quiet interval after completion. The write-link case with REFpb also checks periodic MR4 through staggered two-rank refresh rounds; a missed 3000-CK watchdog remains a failure.
 
 Use `--channel-case 1` for write link, `2` for link plus inline, `3` for normal WCK, `4` for malformed ingress, `5` for management/recovery and `6` for RFM/thermal stress. `--per-bank-refresh` elaborates the channel's REFpb preference; thermal admission may select the documented all-bank fallback. `--trace-epochs` adds physical member/register diagnostics.
 

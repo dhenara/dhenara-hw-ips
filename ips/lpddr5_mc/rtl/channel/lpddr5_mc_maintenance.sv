@@ -121,12 +121,13 @@ module lpddr5_mc_maintenance (
     urgent_o=running_q && (pending_q || candidate || fault_o);
     request_valid_o=pending_q && running_q && !fault_o;
     request_rank_o=pending_rank_q; request_rfm_o=pending_rfm_q; request_all_o=pending_all_q; request_pair_o=pending_pair_q;
-    // Poll before a complete REFpb round can consume the last MR4 window.
-    // The lead covers traffic/precharge/refresh drain, serialized rank MRR
-    // service and arbitration slack. Preserve the earlier 600-CK lead when
-    // it is already more conservative (including the all-bank policy).
-    poll_lead=maintenance_admission_budget(effective_profile_o,effective_per_bank_o)
-      +32'(profile_i.ranks)*register_service_budget(effective_profile_o)+64;
+    // A second rank can become due while the first rank's REFpb round is
+    // already in progress. Both rounds then precede the remaining MR4
+    // visits on the shared pins. Reserve refresh drain/recovery for every
+    // populated rank, as well as their serialized register transactions;
+    // one round's reserve can leave the final MR4 past its watchdog.
+    poll_lead=32'(profile_i.ranks)*(maintenance_admission_budget(effective_profile_o,effective_per_bank_o)
+      +register_service_budget(effective_profile_o))+64;
     if(poll_lead<600) poll_lead=600;
     mr4_request_o=running_q && !fault_o && ck_q-last_mr4_q+64'(poll_lead)>=64'd3000;
     zq_request_o=running_q && !fault_o && ck_q-last_zq_q+64'(poll_lead)>=64'd3000;

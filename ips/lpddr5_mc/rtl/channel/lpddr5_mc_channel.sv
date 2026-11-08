@@ -347,7 +347,10 @@ module lpddr5_mc_channel #(
         end
       end
       case(register_state_q)
-        REG_IDLE: if(service && !life_fault && (mr4_request || zq_request)) begin
+        // Completion reaches the maintenance timer on this edge. Its old
+        // request is still visible until that timer samples done; do not
+        // start another rank sweep from the just-completed obligation.
+        REG_IDLE: if(service && !life_fault && !mr4_done && !zq_done && (mr4_request || zq_request)) begin
           register_state_q<=REG_SEND;register_rank_q<=0;register_zq_q<=!mr4_request;hottest_q<=1;
         end
         REG_SEND: if(register_valid && register_ready) register_state_q<=REG_WAIT;

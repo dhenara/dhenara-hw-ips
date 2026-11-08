@@ -47,7 +47,7 @@ for(genvar bp=0;bp<PORTS;bp++) begin : benchmark_ports
         // This remains inside the recorded warm-up: no window is shifted and
         // responses stay ready from BENCHMARK_START through final settlement.
         wait(benchmark_admitted[bp]==DEPTH);
-        $display("BENCHMARK_WRITE_PREFILL port=%0d admitted=%0d ps=%0d",bp,benchmark_admitted[bp],longint'($realtime*1000.0));
+        $display("BENCHMARK_WRITE_PREFILL port=%0d admitted=%0d ps=%0d",bp,benchmark_admitted[bp],observer.timestamp_ps());
         forever begin
           source_negative(bp);
           if(benchmark_address_done[bp] && seq==benchmark_admitted[bp]) break;
@@ -96,7 +96,9 @@ task automatic benchmark_run;
     benchmark_admitted[p]=0;benchmark_completed[p]=0;benchmark_wbeats[p]=0;benchmark_read_beat[p]=0;
   end
   @(negedge clk);
-  benchmark_start_ps=longint'($realtime*1000.0);
+  // Reuse the sampled-time conversion: Verilator5.006 truncates fractional
+  // nanoseconds inside a direct longint'($realtime*1000.0) expression.
+  benchmark_start_ps=observer.timestamp_ps();
   benchmark_started=1;benchmark_sources=1;bready='1;rready='1;
   $display("BENCHMARK_START ps=%0d direction=%0d service=%0d periods=%0d",benchmark_start_ps,benchmark_direction,benchmark_service,benchmark_periods);
   for(int period_value=0;period_value<benchmark_periods;period_value++) begin

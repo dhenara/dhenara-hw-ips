@@ -257,6 +257,8 @@ The explicit `--benchmark-smoke` option runs two periods and returns no throughp
 
 The write source first admits 64 AW addresses per port before offering W, filling the declared address credits during the existing recorded warm-up. Response READY stays high from `BENCHMARK_START`; the ten warm-up periods, 90 measured periods and backlog comparison are unchanged. The replay checks each startup marker against the actual number of accepted and outstanding AW addresses before the first W handshake and records those observations. Historical traces without this startup marker retain their original startup behavior and are reported without a prefill claim. This stimulus change does not itself establish steady backlog or throughput; the complete measurement must still pass both checks.
 
+Benchmark start and prefill markers use the observer's real-valued picosecond conversion, preserving fractional source-edge times under the pinned Verilator version. A marker that disagrees with its actual AW observation fails replay; it is not rounded or adjusted by the checker. Earlier reports retain their original printed start time and are not silently reinterpreted as corrected captures.
+
 ```sh
 python3 ips/lpddr5_mc/dv/integration/check_benchmark.py \
   ips/lpddr5_mc/evidence/benchmark-smoke/observations.jsonl.gz \

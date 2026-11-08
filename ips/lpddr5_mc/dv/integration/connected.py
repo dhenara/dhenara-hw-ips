@@ -17,6 +17,7 @@ from system.phy import DigitalPhy
 from system.return_timing import ReturnTiming
 from system.trace import source_order
 from thermal import ThermalReturns
+from wck_observations import WckObservations
 
 
 def number(value):
@@ -53,6 +54,7 @@ def check(
         header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end, id_bits=id_bits, address_bits=address_bits
     )
     phy = [DigitalPhy(profile) for _ in range(channels)]
+    wck = [WckObservations(profile) for _ in range(channels)]
     thermal = [ThermalReturns(p.dram.maintenance) for p in phy]
     return_timing = [ReturnTiming(profile) for _ in range(channels)]
     completion = [CompletionOracle([], 16, profile["dfi_wck"]["tphy_rdlat"]) for _ in range(channels)]
@@ -153,6 +155,7 @@ def check(
                 "incoherent CK observation clock",
             )
             model = phy[c]
+            wck[c].sample(ck, e["cs"], e["ca"], number(e["wck"]))
             b = model.command(ck, e["cs"], e["ca"])
             if e["cs"]:
                 commands += 1
@@ -311,7 +314,7 @@ def check(
                 not any(q for value in completion for q in value.pending.values()),
                 "unsettled physical read tail",
             )
-            for model in [*phy, *return_timing]:
+            for model in [*phy, *return_timing, *wck]:
                 model.finish()
             for observer in thermal:
                 observer.finish()
@@ -325,11 +328,13 @@ def check(
         "returned_slices": reads,
         "physical_return_timing": [t.finish() for t in return_timing],
         "temperature_returns_by_channel": [t.finish() for t in thermal],
+        "wck_by_channel": [t.finish() for t in wck],
         "write_bytes": host.handshaken_bytes[True],
         "read_bytes": host.handshaken_bytes[False],
         "limitations": [
-            "Plain identity-mapped data and configured admission errors; ECC, reset and full WCK-edge "
-            "qualification remain separate."
+            "Plain identity-mapped data, configured admission errors and serialized digital WCK controls; "
+            "ECC and pin behavior through destructive reset remain separate. Active WCK at trace end is "
+            "reported explicitly; it does not demonstrate final disable or electrical timing."
         ],
     }
     if fault_ps is not None:

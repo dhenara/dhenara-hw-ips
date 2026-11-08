@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import sys
+import tempfile
 from pathlib import Path
 
 from connected import check, number
@@ -124,6 +125,27 @@ def thermal_sensitivity(events: list[dict], observations: list[list[dict]]) -> d
     return {"missed_hot_refresh": altered}
 
 
+def wck_sensitivity(events: list[dict]) -> dict[str, list[dict]]:
+    variants = {}
+    cases = (
+        ("missing_wck_edge", lambda w: w & 3 == 3, lambda w: w ^ 1),
+        ("early_wck_edge", lambda w: w >> 32 & 1 and w & 3 == 0, lambda w: w | 2),
+        ("missing_wck_enable", lambda w: w >> 32 & 1, lambda w: w & ~(1 << 32)),
+        ("wrong_wck_rank", lambda w: w >> 16 & 3 == 1, lambda w: w ^ (3 << 16)),
+        (
+            "wck_cs_hole",
+            lambda w: w & 3 == 3,
+            lambda w: w & ~((1 << 32) | (3 << 16) | 3),
+        ),
+    )
+    for name, predicate, change in cases:
+        altered = copy.deepcopy(events)
+        target = next(e for e in altered if e["kind"] == "phy" and predicate(number(e["wck"])))
+        target["wck"] = hex(change(number(target["wck"])))
+        variants[name] = altered
+    return variants
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", type=Path)
@@ -165,12 +187,16 @@ def main():
             mr4_change_ck=args.mr4_change_ck,
         )
         events = [json.loads(line) for line in args.trace.read_text().splitlines()]
-        variants = sensitivity(events, profile) | thermal_sensitivity(
-            events, report["baseline"]["temperature_returns_by_channel"]
+        variants = (
+            sensitivity(events, profile)
+            | thermal_sensitivity(events, report["baseline"]["temperature_returns_by_channel"])
+            | wck_sensitivity(events)
         )
         for name, altered in variants.items():
-            path = storage / (name + ".jsonl")
-            path.write_text("".join(json.dumps(e) + "\n" for e in altered))
+            descriptor, temporary = tempfile.mkstemp(prefix=name + "-", suffix=".jsonl", dir=storage)
+            path = Path(temporary)
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write("".join(json.dumps(e) + "\n" for e in altered))
             try:
                 check(
                     path,

@@ -10,6 +10,7 @@ from collections import deque
 from pathlib import Path
 
 from contracts.read_completion import CompletionOracle, ExpectedWord, ReadBusOracle
+from physical_ownership import WriteOwnership
 from read_ownership import ReadOwnership
 from system.adapters import returned_snapshot
 from system.dram import decode
@@ -36,6 +37,7 @@ def check(
     id_bits: int = 16,
     address_bits: int = 40,
     fault_ps: int | None = None,
+    observe_axi: bool = False,
 ) -> dict:
     profile = copy.deepcopy(profile)
     profile["ranks"] = ranks
@@ -55,6 +57,7 @@ def check(
         header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end, id_bits=id_bits, address_bits=address_bits
     )
     read_ownership = ReadOwnership(host)
+    write_ownership = WriteOwnership(host)
     phy = [DigitalPhy(profile) for _ in range(channels)]
     wck = [WckObservations(profile) for _ in range(channels)]
     thermal = [ThermalReturns(p.dram.maintenance) for p in phy]
@@ -66,7 +69,7 @@ def check(
     word_owner = [{} for _ in range(channels)]
     mrr_windows = [[] for _ in range(channels)]
     source_queues = {(p, w): deque() for p in range(ports) for w in (False, True)}
-    final_pin = {}
+    physical_pending = set()
     ratio = profile["ratio"]
     origin_ps = None
     ended = False
@@ -77,23 +80,17 @@ def check(
     def logical(channel, physical):
         return physical if channels == 1 else (physical & 63) | (channel << 6) | ((physical & ~63) << 1)
 
-    def owner(address, write):
-        candidates = [
-            tag for tag, t in host.transactions.items() if not t.done and t.write == write and address in t.hazard
-        ]
-        require(len(candidates) == 1, "physical address has no unique admitted source owner")
-        return candidates[0]
-
     def finish_physical(tag, ps):
         t = host.transactions[tag]
         if t.error or t.physical or host.faulted:
             return
         if t.write:
-            require(ps >= final_pin.get(tag, float("inf")), "AXI response before final physical pin")
+            write_ownership.complete_before(tag, ps)
         else:
             read_ownership.complete_before(tag, ps)
         host.physical_done(tag)
         host.integrity_done(tag)
+        physical_pending.discard(tag)
 
     # Same-instant physical observations precede response eligibility checks.
     # Actual AW/AR ties retain the independent source-order rule.
@@ -106,10 +103,19 @@ def check(
     for e in events:
         require(not ended, "raw event after end")
         kind, ps = e["kind"], e["ps"]
+        # Physical/integrity retirement follows independent pin/return
+        # witnesses, even while an older source B/R remains backpressured.
+        # Capture read snapshots before any younger overlapping write effect.
+        for tag in sorted(physical_pending):
+            t = host.transactions[tag]
+            ownership = write_ownership if t.write else read_ownership
+            if not (t.physical or t.error or host.faulted) and ownership.ready(tag, ps):
+                finish_physical(tag, ps)
         if kind == "fault":
             require(fault_ps is not None and observed_fault is None and ps == fault_ps, "unexpected fault witness")
             observed_fault = ps
             host.fail()
+            physical_pending.clear()
         elif kind in ("aw", "ar"):
             a = Address(
                 **{
@@ -126,9 +132,13 @@ def check(
                 }
             )
             tag = host.admit(a, kind == "aw")
+            if not host.transactions[tag].error:
+                physical_pending.add(tag)
             source_queues[e["port"], kind == "aw"].append(tag)
         elif kind == "w":
-            host.w(e["port"], number(e["data"]), number(e["strobe"]), bool(e["last"]))
+            tag = host.w(e["port"], number(e["data"]), number(e["strobe"]), bool(e["last"]))
+            if host.transactions[tag].error:
+                physical_pending.discard(tag)
         elif kind in ("b", "r"):
             q = source_queues[e["port"], kind == "b"]
             require(bool(q), "response without accepted source address")
@@ -165,6 +175,10 @@ def check(
                 if not b.write:
                     values = [model.dram.beat(b, beat, b.times[beat]) for beat in range(b.beats)]
                 bursts[c].append((serial, b, origin, address, values))
+                if b.write:
+                    final_ps = origin_ps + b.times[-1] / (2 * ratio) * profile["ck_ps"]
+                    final_ps += profile["dfi_wck"]["twrdata_delay"] / ratio * profile["ck_ps"]
+                    write_ownership.begin((c, serial), (logical(c, address + i) for i in range(b.beats * 2)), final_ps)
                 if not b.write:
                     read_ownership.begin((c, serial), (logical(c, address + i) for i in range(b.beats * 2)))
                     for w in range(b.beats // 2):
@@ -210,7 +224,7 @@ def check(
             write_enable, write_cs = (raw_write >> 24) & 255, (raw_write >> 16) & 255
             read_enable, read_cs = raw_read >> 16, raw_read & 65535
             expected_write = expected_read = expected_wcs = expected_rcs = 0
-            for _identity, burst, at, address, _values in bursts[c]:
+            for identity, burst, at, address, _values in bursts[c]:
                 words = burst.beats // 2
                 d = profile["dfi_wck"]
                 for lane in range(ratio):
@@ -243,17 +257,7 @@ def check(
                                 if mask >> byte & 1:
                                     continue
                                 logical_byte = logical(c, address + w * 4 + byte)
-                                tag = owner(logical_byte, True)
-                                host.pin_write(
-                                    tag,
-                                    logical_byte,
-                                    bytes([value >> (byte * 8) & 255]),
-                                    1,
-                                    host.epoch,
-                                )
-                                at_pin = origin_ps + (burst.times[2 * w + 1] / (2 * ratio)) * profile["ck_ps"]
-                                at_pin += d["twrdata_delay"] / ratio * profile["ck_ps"]
-                                final_pin[tag] = max(final_pin.get(tag, 0), at_pin)
+                                write_ownership.pin((c, identity), logical_byte, value >> (byte * 8) & 255)
                             writes += 1
                 # Read data is checked against independently decoded physical bytes.
             # MRR uses eight words with continuous CS, independently derived
@@ -299,6 +303,8 @@ def check(
                             (c, tag), (word_owner[c][tag, w] + lane + 2 * half for half in range(2)), ps
                         )
                     reads += 1
+        elif kind == "axi":
+            require(observe_axi and 0 <= e["port"] < ports and 0 <= e["flags"] < 1024, "unexpected AXI cycle witness")
         elif kind == "end":
             require(observed_fault == fault_ps, "missing selected fault witness")
             host.finish()

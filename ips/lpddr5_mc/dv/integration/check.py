@@ -77,6 +77,7 @@ def main() -> None:
     parser.add_argument("--benchmark-direction", choices=("read", "write"))
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--axi-stress-seed", type=int)
+    parser.add_argument("--axi-overlap", action="store_true")
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
     parser.add_argument("--address-bits", type=int, choices=range(32, 41), default=40)
     parser.add_argument("--granule-bytes", type=int, choices=(32, 64), default=64)
@@ -91,6 +92,16 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.axi_overlap and (
+        args.family != "datapath"
+        or args.ports != 2
+        or args.integrity_mode
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.benchmark_direction
+        or args.axi_stress_seed is not None
+    ):
+        parser.error("AXI overlap requires the plain two-port datapath fixture")
     if args.axi_stress_seed is not None and (
         not 0 < args.axi_stress_seed < (1 << 31)
         or args.family != "datapath"
@@ -116,6 +127,8 @@ def main() -> None:
     }
     if args.axi_stress_seed is not None:
         configuration["AXI_STRESS"] = 1
+    if args.axi_overlap:
+        configuration["AXI_OVERLAP"] = 1
     if args.family in ("datapath", "lint"):
         configuration.update(
             ID_BITS=args.id_bits if args.id_bits is not None else 16 if args.integrity_mode == 4 else 8,
@@ -299,7 +312,7 @@ def main() -> None:
             "500",
             "-MAKEFLAGS",
             "OPT_FAST=-O2 OPT_SLOW=-O1"
-            if args.benchmark_direction or args.runtime_reset or args.axi_stress_seed is not None
+            if args.benchmark_direction or args.runtime_reset or args.axi_stress_seed is not None or args.axi_overlap
             else "OPT_FAST=-O0 OPT_SLOW=-O0",
             "--top-module",
             top,
@@ -468,6 +481,7 @@ def main() -> None:
                     mapped_end=(1 << 30) * args.channels * args.ranks if args.ranks == 2 else 1 << 20,
                     id_bits=configuration.get("ID_BITS", 8),
                     address_bits=args.address_bits,
+                    observe_axi=args.axi_overlap,
                     fault_ps=(
                         int(
                             re.search(r"ZERO_CAP_FAULT ps=(\d+)", report.with_name(f"{report.stem}-2.log").read_text())[
@@ -533,6 +547,12 @@ def main() -> None:
                         report.with_name("observations.jsonl"),
                         report.with_name(f"{report.stem}-2.log"),
                         args.axi_stress_seed,
+                    )
+                if args.axi_overlap:
+                    from axi_overlap import measure as measure_overlap
+
+                    result["axi_overlap_observations"] = measure_overlap(
+                        report.with_name("observations.jsonl"), report.with_name(f"{report.stem}-2.log"), args.depth
                     )
                 result["workload_costs"] = measure(report.with_name("observations.jsonl"))
                 if args.integrity_mode == 3:

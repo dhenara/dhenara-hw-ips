@@ -1,5 +1,6 @@
 """Bind complete physical reads, including padding, to admitted AXI ranges."""
 
+from physical_ownership import select
 from system.host import HostScoreboard, require
 
 
@@ -14,34 +15,8 @@ class ReadOwnership:
 
     def begin(self, identity, addresses):
         addresses = set(addresses)
-        candidates = [
-            tag
-            for tag, t in self.host.transactions.items()
-            if not (t.done or t.physical or t.error or t.write) and addresses & t.hazard
-        ]
-        require(len(candidates) == 1 and identity not in self.bursts, "physical read has no unique admitted owner")
-        tag = candidates[0]
-        t = self.host.transactions[tag]
-        cursor = self.cursor.get(tag, 0)
-        require(cursor < len(t.ranges), "excess physical read after all source beats")
-        require(set(t.ranges[cursor]) <= addresses, "physical read misses next source beat")
-        # This binding coalesces aligned full-width INCR beats. Other forms
-        # retain one physical granule per beat, including repeated FIXED
-        # addresses. Padding is checked in full on each separate return.
-        granule = len(addresses)
-        require(granule in (32, 64), "physical read granule size")
-        coalesced = (
-            t.address.burst == 1
-            and 1 << t.address.size == self.host.bus_bytes
-            and t.ranges[cursor][0] % granule == 0
-            and len(t.ranges) - cursor >= granule // self.host.bus_bytes
-        )
-        count = granule // self.host.bus_bytes if coalesced else 1
-        require(
-            all(set(beat) <= addresses for beat in t.ranges[cursor : cursor + count]),
-            "physical read misses coalesced source beats",
-        )
-        self.cursor[tag] = cursor + count
+        require(identity not in self.bursts, "duplicate physical read identity")
+        tag = select(self.host, addresses, False, self.cursor)
         self.bursts[identity] = (tag, addresses, set())
         self.pending[tag] = self.pending.get(tag, 0) + len(addresses)
 
@@ -55,12 +30,17 @@ class ReadOwnership:
         self.seen.setdefault(tag, set()).update(addresses & self.host.transactions[tag].hazard)
         self.last_ps[tag] = max(self.last_ps.get(tag, 0), ps)
 
-    def complete_before(self, tag, ps):
-        require(
+    def ready(self, tag, ps):
+        return (
             self.pending.get(tag) == 0
             and self.cursor.get(tag) == len(self.host.transactions[tag].ranges)
             and self.seen.get(tag, set()) == self.host.transactions[tag].hazard
-            and ps >= self.last_ps[tag],
+            and ps >= self.last_ps[tag]
+        )
+
+    def complete_before(self, tag, ps):
+        require(
+            self.ready(tag, ps),
             "AXI read before complete physical payload including padding",
         )
 

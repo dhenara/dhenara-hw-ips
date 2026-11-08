@@ -41,7 +41,7 @@ class ConnectedFaultTests(unittest.TestCase):
                 (events, {}, "unexpected fault witness"),
                 (events, {"fault_ps": 21}, "unexpected fault witness"),
                 (events[:5] + [events[4]] + events[5:], {"fault_ps": 20}, "unexpected fault witness"),
-                (events[:4] + events[5:], {"fault_ps": 20}, "before final physical pin"),
+                (events[:4] + events[5:], {"fault_ps": 20}, "complete physical payload and pin tail"),
                 (events[:7] + events[8:], {"fault_ps": 20}, "unsettled host transaction"),
                 (events[:5] + [{**events[5], "response": 0}] + events[6:], {"fault_ps": 20}, "response code"),
                 (events[:-1], {"fault_ps": 20}, "truncated raw observation"),

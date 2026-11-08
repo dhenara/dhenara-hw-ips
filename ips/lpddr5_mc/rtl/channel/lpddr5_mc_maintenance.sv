@@ -33,7 +33,7 @@ module lpddr5_mc_maintenance (
   logic [2:0] next_pair_q[2];
   logic pending_q, pending_rank_q, pending_rfm_q, pending_all_q, pending_extra_q;
   logic [2:0] pending_pair_q;
-  logic [31:0] interval_value, new_interval, imt, maximum, decrement, reserve_value, poll_lead;
+  logic [31:0] interval_value, new_interval, imt, maximum, decrement, reserve_value, poll_lead, refresh_lead;
   logic candidate, candidate_rank, candidate_rfm, candidate_extra;
   logic periodic_due, rfm_due, all_bank_due;
   logic coalesced_policy,poll_refresh_needed;
@@ -95,6 +95,13 @@ module lpddr5_mc_maintenance (
     // existing pending-register fence through MR4/ZQ. Hot or REFpb service
     // keeps its conservative early polling policy and independent urgency.
     coalesced_policy=interval_value==3124 && !effective_per_bank_o;
+    refresh_lead=reserve_value;
+    // A single-rank all-bank obligation is discharged at actual REF issue.
+    // Reserve the existing traffic/page/WCK drain before that deadline, but
+    // not this rank's subsequent tRFC. Keep full recovery in MR4 admission,
+    // thermal emergency bounds and serialized multi-rank/pair scheduling.
+    if(coalesced_policy && profile_i.ranks==1 && !pins_idle_i)
+      refresh_lead=reserve_value-32'(effective_profile_o.dram_ck_trfc_ab);
     poll_lead=32'(profile_i.ranks)*(maintenance_admission_budget(effective_profile_o,effective_per_bank_o)
       +register_service_budget(effective_profile_o))+64;
     // The shared REF group already reserves data/page drain and REF
@@ -120,7 +127,7 @@ module lpddr5_mc_maintenance (
         if(!self_refresh_q[r] && running_q) begin
           if(ck_q-last_refresh_q[r]>=64'(interval_value)) budget_value=0;
           else if(64'(interval_value)-(ck_q-last_refresh_q[r])<budget_value) budget_value=64'(interval_value)-(ck_q-last_refresh_q[r]);
-          periodic_due=poll_refresh_needed || thermal_debt_q[r] || ck_q-last_refresh_q[r]+64'(reserve_value)>=64'(interval_value)
+          periodic_due=poll_refresh_needed || thermal_debt_q[r] || ck_q-last_refresh_q[r]+64'(refresh_lead)>=64'(interval_value)
             || next_pair_q[r]!=0 || all_bank_round_q[r];
           if(periodic_due && !effective_per_bank_o) all_bank_due=1;
           rfm_due=0;

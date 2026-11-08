@@ -66,7 +66,7 @@ def main() -> None:
     )
     parser.add_argument("--trace-epochs", action="store_true")
     parser.add_argument("--per-bank-refresh", action="store_true")
-    parser.add_argument("--channel-case", type=int, choices=(0, 1, 2, 3, 4, 5, 6), default=0)
+    parser.add_argument("--channel-case", type=int, choices=range(8), default=0)
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.build_name):
         parser.error("build name must be a simple name")

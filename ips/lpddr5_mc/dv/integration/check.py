@@ -274,6 +274,7 @@ def main() -> None:
         "runtime_reset": args.runtime_reset,
         "runtime_reset_matrix": args.runtime_reset_matrix,
         "runtime_reset_case": args.runtime_reset_case,
+        "inline_lifecycle": args.inline_lifecycle,
         "cap_mode": args.cap_mode,
         "cap_granule_bytes": args.cap_granule_bytes,
         "cap_traffic": args.cap_traffic,

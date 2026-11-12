@@ -255,7 +255,14 @@ module controller_tb #(
     end
     $fclose(stream);staging_image[INDEX_FSP_VALID]=7;
     staging_image[INDEX_MODE][10:8]=3'(SERVICE_DIV);
-    if(INLINE_LIFECYCLE) staging_image[INDEX_MODE][1]=1;
+    if(INLINE_LIFECYCLE) begin
+      staging_image[INDEX_MODE][1]=1;
+      // Publication requires every enabled region to agree with MODE's ECC
+      // reservation. The default generated image has inline ECC disabled.
+      for(int region_index=0;region_index<8;region_index++)
+        if(staging_image[REGION_ATTR_INDEX[region_index]][0])
+          staging_image[REGION_ATTR_INDEX[region_index]][5]=1;
+    end
     staging_image[INDEX_PORT_LIMIT_0]=32'(DEPTH) | (32'(DEPTH)<<8);
     staging_image[INDEX_PORT_LIMIT_1]=staging_image[INDEX_PORT_LIMIT_0];
     staging_image[INDEX_WR_HIGH]=32'(DEPTH);staging_image[INDEX_WR_LOW]=32'(DEPTH/2);

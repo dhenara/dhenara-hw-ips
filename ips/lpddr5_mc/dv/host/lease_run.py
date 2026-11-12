@@ -17,6 +17,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--build-subdir", default="host-lease")
+    parser.add_argument("--compose-only", action="store_true")
     args = parser.parse_args()
     if args.report.exists():
         parser.error("preserve existing evidence; choose a new report")
@@ -85,6 +86,7 @@ def main() -> None:
             "1ns/1ps",
             "--top-module",
             "lpddr5_mc_host_lease_tb",
+            f"-GCOMPOSE_ONLY=1'b{int(args.compose_only)}",
             "--Mdir",
             str(build),
             "-j",
@@ -105,7 +107,13 @@ def main() -> None:
         log = args.report.with_name(args.report.stem + f"-{i}.log")
         with log.open("w") as stream:
             result = subprocess.run(
-                command, cwd=captured_repo, env=env, stdout=stream, stderr=subprocess.STDOUT, text=True, check=False
+                command,
+                cwd=captured_repo,
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
             )
         output = log.read_text()
         records.append(
@@ -122,7 +130,7 @@ def main() -> None:
         if i == 1:
             match = re.search(r"LEASE_RESULT tests=(\d+) .*reversal=1", output)
             families = int(match.group(1)) if match else 0
-            if families < 18:
+            if families < (1 if args.compose_only else 18):
                 passed = False
         if result.returncode:
             passed = False
@@ -132,12 +140,21 @@ def main() -> None:
             ("READ", "serial source oracle read mismatch"),
             ("MEMORY", "unexpected byte effect"),
         ):
-            command = [str(build / "Vlpddr5_mc_host_lease_tb"), "+LEASE_CORRUPT_" + label]
+            command = [
+                str(build / "Vlpddr5_mc_host_lease_tb"),
+                "+LEASE_CORRUPT_" + label,
+            ]
             log = args.report.with_name(args.report.stem + "-sensitivity-" + label.lower() + ".log")
             start = time.monotonic()
             with log.open("w") as stream:
                 result = subprocess.run(
-                    command, cwd=captured_repo, env=env, stdout=stream, stderr=subprocess.STDOUT, text=True, check=False
+                    command,
+                    cwd=captured_repo,
+                    env=env,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    check=False,
                 )
             caught = result.returncode != 0 and marker in log.read_text()
             passed = passed and caught
@@ -166,7 +183,13 @@ def main() -> None:
         ).strip(),
         "commands": records,
         "oracle_sensitivity": sensitivity,
-        "parameters": {"ports": 2, "channels": 2, "data_bits": 128, "depth": 16},
+        "parameters": {
+            "ports": 2,
+            "channels": 2,
+            "data_bits": 128,
+            "depth": 16,
+            "compose_only": args.compose_only,
+        },
         "clocks_ns": {"host": 1.25, "axi0": 2.5, "axi1": 2.5, "axi1_phase": 0.375},
         "test_families": families,
         "result": "passed" if passed else "failed",

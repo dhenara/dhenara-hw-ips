@@ -8,7 +8,12 @@ module controller_tb #(
   import lpddr5_mc_apb_metadata_pkg::*;
   import lpddr5_mc_channel_pkg::*;
   localparam int BYTES=DATA_BITS/8;
-  logic clk=0,rst_n=0,enable,run_ck=1,run_pclk=1;
+  logic clk=0,enable,run_ck=1,run_pclk=1;
+  // The continuous evidence stream deliberately samples the asynchronous
+  // reset input as data. This testbench observation is not a reset crossing.
+  /* verilator lint_off SYNCASYNCNET */
+  logic rst_n=0;
+  /* verilator lint_on SYNCASYNCNET */
   logic [PORTS-1:0] run_axi='1;
   always #0.625 if(run_ck) clk<=~clk;
   logic [PORTS-1:0] axi_clk=0,axi_rst_n=0,monitor_rst_n;
@@ -108,6 +113,7 @@ module controller_tb #(
       else $fatal(1,"B stability port=%0d stage=%0d valid=%b ready=%b payload=%h",p,stage,bvalid[p],bready[p],b[p]);
     assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) rvalid[p]&&!rready[p] |=> rvalid[p]&&$stable(r[p]));
   end
+  `include "continuous_observer.svh"
   `include "expected_profiles.svh"
   task automatic check(input logic condition,input string message);
     assert(condition) else $fatal(1,"stage%0d: %s",stage,message);checks++;

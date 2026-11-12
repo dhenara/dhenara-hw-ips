@@ -46,6 +46,22 @@ The [APB runner](../../dv/host/apb_run.py) checks generated metadata consistency
 
 The [adapter runner](../../dv/host/adapter_run.py) compares committed register-image decoding and mapping with canonical Python oracle vectors. Cases cover all 16 QoS classes, port limits, modes/epochs, 40-bit boundaries, region holes and unsorted permutations, ECC capacity and rank boundaries, one/two channels and eight regions. Real channel-link queues compare complete request, completion and response-feedback payloads at actual handshakes. Reset tests account for aborted transport records and require explicit two-sided rearm with fresh epochs; acceptance-ledger settlement remains the host owner's responsibility.
 
+## Focused cross-transaction forwarding and merging
+
+The core runner has a bounded composition selection; the lease runner connects that same production core to the real asynchronous bridge/endpoints. Use fresh report/build names:
+
+```sh
+python3 ips/lpddr5_mc/dv/host/core_run.py --compose-only \
+  --report ips/lpddr5_mc/evidence/host-compose-new/report.json --build-name host-compose-new
+python3 ips/lpddr5_mc/dv/host/lease_run.py --compose-only \
+  --report ips/lpddr5_mc/evidence/host-compose-connected-new/report.json \
+  --build-subdir host-compose-connected-new
+```
+
+The core fixture captures source descriptors/W bytes, physical requests/completions and offered/consumed responses. The [independent composer oracle](../../dv/host/compose_oracle.py) uses the existing serial host and merge ledgers to derive byte results. A read request and completed base data before contributor integrity, or fewer physical writes than originals, distinguish exercised optimization from serial fallback. Ten cases cover multiple contributors/overwrites, partial and narrow multibeat writes, delayed/failed integrity, incompatible attributes, intervening reads, unvalidated AW/W barriers, response stalls, stale completion, contributor slot reuse and fatal/reset recovery. Five deliberate trace mutations must fail independently. This selection uses AXI128, two core ports/channels, depth16; minimum/maximum lint checks structure, not the behavioral parameter matrix.
+
+The connected selection drives three original writes and one read through one actual AXI source. It requires a read before writer integrity, then two compatible originals sharing one physical write, with exactly three B responses and one R response. Independent source-byte and memory-image checks reject two corruption probes. Cross-port conflicts still serialize through the existing leases before READY. The modeled channel completion boundary is an explicit physical/integrity witness; actual ECC/DFI pin composition remains a separate combined check. The [qualification matrix](qualification.md#source-impact-and-minimum-remaining-selections) records current reports, original development failures and the remaining source-impact/reproduction work.
+
 ## CDC transports
 
 The [explicit source list](../../rtl/cdc/files.f) contains the synchronizer, reset fence, asynchronous FIFO and bundled mailbox. Run their independent-clock RTL tests from the repository root after the [pinned tool preparation](contracts.md):

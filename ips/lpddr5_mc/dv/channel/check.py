@@ -29,7 +29,7 @@ def source_manifest(ip: Path = IP) -> list[dict[str, str]]:
             if (
                 path.is_file()
                 and not {"evidence", "__pycache__"}.intersection(relative.parts)
-                and path.suffix in (".sv", ".f", ".py", ".json", ".sdc")
+                and path.suffix in (".sv", ".svh", ".f", ".py", ".json", ".sdc")
             ):
                 paths.add(path)
     return [
@@ -66,7 +66,7 @@ def main() -> None:
     )
     parser.add_argument("--trace-epochs", action="store_true")
     parser.add_argument("--per-bank-refresh", action="store_true")
-    parser.add_argument("--channel-case", type=int, choices=range(9), default=0)
+    parser.add_argument("--channel-case", type=int, choices=range(10), default=0)
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.build_name):
         parser.error("build name must be a simple name")
@@ -179,6 +179,7 @@ def main() -> None:
                     "--lint-only",
                     "-Wall",
                     "-I" + str(build / "vectors"),
+                    "-I" + str(IP / "dv/channel"),
                     "--top-module",
                     top,
                     *map(str, sources),
@@ -198,6 +199,7 @@ def main() -> None:
                     f"-GDEPTH={depth}",
                     "-GCHANNEL_INDEX=1",
                     "-I" + str(build / "vectors"),
+                    "-I" + str(IP / "dv/channel"),
                     *map(str, sources),
                 ]
             )
@@ -238,6 +240,7 @@ def main() -> None:
                     "--Mdir",
                     str(folder),
                     "-I" + str(build / "vectors"),
+                    "-I" + str(IP / "dv/channel"),
                     "--top-module",
                     top,
                     *map(str, sources),

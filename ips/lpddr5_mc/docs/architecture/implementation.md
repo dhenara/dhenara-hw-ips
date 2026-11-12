@@ -1,6 +1,6 @@
 # LPDDR5 controller: implemented microarchitecture
 
-**Implementation revision:** `98e8ca41879eae9c2f1754ef6c5a1c94f8dc7da7`
+**Original implementation review:** `98e8ca41879eae9c2f1754ef6c5a1c94f8dc7da7`; updated here for the forwarding/merging correction described in Section 5.2.
 
 **Source tree:** `dhenara-hw-ips/ips/lpddr5_mc`
 
@@ -8,9 +8,9 @@
 
 **Review date:** 2026-11-12
 
-This specification describes the RTL at the revision above. It is an implementation review document, with source references throughout. It preserves the distinction between logic present in the source, options reachable through the integrated wrapper, and behavior qualified by simulation. Full controller qualification and physical implementation remain incomplete. The imported v0.1/v0.2 specifications are historical design inputs and are not rewritten by this document.
+This specification describes the retained baseline and the host correction in this document's source revision. It is an implementation review document, with source references throughout. It preserves the distinction between logic present in the source, options reachable through the integrated wrapper, and behavior qualified by simulation. Full controller qualification and physical implementation remain incomplete. The imported v0.1/v0.2 specifications are historical design inputs and are not rewritten by this document.
 
-All source paths below are relative to `ips/lpddr5_mc` at the recorded revision. Six diagrams use Mermaid; an ASCII overview is also included for Markdown viewers without Mermaid support.
+All source paths below are relative to `ips/lpddr5_mc`. The qualification matrix binds each result to its tested revision; the host correction changes production RTL. Six diagrams use Mermaid; an ASCII overview is also included for Markdown viewers without Mermaid support.
 
 **Review navigation:** [Interfaces](#1-external-interfaces) · [Clocks and reset](#2-clocks-rates-and-reset-domains) · [Features and configuration](#3-architectural-features-and-parameterization) · [Block organization](#4-top-level-organization) · [Host path](#5-host-admission-ordering-and-data-flow) · [Scheduler](#6-channel-request-path-and-scheduler) · [Data/WCK](#7-physical-data-and-wck-machinery) · [ECC](#8-integrity-paths) · [Maintenance](#9-maintenance-and-shared-pin-ownership) · [Control transitions](#10-configuration-publication-and-operating-transitions) · [Recovery](#11-fault-containment-recovery-and-diagnostics) · [Storage](#12-storage-concurrency-and-implementation-cost) · [Evidence limits](#13-evidence-and-current-review-limits) · [Source navigation](#14-source-navigation).
 
@@ -116,8 +116,8 @@ Lower-level knobs are not all top-level options. The wrapper fixes `POSTED_EARLY
 | Area | Implemented mechanism | Important boundary |
 | --- | --- | --- |
 | AXI burst handling | FIXED up to 16 beats; INCR up to 256; WRAP lengths 2/4/8/16; legal narrow and unaligned accesses; byte strobes | Rejects reserved burst encodings, illegal widths/IDs, address overflow, 4 KiB crossings and unmapped bytes |
-| Host concurrency | Separate read/write slots per port; complete write buffering; retained read/response storage; multiple disjoint transactions in flight | One pending memory granule per host transaction; no cross-transaction write merging or read forwarding datapath |
-| Ordering | Source-side bucket leases plus ordered import; byte-range hazards in host core; per-direction response order per port | Stronger response order than AXI requires; overlapping unfinished work is serialized |
+| Host concurrency | Separate read/write slots per port; complete write buffering; retained read/response storage; multiple disjoint transactions in flight | One pending granule per original or merged group; sequential byte composition for eligible overlapping traffic |
+| Ordering | Source-side bucket leases plus ordered import; byte-range hazards in host core; per-direction response order per port | Stronger response order than AXI requires; validated older writes can supply dependent reads; source cross-port leases remain conservative |
 | Address mapping | Eight regions, programmable bit permutations, 64-byte two-channel striping, sequential rank allocation | Restricted 8 Gb x16 geometry and injective mapping; low six address bits preserved |
 | Burst conversion | 32/64-byte logical granules; BL16/BL32 physical access; masked BL32 split into two MWR16 operations | Fully validated W count precedes any write effect |
 | Channel scheduling | Separate direction queues; row/timing state; QoS classes, aging, batches, watermarks, hit cap, idle closure, live issue recheck | Priority never bypasses timing, hazards, capacity, maintenance or byte caps |
@@ -267,9 +267,13 @@ AW and AR share a per-port sequence; AW wins a same-cycle tie. CK import must ma
 
 An accepted AW reserves its full conservative byte-range hazard immediately, including the period before any W arrives. W beats follow AW order. The core buffers and validates the complete admitted `AWLEN + 1` count before emitting a write granule. Early WLAST does not truncate the transaction; malformed WLAST/strobes return SLVERR after the admitted W count. Illegal address forms and mapping failures return DECERR without memory effects.
 
-The host scans older transactions for overlapping byte ranges and blocks the younger operation while the older transaction lacks final integrity. This also serializes overlapping reads in the current implementation. Nonoverlapping transactions may progress concurrently.
+The host scans older transactions for overlapping byte ranges. An older incomplete/unvalidated AW remains a barrier. A younger read may issue its base-memory request before older writes finish only when every unfinished overlapping original is a completely buffered, validated write with no error. The sequential composer walks originals by admission order and each original's beats in order, overlays enabled addressed bytes, and snapshots the result/mask per pending read chunk. Newer bytes overwrite older bytes, but every original that supplied a byte remains an integrity dependency, including an overwritten contributor. Base-return bytes fill the unforwarded lanes. A successful read cannot retire until both its own physical/integrity result and all contributing final integrity results arrive; a failed contributor fails the read. Original slots cannot retire during snapshot construction, and dependencies are consumed before contributor-slot reuse. Read/read barriers and younger overlapping writes retain conservative ordering.
 
-Aligned, full-width INCR beats coalesce into a 32- or 64-byte granule. Other supported forms use a single beat's addressed byte range and lane strobes to construct a granule. Each transaction advances one chunk at a time; another chunk is formed after its prior physical/integrity result. This is within-burst coalescing, not merging of independent AXI writes.
+Compatible unissued INCR writes contained entirely in one logical 32/64-byte granule may combine into one physical request. The composer applies every original's byte mask in admission order. Equal logical granule and immutable published configuration establish equal region, channel, rank, ECC policy and profile epoch; cache/protection attributes and mapped QoS must also agree, and exclusives are excluded. An intervening older overlapping read or incompatible write prevents the merge. Each original retains its own transaction slot, source identity, buffered data and exactly-once B obligation. One physical identity/result fans out to all originals; followers do not consume duplicate physical credits. All originals wait for final integrity, even in the optional standalone early-posted core configuration. No check-line lock, version, scrub or MR43 prerequisite is bypassed: the merged logical request still passes through the ordinary channel integrity owner.
+
+The production asynchronous assembly can exercise these optimizations among buffered transactions from the same port. Existing cross-port leases hold conflicting source proposals until response retirement; core tests exercise cross-port semantics, while the connected optimization witness uses same-port originals. The correction does not establish a new asynchronous cross-port optimization. Nonoverlapping traffic keeps the ordinary request path; composition temporarily holds new issue/retirement while existing completions drain.
+
+Aligned, full-width INCR beats coalesce into a 32- or 64-byte granule. Other supported forms use a single beat's addressed byte range and lane strobes to construct a granule. Each transaction advances one chunk at a time; another chunk is formed after its prior physical/integrity result. This ordinary within-burst conversion also remains available when cross-transaction composition is ineligible.
 
 **Source:** `rtl/host/lpddr5_mc_axi_endpoint.sv`; `rtl/host/lpddr5_mc_axi_bridge.sv`; `rtl/host/lpddr5_mc_axi_pkg.sv`; `rtl/host/lpddr5_mc_host_core.sv`.
 
@@ -551,6 +555,8 @@ Performance state includes completed payload by direction, commands, replays, ma
 | Host transaction descriptors | `PORTS × 2 × DEPTH` | Integrity, response acknowledgement, feedback and retirement |
 | Host payload arrays | 256 × 256 bits per transaction slot | Reserved for complete burst buffering/response assembly |
 | Host strobe arrays | 256 × 32 bits per slot | Write-validation/execution ownership |
+| Forwarding snapshots and masks | 512 + 64 bits per host transaction slot | Pending chunk consumes its base result; contributor dependencies persist to final integrity |
+| Contributor dependencies | One bit per ordered pair of host slots | Each contributing final integrity result; reset/fault aborts the epoch |
 | Channel logical ledger | `DEPTH` total per channel | Completion transfer to reserved host storage |
 | Granule adapter | `DEPTH` logical slots, up to two physical identities each | Aggregated logical result transfer |
 | Scheduler | `DEPTH` reads + `DEPTH` writes per channel | Physical access issue; subsequent ownership transfers to data/integrity blocks |
@@ -563,13 +569,15 @@ Performance state includes completed payload by direction, commands, replays, ma
 
 At default parameters, the **declared** host payload array is 256 slots × 256 beats × 32 bytes = **2 MiB**; strobe storage adds **256 KiB**. The declaration uses maximum-width payloads even when `DATA_BITS=128`. Synthesis may trim unused lanes, but no inferred memory macro, area or timing result has been established. Payload RAM contents are not reset; descriptor validity/counters determine which contents are meaningful.
 
+The correction adds `SLOTS² + 576 × SLOTS` snapshot/dependency bits, where `SLOTS=PORTS × 2 × DEPTH`: 212992 bits (26 KiB) at default parameters, plus one composer granule, masks and control state. These are declared/reset registers, with dependency scans and admission-order selection; no RAM mapping or timing closure is claimed. Sequential composition costs cycles proportional to the buffered contributor beats and can delay unrelated new issue while active. Unchanged nonforwarded completion latency is a source property, not fresh benchmark evidence.
+
 Each AXI endpoint instantiates ten async FIFOs: proposal depth 2, lease command depth 2, acceptance depth 2, W data depth 16, B/R response depths `DEPTH`, retirement depth `DEPTH`, B/R event depths `DEPTH`, and lease-ack depth 2. Stable bundled mailboxes carry configuration/status. Gray pointers and control handshakes cross synchronizers; payload buses are held or stored until synchronized publication permits sampling.
 
 Key cost/timing review points are the global host hazard scans, channel candidate/opposite-eligibility scans, wide data arrays and completion matching, CRC/image logic, ECC transforms and fanout at CK800. The implementation is portable SystemVerilog with bounded storage; this is not an area-optimized SRAM-mapped implementation claim. A lower-frequency host core, separately clocked channels or a deeper scheduler pipeline would be architectural changes requiring new integration and timing validation.
 
 ## 13. Evidence and current review limits
 
-The implementation description above was checked against exact Git source, including wrapper wiring, parameters, data/control owners, decoder consumers and timing/profile tables. No new simulation was run to create this document.
+The implementation description above was checked against exact Git source, including wrapper wiring, parameters, data/control owners, decoder consumers and timing/profile tables. The original review was source-only. The host correction has focused core and asynchronous-assembly simulation with independent serial bytes, actual requests/results and sensitive mutations; see the current qualification matrix. No new combined-controller acceptance simulation is claimed.
 
 Qualification is tracked separately from this source description. A bounded benchmark result for two AXI128 ports, two channels, one rank and a ratio-four plain-data profile does not qualify every supported width, integrity mode, rank configuration or workload. In particular, the bus-rate calculations in Section 2 do not establish sustained throughput for other configurations.
 
@@ -602,4 +610,4 @@ The most consequential implementation limits to review are:
 | Simulation clocks and integration | `dv/integration/controller_tb.sv`, `dv/integration/benchmark.svh`, `dv/integration/benchmark.py`; `docs/verification/system.md` |
 | Supporting architecture detail | `docs/architecture/clocking.md`, `docs/architecture/host-control.md`, `docs/architecture/channel.md` |
 
-To inspect the recorded implementation without substituting a moving branch, use `git show 98e8ca41879eae9c2f1754ef6c5a1c94f8dc7da7:ips/lpddr5_mc/<path>`. Documentation and source at other revisions may differ.
+To inspect the original pre-correction implementation without substituting a moving branch, use `git show 98e8ca41879eae9c2f1754ef6c5a1c94f8dc7da7:ips/lpddr5_mc/<path>`. Documentation and source at other revisions may differ.

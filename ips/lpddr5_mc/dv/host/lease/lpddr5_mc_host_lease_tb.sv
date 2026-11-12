@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 /* verilator lint_off BLKSEQ */
 // Source handshakes define this oracle. No lease mask or import order seeds it.
-module lpddr5_mc_host_lease_tb;
+module lpddr5_mc_host_lease_tb #(parameter bit COMPOSE_ONLY=0);
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
   import lpddr5_mc_axi_pkg::*;
@@ -31,6 +31,8 @@ module lpddr5_mc_host_lease_tb;
   logic [7:0] memory[65536],golden[65536];
   logic [1:0] busy=0,physical_sent=0;
   int channel_delay[2],service_delay=3;
+  lpddr5_mc_granule_t compose_requests[8];
+  int compose_count=0;
   int source_next[2],import_next[2];
   int accepted=0,imported=0,reference_cursor=0,requests=0,tests=0,stage=0;
   bit measure_case=0,measure_active=0,measure_done=0;
@@ -260,9 +262,16 @@ module lpddr5_mc_host_lease_tb;
       $display("LEASE_IMPORT source=%0d ordinal=%0d port=%0d at=%0t",index,imported-1,p,$realtime);
     end
   end
-  assign request_ready=~busy&{2{rst_n&&!fatal}};
+  assign request_ready=COMPOSE_ONLY ? {1'b0,rst_n&&!fatal} : ~busy&{2{rst_n&&!fatal}};
   always @(posedge clk)for(int c=0;c<2;c++)begin
-    if(!rst_n||fatal||fault)busy[c]=0;
+    if(COMPOSE_ONLY)begin
+      if(request_valid[c]&&request_ready[c])begin
+        if(c!=0 || compose_count>=8)$fatal(1,"composition fixture routing/capacity");
+        compose_requests[compose_count]=request[c];compose_count++;requests++;
+        $display("COMPOSE_CONNECTED_REQUEST index=%0d write=%0d tag=%0d mask=%h data=%h",
+          compose_count-1,request[c].is_write,request[c].tag,request[c].byte_enable,request[c].data);
+      end
+    end else if(!rst_n||fatal||fault)busy[c]=0;
     else begin
       if(completion_valid[c]&&completion_ready[c]&&completion[c].integrity_done)busy[c]=0;
       if(request_valid[c]&&request_ready[c])begin
@@ -279,7 +288,7 @@ module lpddr5_mc_host_lease_tb;
       end
     end
   end
-  always @(negedge clk)begin
+  always @(negedge clk)if(!COMPOSE_ONLY)begin
     completion_valid=0;
     for(int c=0;c<2;c++)if(busy[c]&&rst_n&&!fatal)begin
       if(channel_delay[c]>0)channel_delay[c]--;
@@ -307,6 +316,50 @@ module lpddr5_mc_host_lease_tb;
   end
   task automatic source_neg(input int p);
     if(p==0)@(negedge clk0);else @(negedge clk1);
+  endtask
+  task automatic compose_wait(input int count);
+    for(int n=0;n<4000;n++)begin @(negedge clk);if(compose_count>=count)return;end
+    $fatal(1,"connected composition request timeout wanted=%0d got=%0d",count,compose_count);
+  endtask
+  task automatic compose_result(input int index,input bit physical,integrity);
+    @(negedge clk);completion[0]='0;
+    completion[0].identity.tag=compose_requests[index].tag;
+    completion[0].identity.generation=compose_requests[index].generation;
+    completion[0].identity.boot_epoch=cfg.boot_epoch;completion[0].identity.config_epoch=cfg.config_epoch;
+    completion[0].is_write=compose_requests[index].is_write;
+    completion[0].physical_done=physical;completion[0].integrity_done=integrity;
+    for(int j=0;j<64;j++)begin
+      int at;at=int'(compose_requests[index].address)+j;
+      if(physical&&compose_requests[index].is_write&&compose_requests[index].byte_enable[j])begin
+        memory[at]=compose_requests[index].data[j*8+:8];
+        // Target the final merged effect; corruption of the first writer is
+        // intentionally overwritten and is not an end-state counterexample.
+        if(corrupt_memory&&!corrupted_memory&&index==2)begin memory[at]^=8'h1;corrupted_memory=1;end
+      end
+      completion[0].data[j*8+:8]=memory[at];
+    end
+    if(corrupt_read&&!compose_requests[index].is_write)completion[0].data[8]^=1;
+    completion_valid[0]=1;@(negedge clk);completion_valid[0]=0;
+  endtask
+  task automatic compose_connected;
+    lpddr5_mc_axi_address_t a,d,e,rd;
+    a=address(240,'h4000,1);d=address(241,'h4000,1);e=address(242,'h4000,1);rd=address(243,'h4000,1);
+    source_neg(0);bready[0]=0;rready[0]=0;
+    send_address(0,1,a);send_address(0,1,d);send_address(0,1,e);
+    send_write(0,a,21,0,-1,1);compose_wait(1);
+    send_write(0,d,51,0,-1,1);send_write(0,e,91,0,-1,1);send_address(0,0,rd);compose_wait(2);
+    if(compose_requests[1].is_write)$fatal(1,"production assembly serialized the forwarded read");
+    compose_result(1,1,1);repeat(10)@(negedge clk);
+    if(rvalid[0])$fatal(1,"production assembly exposed read before contributor integrity");
+    compose_result(0,1,1);compose_wait(3);repeat(10)@(negedge clk);
+    if(compose_count!=3 || !compose_requests[2].is_write)$fatal(1,"production assembly did not merge two buffered originals");
+    compose_result(2,1,0);repeat(10)@(negedge clk);
+    if(rvalid[0])$fatal(1,"production assembly released read at physical-only result");
+    compose_result(2,0,1);source_neg(0);bready[0]=1;rready[0]=1;
+    check_reference("actual assembly forwards before integrity and merges two original writes");
+    if(accepted!=4 || compose_count!=3)$fatal(1,"production assembly lost/duplicated original identity");
+    $display("COMPOSE_CONNECTED_PASS originals=3 write_requests=2 forwarded_reads=1 original_B=3 original_R=1");
+    $display("LEASE_RESULT tests=%0d source=%0d imports=%0d aborted=0 cutoff=0 commands=%0d acks=%0d reversal=1",tests,accepted,imported,command_samples,ack_samples);
   endtask
   task automatic source_pos(input int p);
     if(p==0)@(posedge clk0);else @(posedge clk1);
@@ -542,6 +595,7 @@ module lpddr5_mc_host_lease_tb;
     cfg.regions[0].enable=1;cfg.regions[0].size=65536;
     for(int i=0;i<40;i++)cfg.regions[0].permutation[i]=6'(i);
     #20;rst_n=1;axi_rst_n=3;publish();stage=1;
+    if(COMPOSE_ONLY)begin compose_connected();$finish;end
     send_address(0,0,address(1,'h1000,1));send_address(1,0,address(2,'h1040,1));check_reference("disjoint lease warmup");
     @(negedge clk);run_host=0;
     send_address(1,0,address(3,'h2040,4));early=transaction(1,3,0);

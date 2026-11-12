@@ -79,6 +79,7 @@ def main() -> None:
     parser.add_argument("--axi-stress-seed", type=int)
     parser.add_argument("--axi-overlap", action="store_true")
     parser.add_argument("--inline-lifecycle", action="store_true")
+    parser.add_argument("--continuous-observer", action="store_true")
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
     parser.add_argument("--address-bits", type=int, choices=range(32, 41), default=40)
     parser.add_argument("--granule-bytes", type=int, choices=(32, 64), default=64)
@@ -93,6 +94,10 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.continuous_observer and not args.inline_lifecycle:
+        parser.error(
+            "continuous observation binds the inline lifecycle fixture; other boot/profile bindings remain pending"
+        )
     if args.inline_lifecycle and (
         args.family != "controller"
         or args.runtime_reset
@@ -173,7 +178,15 @@ def main() -> None:
     if args.fairness_mode is not None and (
         args.family != "datapath"
         or args.cap_mode is not None
-        or (args.ports, args.channels, args.ranks, args.data_bits, args.depth, args.profile_number, args.integrity_mode)
+        or (
+            args.ports,
+            args.channels,
+            args.ranks,
+            args.data_bits,
+            args.depth,
+            args.profile_number,
+            args.integrity_mode,
+        )
         != (2, 2, 1, 128, 64, 4, 0)
         or args.granule_bytes != 64
     ):
@@ -184,7 +197,15 @@ def main() -> None:
         parser.error("benchmark smoke requires an explicit benchmark direction")
     if args.benchmark_direction and (
         args.family != "controller"
-        or (args.ports, args.channels, args.ranks, args.data_bits, args.depth, args.profile_number, args.integrity_mode)
+        or (
+            args.ports,
+            args.channels,
+            args.ranks,
+            args.data_bits,
+            args.depth,
+            args.profile_number,
+            args.integrity_mode,
+        )
         != (2, 2, 1, 128, 64, 4, 0)
     ):
         parser.error("benchmark requires controller, two AXI128 ports/channels, one rank, depth 64 and profile 4")
@@ -229,8 +250,17 @@ def main() -> None:
     build.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
     reserved = reserve_observations(
-        report, args.family, bool(args.benchmark_direction), args.cap_mode is not None, args.fairness_mode is not None
+        report,
+        args.family,
+        bool(args.benchmark_direction),
+        args.cap_mode is not None,
+        args.fairness_mode is not None,
     )
+    if args.continuous_observer:
+        continuous_path = report.with_name("continuous-observations.jsonl")
+        with continuous_path.open("x"):
+            pass
+        reserved.append(continuous_path)
     sys.pycache_prefix = str(storage / "lpddr5-integration/pycache")
     from vectors import generate
 
@@ -275,6 +305,7 @@ def main() -> None:
         "runtime_reset_matrix": args.runtime_reset_matrix,
         "runtime_reset_case": args.runtime_reset_case,
         "inline_lifecycle": args.inline_lifecycle,
+        "continuous_observer": args.continuous_observer,
         "cap_mode": args.cap_mode,
         "cap_granule_bytes": args.cap_granule_bytes,
         "cap_traffic": args.cap_traffic,
@@ -340,7 +371,13 @@ def main() -> None:
                 [
                     f"-G{key}={value}"
                     for key, value in configuration.items()
-                    if key not in ("PROFILE_NUMBER", "SERVICE_DIV", "INTEGRITY_MODE", "GRANULE_BYTES")
+                    if key
+                    not in (
+                        "PROFILE_NUMBER",
+                        "SERVICE_DIV",
+                        "INTEGRITY_MODE",
+                        "GRANULE_BYTES",
+                    )
                 ]
                 if args.family == "lint"
                 else [f"-G{key}={value}" for key, value in configuration.items()]
@@ -373,6 +410,8 @@ def main() -> None:
         commands[-1].append(f"+axi_stress_seed={args.axi_stress_seed}")
     if args.family == "controller":
         commands[-1].append("+recovery_observations=" + str(report.with_name("recovery-observations.jsonl")))
+        if args.continuous_observer:
+            commands[-1].append("+continuous_observations=" + str(continuous_path))
         if args.power_policy is not None:
             commands[-1].append(f"+power_policy={args.power_policy}")
         if args.runtime_reset_case is not None:
@@ -424,7 +463,14 @@ def main() -> None:
         log = report.with_name(report.stem + "-tooling.log")
         start = time.monotonic()
         with log.open("w") as stream:
-            run = subprocess.run(command, cwd=REPO, env=env, stdout=stream, stderr=subprocess.STDOUT, check=False)
+            run = subprocess.run(
+                command,
+                cwd=REPO,
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
         result["tooling_check"] = {
             "argv": command,
             "exit_code": run.returncode,
@@ -511,9 +557,10 @@ def main() -> None:
                     observe_axi=args.axi_overlap,
                     fault_ps=(
                         int(
-                            re.search(r"ZERO_CAP_FAULT ps=(\d+)", report.with_name(f"{report.stem}-2.log").read_text())[
-                                1
-                            ]
+                            re.search(
+                                r"ZERO_CAP_FAULT ps=(\d+)",
+                                report.with_name(f"{report.stem}-2.log").read_text(),
+                            )[1]
                         )
                         if args.zero_cap_direction is not None
                         else None
@@ -584,7 +631,9 @@ def main() -> None:
                     from axi_overlap import measure as measure_overlap
 
                     result["axi_overlap_observations"] = measure_overlap(
-                        report.with_name("observations.jsonl"), report.with_name(f"{report.stem}-2.log"), args.depth
+                        report.with_name("observations.jsonl"),
+                        report.with_name(f"{report.stem}-2.log"),
+                        args.depth,
                     )
                 result["workload_costs"] = measure(report.with_name("observations.jsonl"))
                 if args.integrity_mode == 3:
@@ -600,7 +649,9 @@ def main() -> None:
                     ):
                         raise RuntimeError("Hot segment lacks independently completed temperature13")
                     result["hot_workload_costs"] = measure(
-                        report.with_name("observations.jsonl"), start_ps=start, end_ps=end
+                        report.with_name("observations.jsonl"),
+                        start_ps=start,
+                        end_ps=end,
                     )
                     for direction in ("read", "write"):
                         stats = result["hot_workload_costs"][direction]
@@ -608,6 +659,18 @@ def main() -> None:
                             raise RuntimeError("Hot segment incomplete payload")
                 if "recovered_external_observations" in result:
                     result["recovered_workload_costs"] = measure(report.with_name("recovery-observations.jsonl"))
+        if args.continuous_observer:
+            from continuous import check as check_continuous
+
+            continuous_profile = json.loads(json.dumps(profiles[args.profile_number]))
+            # This exact controller fixture supplies MR57=3 before boot; its
+            # inline lifecycle keeps that capability in the recovered epoch.
+            # Other rediscovery/profile transitions need explicit bindings.
+            continuous_profile["device"]["mr57"] = 3
+            result["continuous_observations"] = check_continuous(
+                [json.loads(line) for line in continuous_path.read_text().splitlines()],
+                continuous_profile,
+            )
         after = {
             str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [REPO / p for p in manifest]
         }

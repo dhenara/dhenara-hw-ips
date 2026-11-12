@@ -319,11 +319,11 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     end
     request_valid=0;step();assert(sent==160 && received==160) else $fatal(1,"row churn progress");
   endtask
-  task automatic setup_control(input int rank_count=2);
+  task automatic setup_control(input int rank_count=2,input bit inline_mode=0);
     rst_n=0;request_valid=0;command_valid=0;config_mailbox='0;management_in='0;request='0;
     check_fsp=0;notification_ready=1;memory_reset=0;tick();rst_n=1;cycles=0;
     cfg='0;cfg.profile=fixture_profile(0,0,0,1,0,1);cfg.profile.ranks=2'(rank_count);
-    cfg.service_div=2;cfg.age_tick_div=8;cfg.read_urgent_age=4;cfg.write_urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
+    cfg.inline_ecc=inline_mode;cfg.service_div=2;cfg.age_tick_div=8;cfg.read_urgent_age=4;cfg.write_urgent_age=4;cfg.bw_window=64;cfg.read_weight=1;cfg.write_weight=1;cfg.config_epoch=1;
     memory_profile=cfg.profile;request_boot=0;request_epoch=1;host_settled=1;reset_confirmed=0;
     report_valid=2'((1<<rank_count)-1);report_sr=0;phy_refresh_done=0;train_ack=0;completion_ready=1;mr43=0;mr4=9;
     target_fsp=1;target_frequency=0;sre_count=0;srx_count=0;last_srx=0;
@@ -525,6 +525,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       $display("PASS connected stress REFpb=%0d: paired RAA/RFM bound, hot thermal refresh/derating and MR4 service",PER_BANK_REFRESH);
     end
   endtask
+  `include "dirty_management.svh"
   initial begin
     int selected_case;
     selected_case=0;
@@ -539,6 +540,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       if(selected_case==0 || (selected_case==5 && c<4) || (selected_case==6 && c==4)) control_case(c);
     if(selected_case inside {0,7}) poll_once_case();
     if(selected_case inside {0,8}) poll_handoff_case();
+    if(selected_case==9) for(int kind=0;kind<4;kind++) for(int failed=0;failed<2;failed++) dirty_management_case(kind,1'(failed));
     $display("PASS selected channel cases selection=%0d",selected_case);$finish;
   end
 endmodule

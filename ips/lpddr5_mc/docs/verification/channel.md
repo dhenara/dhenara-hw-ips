@@ -80,6 +80,8 @@ The C2 source review at `790381e` demonstrated three checker misses on the retai
 
 Controller-update setup, active request and lifecycle return retain PHY ownership with no controller CA commands. Master ACK requires a previously sampled master request and PHY ownership; handback requires sampled request withdrawal and a fresh low-then-valid rank report before ACK falls. PHY-update ACK similarly requires a sampled request and registered withdrawal. These exclusive phases reject ACT, PRE and other non-NOP controller commands before physical replay. Owner 1 also spans FSP: paired MRW is allowed only for the selected FSP operation with busy/init_start asserted and init_complete low. The independent model still checks MRW adjacency/recovery. Boot and post-ACK controller/quiescing return commands remain subject to normal physical legality. Synthetic legal fixtures now exercise PHY ownership rather than leaving the controller as owner through management.
 
+The sampled update-release edge still belongs to the PHY; changing owner to controller on that edge cannot authorize a CA command. Fault ownership may retain an asserted ACK without being a healthy handback. It does not discard the physical model or its obligations; an already reserved FSP MRW2 still completes under the pair oracle, and only witnessed reset cancels outstanding work.
+
 Run just the affected parser/adapter units after a checker-only correction, using a new evidence path and the documented Python environment:
 
 ```sh

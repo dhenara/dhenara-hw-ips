@@ -104,14 +104,19 @@ class Case:
         update = bool(e["update"] or e["phy_update"])
         selected_fsp = self.request_seen and kind == 1
         selected_update = self.request_seen and (kind == 0 or kind == 2 and self.wake)
-        if master or update or selected_fsp and e["fsp_busy"]:
+        fault = bool(e["fault"])
+        old = (
+            old if old and old["reset_n"] and not (old["fault"] or old["destructive"] or old["memory_reset"]) else None
+        )
+        update_return = old and (old["update"] and not e["update"] or old["phy_update"] and not e["phy_update"])
+        if not fault and (master or update or update_return or selected_fsp and e["fsp_busy"]):
             require(e["owner"] == 1, "management request/ACK without PHY ownership")
-        if master:
+        if master and not fault:
             require(self.request_seen and kind == 3, "master ACK without associated request")
             if not (old and old["master"]):
                 require(e["phymstr_req"] and old and old["phymstr_req"], "master ACK before sampled request")
                 self.master_report_low = self.master_report_fresh = self.master_withdraw = False
-        if old and old["master"] and not master:
+        if old and old["master"] and not master and not fault:
             require(
                 not old["phymstr_req"]
                 and not e["phymstr_req"]
@@ -121,18 +126,18 @@ class Case:
                 "master ACK return before sampled withdrawal/fresh rank report",
             )
             self.master_withdraw = True
-        if e["update"]:
+        if e["update"] and not fault:
             require(selected_update, "controller update without associated management request")
-        if e["ctrlupd_ack"]:
+        if e["ctrlupd_ack"] and not fault:
             require(old and old["update"] and e["update"], "controller ACK without sampled update request")
-        if e["phy_update"]:
+        if e["phy_update"] and not fault:
             # Registered ACK stays high on the first sampled request-low edge.
             require(selected_update and old and old["phyupd_req"], "PHY update ACK without sampled request")
             self.phy_acks += 1
-        if old and old["phy_update"] and not e["phy_update"]:
+        if old and old["phy_update"] and not e["phy_update"] and not fault:
             require(not old["phyupd_req"], "PHY update ACK return before sampled withdrawal")
             self.phy_return = True
-        if e["owner"] == 1:
+        if e["owner"] == 1 or fault and (master or update or selected_fsp and e["fsp_busy"]):
             if e["trusted"]:
                 require(master or selected_update or selected_fsp, "PHY ownership without associated management window")
             op = decode(e["ca"]).kind if e["cs"] else "NOP"
@@ -143,7 +148,13 @@ class Case:
                 and e["fsp_busy"]
                 and e["fsp"]
                 and not e["init_complete"]
-                and op in ("MRW1", "MRW2"),
+                and op in ("MRW1", "MRW2")
+                and (
+                    not fault
+                    or op == "MRW2"
+                    and self.physical.phy.dram.pending is not None
+                    and self.physical.phy.dram.pending[2].kind == "MRW1"
+                ),
                 "forbidden controller CA during exclusive PHY ownership",
             )
 

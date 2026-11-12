@@ -604,6 +604,13 @@ class ObservationTests(unittest.TestCase):
 
         self.reject(ack_without_request, "master ACK before sampled request")
 
+        def early_update_return(t):
+            ticks = [e for e in t if e["kind"] == "tick" and e["case_id"] == 0]
+            i = next(i for i in range(1, len(ticks)) if ticks[i - 1]["update"] and not ticks[i]["update"])
+            ticks[i].update(owner=2, cs=1, ca=commands.maintenance("PRE"))
+
+        self.reject(early_update_return, "management request/ACK without PHY ownership")
+
     def test_phy_update_registered_request_ack_and_return(self):
         altered = copy.deepcopy(self.events)
         ticks = [e for e in altered if e["kind"] == "tick" and e["case_id"] == 0]
@@ -704,6 +711,39 @@ class ObservationTests(unittest.TestCase):
             sample(owner=2)
         c.physical.summary()
         LEGAL_PATHS.append(dict(path="boot and self-refresh master handback CA", samples=samples))
+
+    def test_fault_held_ack_and_reserved_fsp_pair_do_not_cancel(self):
+        # FAILED ownership can coexist with a held external ACK. A fault is
+        # neither a healthy ownership return nor cancellation of a CA pair.
+        for kind in (0, 1, 3):
+            f = Fixture(kind).dirty()
+            c = Case(dict(case_id=kind * 2, management=kind, failed=0), bindings())
+            for e, h, events in f.frames:
+                c.sample(e)
+                c.events(h, events)
+                if kind == 1 and e["cs"] and decode(e["ca"]).kind == "MRW1":
+                    break
+                if kind != 1 and e["update" if kind == 0 else "master"]:
+                    break
+            physical = c.physical
+            fault = dict(
+                c.last,
+                tick=c.last["tick"] + 1,
+                cycles=c.last["cycles"] + 1,
+                time_ps=c.last["time_ps"] + 5000,
+                owner=4,
+                trusted=0,
+                fault=1,
+                cs=0,
+                ca=0,
+            )
+            if kind == 1:
+                fault.update(cs=1, ca=commands.mode_write(1, c.profiles[0]["mr"]["1"])[1])
+            c.sample(fault)
+            self.assertIs(c.physical, physical)
+            self.assertEqual(c.physical.phy.dram.pending, None)
+            self.assertEqual(len(c.reset_intervals), 1)  # initial cold reset only
+            LEGAL_PATHS.append(dict(path="fault holds ACK/finishes reserved pair", kind=kind, sample=fault))
 
     def test_fresh_recovery_and_stale_configuration_training(self):
         f = Fixture(0, 1).dirty()

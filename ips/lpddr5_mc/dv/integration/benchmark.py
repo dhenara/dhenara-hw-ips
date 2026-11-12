@@ -65,6 +65,27 @@ def require_full_performance(observed):
     require(observed["steady_backlog_endpoint_passed"], "Actual controller steady backlog grew across the window")
 
 
+def cap_configuration(log_text):
+    """Check the actual active benchmark caps, including catch-up headroom."""
+    markers = re.findall(
+        r"BENCHMARK_CAPS channel=(\d+) enabled=(\d+) window=(\d+) read=(\d+) write=(\d+) "
+        r"work_conserving=(\d+) scheduler_ck=(\d+)",
+        log_text,
+    )
+    require(len(markers) == 2, "benchmark active cap markers")
+    result = {}
+    for marker in markers:
+        channel, enabled, window, read, write, borrowing, ck = map(int, marker)
+        require(channel in (0, 1) and channel not in result, "benchmark cap channel")
+        require(
+            enabled == 1 and window == 3000 and read == write == 48000 and borrowing == 0,
+            "benchmark active cap headroom",
+        )
+        result[channel] = {"window_ck": window, "read_bytes": read, "write_bytes": write, "scheduler_ck_at_start": ck}
+    require(result[0]["scheduler_ck_at_start"] == result[1]["scheduler_ck_at_start"], "benchmark cap clock origins")
+    return [result[c] for c in range(2)]
+
+
 def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool = False) -> dict:
     log_text = log.read_text()
     match = re.search(r"BENCHMARK_START ps=(\d+) direction=(\d+) service=(\d+) periods=(\d+)", log_text)
@@ -78,6 +99,7 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
     )
     live, wqueue = [{}, {}], [deque(), deque()]
     prefill = write_prefill(log_text, direction, start, smoke)
+    caps = cap_configuration(log_text)
     first_write = [None, None]
     accepted, completed, wbytes = [0, 0], [0, 0], [0, 0]
     counts = [[0] * periods for _ in range(2)]
@@ -265,6 +287,7 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
     return {
         "direction": direction,
         "service_div": service,
+        "active_caps": caps,
         "completed_bytes": measured,
         "reference_bytes": reference,
         "missing_bytes": None if smoke else max(0, reference - measured),

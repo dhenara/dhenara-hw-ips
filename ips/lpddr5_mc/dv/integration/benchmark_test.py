@@ -2,7 +2,7 @@
 
 import unittest
 
-from benchmark import first_write_observation, require_full_performance, write_prefill
+from benchmark import cap_configuration, first_write_observation, require_full_performance, write_prefill
 from system.host import Violation
 
 
@@ -62,6 +62,42 @@ class FullPerformanceTests(unittest.TestCase):
     def test_smoke_cannot_be_promoted(self):
         with self.assertRaisesRegex(Violation, "smoke cannot establish"):
             require_full_performance(self.passed | {"smoke_only": True})
+
+
+class BenchmarkCapTests(unittest.TestCase):
+    markers = "\n".join(
+        f"BENCHMARK_CAPS channel={c} enabled=1 window=3000 read=48000 write=48000 work_conserving=0 scheduler_ck=100"
+        for c in range(2)
+    )
+
+    def test_actual_headroom_and_clock_are_reported(self):
+        observed = cap_configuration(self.markers)
+        self.assertEqual([c["write_bytes"] for c in observed], [48000, 48000])
+        self.assertEqual(observed[0]["scheduler_ck_at_start"], 100)
+
+    def test_binding_disabled_or_wrong_caps_fail(self):
+        for old, new in (
+            ("read=48000", "read=24000"),
+            ("write=48000", "write=24000"),
+            ("enabled=1", "enabled=0"),
+            ("window=3000", "window=6000"),
+            ("work_conserving=0", "work_conserving=1"),
+        ):
+            with self.subTest(change=new):
+                with self.assertRaisesRegex(Violation, "active cap headroom"):
+                    cap_configuration(self.markers.replace(old, new))
+
+    def test_missing_duplicate_or_inconsistent_channels_fail(self):
+        for text in (
+            "",
+            self.markers.splitlines()[0],
+            self.markers.replace("channel=1", "channel=0"),
+            self.markers.replace("channel=1", "channel=2"),
+            self.markers.replace("scheduler_ck=100", "scheduler_ck=101", 1),
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(Violation):
+                    cap_configuration(text)
 
 
 if __name__ == "__main__":

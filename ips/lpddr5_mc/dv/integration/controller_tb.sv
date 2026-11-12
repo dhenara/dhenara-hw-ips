@@ -270,6 +270,10 @@ module controller_tb #(
       check($value$plusargs("benchmark_direction=%d",benchmark_direction),"missing benchmark direction");
       check($value$plusargs("benchmark_service=%d",benchmark_service),"missing benchmark service");
       staging_image[INDEX_MODE][10:8]=3'(benchmark_service);
+      // The default 24000-byte cap equals the host arrival rate. It cannot
+      // repay a maintenance pause within a later cap window. Give this rate
+      // benchmark catch-up headroom; focused cap workloads keep their limits.
+      staging_image[INDEX_RD_CAP]=48000;staging_image[INDEX_WR_CAP]=48000;
     end
     if($value$plusargs("power_policy=%d",power_policy)) begin
       check(power_policy inside {1,2},"power policy scenario");

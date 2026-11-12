@@ -119,6 +119,24 @@ task automatic benchmark_run;
   @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
   $display("CONTROLLER_INTEGRATION_PASS benchmark checks=%0d",checks);$finish;
 endtask
+for(genvar bc=0;bc<CHANNELS;bc++) begin : benchmark_cap_observers
+  initial if(BENCHMARK) begin
+    wait(benchmark_started);
+    check(dut.datapath.channels[bc].channel.backend.scheduler.config_i.caps_enable
+      && !dut.datapath.channels[bc].channel.backend.scheduler.config_i.work_conserving
+      && dut.datapath.channels[bc].channel.backend.scheduler.config_i.bw_window==3000
+      && dut.datapath.channels[bc].channel.backend.scheduler.config_i.read_cap==48000
+      && dut.datapath.channels[bc].channel.backend.scheduler.config_i.write_cap==48000,
+      "benchmark active cap headroom");
+    $display("BENCHMARK_CAPS channel=%0d enabled=%0d window=%0d read=%0d write=%0d work_conserving=%0d scheduler_ck=%0d",
+      bc,dut.datapath.channels[bc].channel.backend.scheduler.config_i.caps_enable,
+      dut.datapath.channels[bc].channel.backend.scheduler.config_i.bw_window,
+      dut.datapath.channels[bc].channel.backend.scheduler.config_i.read_cap,
+      dut.datapath.channels[bc].channel.backend.scheduler.config_i.write_cap,
+      dut.datapath.channels[bc].channel.backend.scheduler.config_i.work_conserving,
+      dut.datapath.channels[bc].channel.backend.scheduler.ck_q);
+  end
+end
 // Diagnostic snapshots explain the actual CK engine's unused opportunities.
 // They never substitute for external CA/data/response checks.
 for(genvar bc=0;bc<CHANNELS;bc++) begin : benchmark_engine_observers

@@ -1,9 +1,11 @@
 """Shared-check merging and torn-pair images must preserve distinct versions."""
 
 import copy
+import json
 import unittest
+from pathlib import Path
 
-from inline_lifecycle import DATA_BYTES, check_images, location, ordered_effects
+from inline_lifecycle import DATA_BYTES, check_images, location, ordered_effects, physical
 from system.ecc import InlineWitness
 from system.host import Violation
 
@@ -62,6 +64,45 @@ class InlineImageTests(unittest.TestCase):
             ordered_effects(events, accesses[:-1], {120: {"last_ps": 5}})
         with self.assertRaisesRegex(Violation, "before source validation"):
             ordered_effects(events, accesses, {120: {"last_ps": 11}})
+
+
+class InlineMaintenanceTests(unittest.TestCase):
+    def setUp(self):
+        self.profile = json.loads((Path(__file__).resolve().parents[2] / "config/contracts/profiles.json").read_text())[
+            "profiles"
+        ][0]
+
+    def samples(self, *, refresh):
+        # Extend beyond one refresh interval. Only the instantiated rank zero
+        # receives REF; a profile-only rank must not acquire obligations.
+        return [
+            {
+                "kind": "phy",
+                "channel": channel,
+                "ck": ck,
+                "ps": ck * self.profile["ck_ps"],
+                "cs": int(refresh and ck == 2000),
+                "ca": 56 | (64 << 7) if refresh and ck == 2000 else 0,
+                "wck": 0,
+                "write": 0,
+                "return": 0,
+            }
+            for ck in range(3126)
+            for channel in range(2)
+        ]
+
+    def test_refresh_applies_to_instantiated_ranks(self):
+        original = copy.deepcopy(self.profile)
+        self.assertEqual(physical(self.samples(refresh=True), self.profile, ranks=1), [])
+        self.assertEqual(self.profile, original)
+
+    def test_missing_real_refresh_still_fails(self):
+        with self.assertRaisesRegex(ValueError, "missed periodic refresh"):
+            physical(self.samples(refresh=False), self.profile, ranks=1)
+
+    def test_unsupported_workload_rank_count_fails(self):
+        with self.assertRaisesRegex(Violation, "one rank per channel"):
+            physical([], self.profile, ranks=2)
 
 
 if __name__ == "__main__":

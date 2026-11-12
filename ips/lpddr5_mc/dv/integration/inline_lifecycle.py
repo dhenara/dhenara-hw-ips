@@ -137,8 +137,13 @@ def source(events, images, *, recovered=False):
     return writes, {"writes": len(writes), "reads": len(reads), "failed_writes": int(not recovered)}
 
 
-def physical(events, profile, *, flip_ps=None, fault_ps=None, images=()):
+def physical(events, profile, *, ranks, flip_ps=None, fault_ps=None, images=()):
     """Check the clean physical prefix without using DUT completion witnesses."""
+    require(ranks == 1, "inline lifecycle requires one rank per channel")
+    # The reference profile also serves two-rank fixtures. Bind maintenance
+    # obligations to the actual instantiated ranks, as the plain replay does.
+    profile = copy.deepcopy(profile)
+    profile["ranks"] = ranks
     models = [DigitalPhy(copy.deepcopy(profile)) for _ in range(2)]
     wck = [WckObservations(profile) for _ in range(2)]
     timing = [ReturnTiming(profile) for _ in range(2)]
@@ -286,7 +291,7 @@ def ordered_effects(events, accesses, writes):
     require(not any(physical_queues), "unexpected inline physical owner effects")
 
 
-def check(trace, recovered_trace, log, profile):
+def check(trace, recovered_trace, log, profile, *, ranks):
     text = log.read_text()
     require(
         text.count("CONTROLLER_INLINE_LIFECYCLE_PASS shared_granules=4 scrub=1 phy_error=1 boot=1") == 1,
@@ -312,8 +317,10 @@ def check(trace, recovered_trace, log, profile):
         )
     writes, primary = source(events, images[:-1])
     fresh_writes, fresh = source(recovery, images[-1:], recovered=True)
-    accesses = physical(events, profile, flip_ps=times["FLIP"], fault_ps=times["PHY_ERROR"], images=images[:-1])
-    fresh_accesses = physical(recovery, profile, images=images[-1:])
+    accesses = physical(
+        events, profile, ranks=ranks, flip_ps=times["FLIP"], fault_ps=times["PHY_ERROR"], images=images[:-1]
+    )
+    fresh_accesses = physical(recovery, profile, ranks=ranks, images=images[-1:])
     ordered_effects(events, accesses, writes)
     ordered_effects(recovery, fresh_accesses, fresh_writes)
     # The scrub data is physically complete before the quiesce request. Its
@@ -364,6 +371,7 @@ def check(trace, recovered_trace, log, profile):
             rejected.append(name)
     require(len(rejected) == 4, "inline lifecycle oracle sensitivity")
     return {
+        "ranks_per_channel": ranks,
         "source": primary,
         "recovered_source": fresh,
         "images": len(images),

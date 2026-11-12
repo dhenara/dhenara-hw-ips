@@ -488,6 +488,7 @@ def main() -> None:
                     report.with_name("recovery-observations.jsonl"),
                     report.with_name(f"{report.stem}-2.log"),
                     profiles[0],
+                    ranks=args.ranks,
                 )
             elif args.integrity_mode in (1, 2, 4):
                 from integrity import check as check_integrity

@@ -47,7 +47,12 @@ class WritePrefillTests(unittest.TestCase):
 
 
 class FullPerformanceTests(unittest.TestCase):
-    passed = {"smoke_only": False, "threshold_passed": True, "steady_backlog_endpoint_passed": True}
+    passed = {
+        "direction": "read",
+        "smoke_only": False,
+        "threshold_passed": True,
+        "steady_backlog_endpoint_passed": True,
+    }
 
     def test_both_verdicts_are_required(self):
         require_full_performance(self.passed)

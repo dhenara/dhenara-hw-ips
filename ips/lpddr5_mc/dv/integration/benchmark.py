@@ -11,6 +11,7 @@ from collections import Counter, deque
 from pathlib import Path
 
 from benchmark_pins import PinChannel
+from benchmark_stability import WriteStability
 from system.host import require
 from system.trace import source_order
 
@@ -59,10 +60,18 @@ def first_write_observation(prefill, port, ps, accepted, outstanding):
 
 
 def require_full_performance(observed):
-    """The full runner must enforce both independent performance verdicts."""
+    """Enforce payload and the owning direction's required stability method."""
     require(not observed["smoke_only"], "smoke cannot establish full performance")
     require(observed["threshold_passed"], "Actual controller payload is below the agreed 99% threshold")
-    require(observed["steady_backlog_endpoint_passed"], "Actual controller steady backlog grew across the window")
+    require(observed.get("direction") in ("read", "write"), "missing benchmark direction")
+    if observed["direction"] == "write":
+        stability = observed.get("write_stability")
+        require(
+            isinstance(stability, dict) and stability.get("passed") is True,
+            "Actual controller write stability failed or lacks observed evidence",
+        )
+    else:
+        require(observed["steady_backlog_endpoint_passed"], "Actual controller steady backlog grew across the window")
 
 
 def cap_configuration(log_text):
@@ -84,6 +93,28 @@ def cap_configuration(log_text):
         result[channel] = {"window_ck": window, "read_bytes": read, "write_bytes": write, "scheduler_ck_at_start": ck}
     require(result[0]["scheduler_ck_at_start"] == result[1]["scheduler_ck_at_start"], "benchmark cap clock origins")
     return [result[c] for c in range(2)]
+
+
+def write_stability_from_trace(trace: Path, log: Path, service: int) -> dict:
+    """Run only changed stability/source admission on a retained full trace.
+
+    Data, pin/protocol, payload and runtime qualification must be separately
+    bound to retained evidence. This function never invokes their replay.
+    """
+    markers = re.findall(r"BENCHMARK_START ps=(\d+) direction=(\d+) service=(\d+) periods=(\d+)", log.read_text())
+    require(len(markers) == 1 and service in (1, 2, 4), "write stability benchmark marker")
+    start, direction, selected_service, periods = map(int, markers[0])
+    require(
+        direction == 1 and selected_service == service and periods == 100, "write stability full benchmark settings"
+    )
+    profile = json.loads((Path(__file__).resolve().parents[2] / "config/contracts/profiles.json").read_text())[
+        "profiles"
+    ][4]
+    stability = WriteStability(profile | {"ranks": 1}, start)
+    with gzip.open(trace, "rt") if trace.suffix == ".gz" else trace.open() as stream:
+        for event in source_order(stream):
+            stability.sample(event)
+    return stability.finish()
 
 
 def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool = False) -> dict:
@@ -108,6 +139,7 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
     ]
     owners = {}
     pins = [PinChannel(profiles[4], c, owners) for c in range(2)]
+    stability = WriteStability(profiles[4] | {"ranks": 1}, start, smoke=smoke) if direction == "write" else None
     clocks, source_stalls, engine_stalls = [None, None], [Counter(), Counter()], [Counter(), Counter()]
     engine_edges = [-1, -1]
     channel_live, channel_maximum, channel_backlog = [0, 0], [0, 0], []
@@ -118,7 +150,11 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
         events = iter(source_order(stream))
         header = next(events)
         require(header["ports"] == header["channels"] == 2 and header["bus_bytes"] == 16, "benchmark ports/width")
+        if stability is not None:
+            stability.sample(header)
         for e in events:
+            if stability is not None:
+                stability.sample(e)
             require(not ended and e["ps"] >= last_ps, "benchmark event order/end")
             last_ps = e["ps"]
             relative = e["ps"] - start
@@ -284,7 +320,7 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
     )
     measured = sum(sum(channel[0 if smoke else 10 :]) for channel in counts)
     reference = 2 * 90 * 64 * (339 if service == 4 else 375)
-    return {
+    result = {
         "direction": direction,
         "service_div": service,
         "active_caps": caps,
@@ -314,6 +350,11 @@ def check(trace: Path, log: Path, direction: str, service: int, *, smoke: bool =
         "limits": [
             "The engine reason counts partition observed cycles; overlapping pipeline costs "
             "do not convert one-for-one into missing bytes. "
-            "Backlog growth interpretation, caps and all-class fairness closure remain pending."
+            "Write stability uses observed REF recurrence and full AW turnover; "
+            "read stability retains its endpoint gate. "
+            "Caps, all-class fairness and overall qualification remain separately required."
         ],
     }
+    if stability is not None:
+        result["write_stability"] = stability.finish()
+    return result

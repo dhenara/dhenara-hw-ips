@@ -679,6 +679,47 @@ class ObservationTests(unittest.TestCase):
             LEGAL_PATHS.append(dict(path=kind + " recovery boundary", before=before, at=p.row_recovery()))
             p.profile(bindings()[1])
 
+    def test_write_pin_and_dfi_flush_have_independent_origins(self):
+        for profile in bindings():
+            for delay in (0, profile["dfi_wck"]["twrdata_delay"]):
+                profile = copy.deepcopy(profile)
+                profile["dfi_wck"]["twrdata_delay"] = delay
+                p = PhysicalStream(profile)
+                for ck, ca in enumerate(commands.activate(0, 0)):
+                    p.phy.command(ck, 1, ca)
+                at = profile["dram_ck"]["trcd"] + 2
+                p.phy.command(at - 1, 1, commands.cas("write"))
+                burst = p.phy.command(at, 1, commands.access(True, 32, 0, 0))
+                q = granule("inline_physical", write=1)
+                p.expect(q)
+                t = p.requests[0]
+                p.add(burst, at, 0, t)
+                r, d = profile["ratio"], profile["dfi_wck"]
+                span = 24 if r == 4 else 16
+                pin_end = (burst.times[-1] + 1 + 2 * r - 1) // (2 * r)
+                dfi_end = (at * r + max(d["tphy_wrcslat"], d["tphy_wrlat"] + d["tphy_wrdata"]) + span + r - 1) // r
+                flush_end = (at * r + d["tphy_wrlat"] + d["tphy_wrdata"] + span + delay + r - 1) // r
+                expected = max(pin_end, dfi_end, flush_end)
+                self.assertEqual(t["final"], expected)
+                # Isolate readiness from payload capture; separate fixtures
+                # check every actual write byte and command/data identity.
+                t.update(bytes=64, seen=set(range(64)))
+                p.ck = expected
+                with self.assertRaisesRegex(Violation, "before independent physical") as caught:
+                    p.ready(t)
+                REJECTIONS.append(dict(test=self.id(), ratio=r, delay=delay, observed=str(caught.exception)))
+                p.ck += 1  # sample(expected) has completed before its later edge
+                p.ready(t)
+                t["seen"].remove(63)
+                with self.assertRaisesRegex(Violation, "before independent physical") as caught:
+                    p.ready(t)
+                REJECTIONS.append(dict(test=self.id(), ratio=r, delay=delay, observed=str(caught.exception)))
+                LEGAL_PATHS.append(
+                    dict(
+                        path="independent write tails", ratio=r, delay=delay, pin=pin_end, dfi=dfi_end, flush=flush_end
+                    )
+                )
+
     def test_legal_boot_and_master_self_refresh_handback(self):
         f = Fixture(3).dirty()
         c = Case(dict(case_id=6, management=3, failed=0), bindings())

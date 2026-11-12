@@ -298,7 +298,7 @@ class PhysicalStream:
         words = b.beats // 2 if b else 8
         write = b is not None and b.write
         span = words + (8 if r == 4 and words == 16 else 0)
-        # End is exclusive in WCK units; include PHY write delay independently.
+        # End is exclusive in WCK units at the DFI data/CS interface.
         end = ck * r + max(
             d["tphy_wrcslat" if write else "tphy_rdcslat"] + span,
             d["tphy_wrlat"] + d["tphy_wrdata"] + span if write else 0,
@@ -317,8 +317,14 @@ class PhysicalStream:
         if request is not None:
             request["bursts"].append(a)
             if write:
-                physical = (b.times[-1] + 1 + 2 * self.p["dfi_wck"]["twrdata_delay"] + 2 * r - 1) // (2 * r)
-                request["final"] = max(request["final"], end_ck, physical)
+                # DFI 5.0 3.2 / Table 12 / 4.9.3 measures twrdata_delay
+                # from DFI write enable, not from the final DRAM pin beat.
+                # Keep the declared conservative data-end-plus-delay flush,
+                # independently of the decoded pin endpoint. Adding the delay
+                # to that endpoint counts the serialization path twice.
+                physical = (b.times[-1] + 1 + 2 * r - 1) // (2 * r)
+                flush = (ck * r + d["tphy_wrlat"] + d["tphy_wrdata"] + span + d["twrdata_delay"] + r - 1) // r
+                request["final"] = max(request["final"], end_ck, physical, flush)
         if not write:
             if b:
                 beats = [self.phy.dram.beat(b, i, b.times[i]) for i in range(b.beats)]

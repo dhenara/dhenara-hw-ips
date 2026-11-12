@@ -84,8 +84,11 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       if(dut.backend.reg_valid) $display("register result ck=%0d epoch=%0d rank=%0d",cycles,dut.backend.is_epoch_q,dut.backend.reg_rank);
     end
 
-    if(rst_n && !memory_reset) begin memory_model.prepare();memory_model.sample();check_control_pins();end
-    else memory_model.reset();
+    if(rst_n && !memory_reset) begin
+      memory_model.prepare();
+      c2_sample();
+      memory_model.sample();check_control_pins();
+    end else begin memory_model.reset();c2_sample();end
   end
   task automatic check_control_pins;
     logic [7:0] expected_value;
@@ -525,11 +528,14 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       $display("PASS connected stress REFpb=%0d: paired RAA/RFM bound, hot thermal refresh/derating and MR4 service",PER_BANK_REFRESH);
     end
   endtask
+  `include "channel_observer.svh"
   `include "dirty_management.svh"
   initial begin
     int selected_case;
+    c2_open();
     selected_case=0;
     if($value$plusargs("channel_case=%d",selected_case)) begin end
+    assert(c2_stream==0 || selected_case==9) else $fatal(1,"channel observations require case9");
     cfg='0;request='0;config_mailbox='0;management_in='0;cycles=0;
     for(int c=0;c<10;c++) begin
       if(selected_case==0 || (selected_case==1 && c==6) || (selected_case==2 && c==7) || (selected_case==3 && c>=8))
@@ -541,6 +547,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
     if(selected_case inside {0,7}) poll_once_case();
     if(selected_case inside {0,8}) poll_handoff_case();
     if(selected_case==9) for(int kind=0;kind<4;kind++) for(int failed=0;failed<2;failed++) dirty_management_case(kind,1'(failed));
+    c2_complete=1;
     $display("PASS selected channel cases selection=%0d",selected_case);$finish;
   end
 endmodule

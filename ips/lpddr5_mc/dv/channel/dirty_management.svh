@@ -29,6 +29,7 @@ end
 task automatic dirty_management_case(input int kind,input bit fail_dirty);
   lpddr5_mc_channel_config_t target_config;
   int request_edge,release_edge;
+  c2_begin(kind,fail_dirty);
   setup_control(1,1);
   if(kind==1) begin
     send_command(CH_CMD_QUIESCE);wait_quiet();
@@ -80,6 +81,10 @@ task automatic dirty_management_case(input int kind,input bit fail_dirty);
   end else begin
     // Hold the original completion to prove an idle physical backend alone
     // cannot authorize management while the inline lock remains reserved.
+    for(int c=0;c<3000;c++) begin
+      step();if(completion_valid) break;
+    end
+    assert(completion_valid && !completion_ready) else $fatal(1,"dirty held completion never offered");
     repeat(8) step();
     assert(dirty_entry_ck<0 && dirty_completions==0) else $fatal(1,"dirty held response lost dependency");
     completion_ready=1;
@@ -115,5 +120,8 @@ task automatic dirty_management_case(input int kind,input bit fail_dirty);
       else $fatal(1,"dirty management terminal settlement");
     dirty_observing=0;
   end
+  // Retain the terminal pre-edge state, including reset epoch invalidation.
+  tick();
+  c2_end();
   $display("PASS dirty management composition kind=%0d failure=%0d",kind,fail_dirty);
 endtask

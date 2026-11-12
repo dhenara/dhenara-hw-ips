@@ -34,6 +34,7 @@ class SourceManifestTests(unittest.TestCase):
                     "rtl/channel/files.f",
                     "dv/contracts/model.py",
                     "dv/channel/check.py",
+                    "dv/integration/wck_observations.py",
                     "config/contracts/profile.json",
                     "constraints/channel/clock.sdc",
                     "dv/channel/evidence/captured.json",
@@ -46,7 +47,7 @@ class SourceManifestTests(unittest.TestCase):
                 manifests.append(source_manifest(ip))
             self.assertEqual(manifests[0], manifests[1])
             self.assertEqual(manifests[0], manifests[2])
-            self.assertEqual(len(manifests[0]), 6)
+            self.assertEqual(len(manifests[0]), 7)
             for entry in manifests[0]:
                 relative = entry["path"].removeprefix("ips/lpddr5_mc/")
                 self.assertEqual(entry["sha256"], hashlib.sha256((relative + "\n").encode()).hexdigest())

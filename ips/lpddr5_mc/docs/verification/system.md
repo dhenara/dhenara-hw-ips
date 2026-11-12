@@ -2,7 +2,7 @@
 
 This environment qualifies independent observation models, adapters, bus agents and their sensitivity fixtures. The source contains the [accepted reference foundation](../spec/contracts.md), host/channel RTL and developing controller bindings. A passing environment report sets `controller_qualified: false`. Actual combined controller correctness, CDC/reset behavior, coverage closure and throughput require later execution against that controller.
 
-The [coverage map](../../dv/system/coverage.json) accounts for every accepted requirement family, identifies executable environment and foundation tests, and records the remaining combined tests. The runner validates every cited test identity and the result of each environment test. A foundation reference is not an extra controller pass. The full runner executes the existing foundation flow unchanged and records its separate result.
+The [current qualification matrix](qualification.md) records combined-controller evidence and remaining release checks. The [coverage map](../../dv/system/coverage.json) identifies executable environment and foundation tests; its historical combined pending labels are reconciled by that matrix and do not mean all those behaviors remain untested. The runner validates every cited test identity and the result of each environment test. A foundation reference is not an extra controller pass. The full runner executes the existing foundation flow unchanged and records its separate result.
 
 ## Actual RTL binding
 

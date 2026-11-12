@@ -102,6 +102,14 @@ def granule(kind, *, at=0, tag=10, write=1, mask=(1 << 64) - 1, data=0):
     }
 
 
+def registered_fault_trace():
+    t = trace()
+    t[3].update(enabled=1)
+    t[4].update(enabled=1)
+    t[5].update(enabled=1, host_fault=0, trained=1)
+    return t
+
+
 def result(q, *, failed=False, data=0):
     return {
         **{k: q[k] for k in ("tag", "generation", "boot", "config", "write")},
@@ -157,6 +165,45 @@ def inline_fixture(*, failed=False, correction=False):
 
 
 class ContinuousTests(unittest.TestCase):
+    def test_registered_status_fault_withdrawal(self):
+        report = check(registered_fault_trace(), PROFILE)["channels"][0]
+        self.assertEqual(report["registered_fault_withdrawals"], [{"start": 4, "end": 5}])
+
+    def test_registered_status_never_extends_admission(self):
+        for name, change, reason in (
+            ("second_enabled_ck", lambda t: t[6].update(enabled=1), "beyond registered"),
+            ("already_host_faulted", lambda t: t[5].update(host_fault=1), "enabled untrusted"),
+            ("not_previously_enabled", lambda t: t[4].update(enabled=0), "enabled untrusted"),
+            ("stale_config", lambda t: t[5].update(config=0), "enabled untrusted"),
+            ("stale_training", lambda t: t[5].update(training_epoch=1), "enabled untrusted"),
+            ("lost_profile", lambda t: t[5].update(config_valid=0), "enabled untrusted"),
+            ("lost_training", lambda t: t[5].update(trained=0), "enabled untrusted"),
+            ("no_fault", lambda t: t[5].update(fault=0), "enabled untrusted"),
+            ("new_access", lambda t: t[5].update(cs=1, ca=7), "new memory access"),
+            (
+                "new_inline",
+                lambda t: t.insert(6, {**granule("inline_admit"), "ck": 4}),
+                "new inline admission",
+            ),
+        ):
+            with self.subTest(name=name):
+                t = registered_fault_trace()
+                change(t)
+                with self.assertRaisesRegex(ValueError, reason):
+                    check(t, PROFILE)
+
+    def test_registered_status_requires_following_disabled_ck(self):
+        t = registered_fault_trace()[:6] + [{"kind": "end", "ck": 5}]
+        with self.assertRaisesRegex(ValueError, "ends before registered enable withdrawal"):
+            check(t, PROFILE)
+
+    def test_initial_untrusted_and_host_fault_enable_rejected(self):
+        for changes in ({"enabled": 1}, {"enabled": 1, "trusted": 1, "trained": 1, "host_fault": 1}):
+            t = trace()
+            t[2].update(**changes)
+            with self.assertRaisesRegex(ValueError, "enabled untrusted"):
+                check(t, PROFILE)
+
     def test_full_fault_reset_epochs(self):
         report = check(trace(), PROFILE)["channels"][0]
         self.assertEqual(report["entries"]["update"], 1)

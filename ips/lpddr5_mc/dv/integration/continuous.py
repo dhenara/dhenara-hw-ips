@@ -205,6 +205,8 @@ class Channel:
         self.entries = {k: 0 for k in ("update", "phy_update", "fsp", "power", "master")}
         self.dirty_requests = {k: 0 for k in ("update", "fsp", "power", "master")}
         self.request_pending = set()
+        self.enable_withdrawal_ck = None
+        self.registered_fault_withdrawals = []
 
     def sample(self, e):
         ck = e["ck"]
@@ -214,6 +216,10 @@ class Channel:
             old is None or e["ps"] - old["ps"] == self.p["ck_ps"],
             "continuous CK timestamp",
         )
+        if self.enable_withdrawal_ck is not None:
+            require(not e["enabled"], "enabled untrusted service beyond registered status tick")
+            self.registered_fault_withdrawals.append({"start": ck - 1, "end": ck})
+            self.enable_withdrawal_ck = None
         self.samples += 1
         reset = not e["reset_n"] or bool(e["destructive"])
         if e["destructive"]:
@@ -265,10 +271,35 @@ class Channel:
         if old and old["trusted"] and not e["trusted"]:
             self.suspend_start = ck
             self.maintenance = None
-        require(
-            not e["enabled"] or e["trusted"] and not e["fault"] and e["trained"] and e["config_valid"],
-            "enabled untrusted service",
-        )
+        if e["enabled"]:
+            runnable = e["trusted"] and not e["fault"] and e["trained"] and e["config_valid"]
+            # The wrapper registers the complete channel status before the
+            # coordinator consumes it. These pre-edge samples contain live
+            # channel trust/fault and the enable based on the preceding tick.
+            # Only a newly faulted, formerly enabled epoch may take that tick;
+            # local admission and new memory access remain forbidden below.
+            registered_fault = (
+                old is not None
+                and old["enabled"]
+                and old["trusted"]
+                and not old["fault"]
+                and not old["host_fault"]
+                and old["trained"]
+                and old["config_valid"]
+                and e["fault"]
+                and not e["trusted"]
+                and e["trained"]
+                and e["config_valid"]
+                and e["config"] > 0
+                and all(e[k] == old[k] for k in ("boot", "config", "training_epoch", "ratio"))
+                and e["training_epoch"] == e["boot"]
+            )
+            require(
+                not reset and not e["host_fault"] and (runnable or registered_fault),
+                "enabled untrusted service",
+            )
+            if not runnable:
+                self.enable_withdrawal_ck = ck + 1
         if old and e["config"] != old["config"] and e["config_valid"]:
             require(
                 not self.inline.live and e["drained"],
@@ -385,6 +416,7 @@ class Channel:
 
     def finish(self):
         require(self.last is not None and self.pair is None, "unfinished continuous CA pair")
+        require(self.enable_withdrawal_ck is None, "trace ends before registered enable withdrawal")
         require(self.inline.live is None, "unfinished inline lock at trace end")
         wck = self.wck.finish()
         intervals = list(self.suspended)
@@ -402,6 +434,7 @@ class Channel:
             "trusted_ck": self.trusted_ck,
             "refresh_suspended": intervals,
             "resets": self.reset_count,
+            "registered_fault_withdrawals": self.registered_fault_withdrawals,
             "wck": wck,
             "prior_wck_profiles": self.wck_history,
             "entries": self.entries,
@@ -433,6 +466,18 @@ def check(events, profile, epoch_profiles=None):
         else:
             c = channels[e["channel"]]
             require(c.last and c.last["ck"] == e["ck"], "inline event outside continuous CK")
+            if e["kind"] == "inline_admit":
+                s = c.last
+                require(
+                    s["reset_n"]
+                    and not s["destructive"]
+                    and s["trusted"]
+                    and not s["fault"]
+                    and not s["host_fault"]
+                    and s["trained"]
+                    and s["config_valid"],
+                    "new inline admission after ownership/trust failure",
+                )
             c.inline.event(e)
     require(ended, "continuous trace missing end")
     return {

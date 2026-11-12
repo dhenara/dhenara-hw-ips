@@ -44,13 +44,15 @@ CS asserts at the command plus `tphy_*cslat`, independently of read/write enable
 | DQ path offsets | JEDEC pp277, 294, Table 462 p622 | Pin offset bounds; write-path equality, read sample/deadline checks |
 | Core timings | JEDEC AC tables pp557–559 | RCD15, RPpb15/RPab17, RAS34, RC51, RRD4, FAW16 CK; WR28 or31 with write link; WTR S/L5/10 or9/13 CK |
 | Refresh / RFM / thermal | JEDEC pp178, 200, 320–325, 490–494, 566 | RFCab168/pb96, RFMab168/pb136, REFI≤3124 CK; discovered RFM counters, thermal interval/derating and extra SRX refresh |
-| ZQ / MR / FSP | JEDEC pp72–77, 212, 377–387 | ZQCAL1200, ZQLAT24; MRD12, MRR4/8, MRW8; long FSP guard201 and six CK clock guards |
+| ZQ / MR / FSP / VRCG | JEDEC pp72–77, 212, 377–387, 454; Tables255–257/298 and Figures200/242/243 | ZQCAL1200, ZQLAT24; MRD12, MRR4/8, MRW minimum8 (fixtures12); long tFC201; six-CK entry/exit within continuous-CK switch interval; VRCG enable120/disable80CK from each MRW2 |
 | Link ECC, DBI/DM | JEDEC pp311–314, 490–510, Tables 331/332 pp507/508 | Source matrices, per-byte/group transport, correction before inverse transforms |
 | DFI timing, rotation and ownership | DFI pp33, 37–46, 48–55, 64–77, 105–109, 116–129, 138–154 | Per-word/slice completion, low/high frequency acknowledgement, sampled management policy and owner transfer |
 | Data CS duration/rank gap | DFI Tables 12/15, pp42/46 | Zero-gap admission; continuous split-gap hold with explicit deassertion; separate rank-transition checks |
 | Host protocols | Arm IHI0022H A3.4/A6/A7; IHI0024E Chapters 2/3 | Burst, error, exclusive/order and APB strobe/error models |
 
 The exact external identities and inspected coverage are retained in [reference-sources.json](../../config/reference/reference-sources.json). These references support the stated restricted contract. This is not an exhaustive conformance audit or authorization to redistribute the standards.
+
+The fixed VRCG intervals derive from CK=1250ps and Table298; they need no new register fields or generated profile ABI. Existing `TFC`, `TCKFSPE` and `TCKFSPX` fields remain validated, and complete MR16 normal images remain zero before the engine overlays dynamic FSP controls. Profile inputs, register generation, packed profile decoders and software images remain unchanged. The [FSP control sequence](control.md#dfi-management-and-fsp) defines current-versus-target interval ownership, pin origins, restore and admission accounting.
 
 ## Qualification boundary
 

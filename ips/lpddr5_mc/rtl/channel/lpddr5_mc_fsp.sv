@@ -22,7 +22,7 @@ module lpddr5_mc_fsp (
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_channel_pkg::*;
-  typedef enum logic [3:0] {IDLE, ACCEPT, MRW1, MRW2, MRWAIT, GUARD, STABLE, RELEASE, WAIT_RETURN, READY, HOLD} state_t;
+  typedef enum logic [3:0] {IDLE, ACCEPT, MRW1, MRW2, MRWAIT, RELEASE, WAIT_RETURN, READY, HOLD} state_t;
   state_t state_q;
   lpddr5_mc_profile_t current_q;
   logic [31:0] target_epoch_q, elapsed_q, wait_q;
@@ -32,12 +32,12 @@ module lpddr5_mc_fsp (
   logic accepted_q;
   logic [6:0] mr_address;
   logic [7:0] mr_value;
-  logic [31:0] admission_budget, spacing;
+  logic [31:0] admission_budget;
   logic unused_profile;
   assign unused_profile=^{current_profile_i,current_q};
   function automatic logic [6:0] register_at(input logic [4:0] index_value);
     case(index_value)
-      0,18: return 16;
+      0,18,19: return 16;
       1: return 1; 2: return 2; 3: return 3; 4: return 10; 5: return 11;
       6: return 12; 7: return 14; 8: return 15; 9: return 17; 10: return 18;
       11: return 19; 12: return 20; 13: return 22; 14: return 24;
@@ -45,12 +45,15 @@ module lpddr5_mc_fsp (
     endcase
   endfunction
   always_comb begin
-    admission_budget=fsp_admission_budget(current_profile_i);
-    spacing=32'(current_q.dram_ck_tmrd)>32'(current_q.dram_ck_tmrw) ? 32'(current_q.dram_ck_tmrd) : 32'(current_q.dram_ck_tmrw);
+    admission_budget=fsp_admission_budget(current_profile_i,target_profile_i);
     mr_address=register_at(mr_index_q);
     mr_value=frozen_target_o.mr[mr_address];
-    if(mr_index_q==0) mr_value={frozen_target_o.mr[16][7:4],old_fsp_q,fsp_o};
-    if(mr_index_q==18) mr_value={frozen_target_o.mr[16][7:4],fsp_o,fsp_o};
+    // Staging changes FSP-WR only; retain current non-FSP controls. The
+    // operating-point command simultaneously enables VRCG (7.6.3.1).
+    // Restore the admitted target's normal VRCG state after switch recovery.
+    if(mr_index_q==0) mr_value={current_q.mr[16][7:4],old_fsp_q,fsp_o};
+    if(mr_index_q==18) mr_value={frozen_target_o.mr[16][7:4],fsp_o,fsp_o}|8'h40;
+    if(mr_index_q==19) mr_value={frozen_target_o.mr[16][7:4],fsp_o,fsp_o};
     ca_o='0;
     if((!fault_o || state_q==MRW2) && state_q inside {MRW1,MRW2}) begin
       ca_o.address=ca_mrw(mr_address,mr_value,state_q==MRW2);
@@ -66,7 +69,9 @@ module lpddr5_mc_fsp (
       init_start_o<=0; fsp_o<=0; ratio_o<=0; frequency_o<=0;
       declined_o<=0; fault_o<=0; clock_change_done_o<=0; published_o<=0;
     end else if(destructive_reset_i) begin
-      state_q<=IDLE; frozen_target_o<='0; target_epoch_q<=0; elapsed_q<=0; wait_q<=0;
+      state_q<=IDLE; current_q<='0; frozen_target_o<='0; target_epoch_q<=0; elapsed_q<=0; wait_q<=0;
+      mr_index_q<=0; old_fsp_q<=0; old_frequency_q<=0; accepted_q<=0;
+      fsp_o<=0; ratio_o<=0; frequency_o<=0;
       init_start_o<=0; declined_o<=0; fault_o<=0; clock_change_done_o<=0; published_o<=0;
     end else begin
       declined_o<=0; published_o<=0;
@@ -74,7 +79,7 @@ module lpddr5_mc_fsp (
       else begin
         case(state_q)
           IDLE: if(request_i && drained_i && wck_disabled_i && refresh_budget_i>=admission_budget) begin
-            if(!profile_valid(target_profile_i) || target_fsp_i>2 || target_fsp_i==active_fsp_i
+            if(!profile_valid(current_profile_i) || !profile_valid(target_profile_i) || active_fsp_i>2 || target_fsp_i>2 || target_fsp_i==active_fsp_i
                 || target_frequency_i!=(target_profile_i.ratio==2 ? 5'd0 : 5'd1)
                 || target_epoch_i<=active_epoch_i || !init_complete_i || target_profile_i.ranks!=current_profile_i.ranks) fault_o<=1;
             else begin
@@ -98,21 +103,16 @@ module lpddr5_mc_fsp (
           MRW1: begin state_q<=MRW2; if(init_complete_i || !wck_disabled_i) fault_o<=1; end
           MRW2: begin
             if(init_complete_i || !wck_disabled_i) fault_o<=1;
-            wait_q<=spacing; state_q<=MRWAIT;
+            if(mr_index_q==18) wait_q<=fsp_switch_guard(current_q,frozen_target_o);
+            else if(mr_index_q==19) wait_q<=fsp_restore_guard(frozen_target_o)+fsp_command_tail(current_q,frozen_target_o);
+            else wait_q<=fsp_mrw_spacing(current_q);
+            state_q<=MRWAIT;
           end
           MRWAIT: begin
             if(init_complete_i || !wck_disabled_i) fault_o<=1;
             if(wait_q>1) wait_q<=wait_q-1;
-            else if(mr_index_q<18) begin mr_index_q<=mr_index_q+1; state_q<=MRW1; end
-            else begin wait_q<=32'(current_q.dram_ck_tfc)>201 ? 32'(current_q.dram_ck_tfc) : 201; state_q<=GUARD; end
-          end
-          GUARD: begin
-            if(init_complete_i || !wck_disabled_i) fault_o<=1;
-            if(wait_q>1) wait_q<=wait_q-1; else begin wait_q<=6; state_q<=STABLE; end
-          end
-          STABLE: begin
-            if(init_complete_i || !wck_disabled_i) fault_o<=1;
-            if(wait_q>1) wait_q<=wait_q-1; else begin clock_change_done_o<=1; state_q<=RELEASE; end
+            else if(mr_index_q<19) begin mr_index_q<=mr_index_q+1; state_q<=MRW1; end
+            else begin clock_change_done_o<=1; state_q<=RELEASE; end
           end
           RELEASE: begin
             if(init_complete_i || !wck_disabled_i) fault_o<=1;

@@ -148,6 +148,10 @@ class PhysicalStream:
             self.drained(),
             "profile change before independent physical/row/WCK drain",
         )
+        require(
+            all((mr.get(16, 0) & 0xF0) == (p["mr"]["16"] & 0xF0) for mr in self.phy.dram.mr),
+            "profile change before target normal VRCG/control restore",
+        )
         require(p["ck_ps"] == self.p["ck_ps"], "unsupported CK change")
         self.prior_wck.append(self.wck.finish())
         self.p = self.phy.p = self.phy.dram.p = p

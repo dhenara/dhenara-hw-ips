@@ -400,12 +400,40 @@ def arbitrate_update(ctrl_active: bool, ctrl_released: bool, phy_req: bool, elap
     return "idle"
 
 
+def fsp_budget(current: dict, target: dict) -> int:
+    """Conservative CK reserve through DFI return, before publication wait.
+
+    Count the serialized command/recovery edges using the two complete
+    profiles. This is a contract bound, not execution evidence for the RTL.
+    Timing changes admitted by this representation still need qualification.
+    """
+    from contracts.profiles import admit
+
+    admit(current)
+    admit(target)
+    c, t = current["dram_ck"], target["dram_ck"]
+    # Each pair consumes MRW1 and MRW2, then an idle guard before the next
+    # pair. Before OP changes, only current timings apply to staging/program.
+    edge = current["management_ck"]["tinit_start"]
+    for _ in range(18):
+        edge += 2 + max(c["tmrw"], c["tmrd"])
+    edge += 2
+    edge += max(c["tfc"], t["tfc"], c["tckfspe"] + t["tckfspx"], 120, c["tmrw"], c["tmrd"], t["tmrw"], t["tmrd"])
+    edge += 2  # MR16 normal restore; its MRW2 starts the disable interval.
+    edge += max(80, t["tmrw"], t["tmrd"])
+    edge += max(current["management_ck"]["tctrl_delay"], target["management_ck"]["tctrl_delay"])
+    edge += current["management_ck"]["tinit_complete"]
+    return edge + 8  # Registered request/release/return and caller edges.
+
+
 def check_fsp(steps: list[tuple[int, str, int]], target: int) -> None:
     """Independent ordered FSP protocol fixture, constant CK, WCK ratio change.
 
-    All target-bank mode/training images must already be prepared. Fastest
-    short tFC is deliberately not used: allow 251.25ns = 201CK and six CK
-    running clock on both sides. DVFSC and voltage changes are unsupported.
+    Event times for FSP_WR, PROGRAM, FSP_OP_HIGH and VRCG_NORMAL name
+    MRW2 rising edges. All target-bank images must already be prepared.
+    CK remains running at 800MHz: entry/exit guards fit inside long tFC
+    (201CK), concurrent with VRCG enable (120CK). Normal restore starts
+    a separate 80CK DES-only interval. DVFSC/voltage changes are unsupported.
     """
     if target not in (0, 1, 2) or [op for _, op, _ in steps] != [
         "DRAIN",
@@ -413,8 +441,9 @@ def check_fsp(steps: list[tuple[int, str, int]], target: int) -> None:
         "DISABLE",
         "FSP_WR",
         "PROGRAM",
-        "FSP_OP",
+        "FSP_OP_HIGH",
         "CLOCK_STABLE",
+        "VRCG_NORMAL",
         "TRAINED",
         "PUBLISH",
     ]:
@@ -422,9 +451,20 @@ def check_fsp(steps: list[tuple[int, str, int]], target: int) -> None:
     times = [at for at, _, _ in steps]
     if any(a >= b for a, b in zip(times, times[1:], strict=False)):
         raise ValueError("FSP edge order")
-    if times[2] - times[1] < 5 or times[5] - times[4] < 12 or times[6] - times[5] < 201 or times[8] - times[6] < 6:
-        raise ValueError("FSP WCK/MRD/tFC clock guards")
-    if any(value != target for _, op, value in steps if op in ("FSP_WR", "PROGRAM", "FSP_OP", "TRAINED", "PUBLISH")):
+    if (
+        times[2] - times[1] < 5
+        or times[4] - times[3] < 13
+        or times[5] - times[4] < 13
+        or times[6] - times[5] < 201
+        or times[7] - times[6] < 1
+        or times[8] - times[7] < 80
+    ):
+        raise ValueError("FSP WCK/MRW/tFC/VRCG guards")
+    if any(
+        value != target
+        for _, op, value in steps
+        if op in ("FSP_WR", "PROGRAM", "FSP_OP_HIGH", "VRCG_NORMAL", "TRAINED", "PUBLISH")
+    ):
         raise ValueError("FSP target identity")
 
 

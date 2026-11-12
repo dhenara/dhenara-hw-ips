@@ -4,6 +4,7 @@ module lpddr5_mc_lifecycle (
   input logic clk_ck_i, rst_ni,
   input logic cold_rst_ni,
   input lpddr5_mc_channel_pkg::lpddr5_mc_profile_t profile_i,
+  input lpddr5_mc_channel_pkg::lpddr5_mc_profile_t fsp_target_profile_i,
   input logic profile_valid_i,
   input logic [31:0] profile_epoch_i,
   input logic command_valid_i,
@@ -243,7 +244,7 @@ module lpddr5_mc_lifecycle (
             // the reserve that its engine is waiting for.
             if(refresh_budget_i>=update_admission_budget(profile_i,management_i.phyupd_req,management_i.phyupd_type)+2) state_q<=UPDATE;
           end else if(operation_q==CH_CMD_FSP) begin
-            if(refresh_budget_i>=fsp_admission_budget(profile_i)+2) state_q<=FSP;
+            if(refresh_budget_i>=fsp_admission_budget(profile_i,fsp_target_profile_i)+2) state_q<=FSP;
           end
           else if(operation_q inside {CH_CMD_POWER_DOWN,CH_CMD_SELF_REFRESH}) begin
             if(!extra_refresh_i || operation_q==CH_CMD_POWER_DOWN) begin

@@ -109,6 +109,9 @@ class DramModel:
         self.mr = [{} for _ in range(profile["ranks"])]
         self.sync: tuple[int, int, int] | None = None
         self.rank_ready = [0] * profile["ranks"]
+        # Unlike SR recovery, FSP/VRCG recovery permits DES only, including
+        # no selected NOP. Origins are the rising edge carrying MRW2.
+        self.des_until = [0] * profile["ranks"]
         self.sr_recovery = [False] * profile["ranks"]
         self.last_valid = [-100000] * profile["ranks"]
         self.power: list[tuple[str, int] | None] = [None] * profile["ranks"]
@@ -143,6 +146,7 @@ class DramModel:
         c, d = decode(ca), dict(self.p["dram_ck"])
         for name, extra in self.maintenance.timing_derating().items():
             d[name] += extra
+        require(at >= self.des_until[rank], "FSP/VRCG DES-only recovery")
         if c.kind == "NOP":
             require(self.pending is None, "NOP overwrote reserved pair")
             return None
@@ -199,13 +203,30 @@ class DramModel:
             require(c.kind == {"ACT1": "ACT2", "MRW1": "MRW2"}[first.kind], "reserved pair overwritten")
             self.pending = None
             if first.kind == "MRW1":
+                if first.operand == 16:
+                    prior = self.mr[rank].get(16, 0)
+                    op_changed = (prior >> 2 & 3) != (c.operand >> 2 & 3)
+                    vrcg_changed = (prior ^ c.operand) & 64
+                    require(c.operand & 3 != 3 and c.operand >> 2 & 3 != 3, "reserved FSP selection")
+                    until = at
+                    if op_changed:
+                        require(c.operand & 64, "FSP-OP change without high-current VRCG")
+                        # Figure 200 / Tables 256-257. CK remains running at
+                        # 800 MHz, so entry and exit clock guards fit *within*
+                        # tFC, rather than adding a second tFC/clock timer.
+                        # The first valid command is Tc2, after the final
+                        # DES sample at the clock-exit endpoint Tc1.
+                        until = max(until, at + max(d["tfc"], d["tckfspe"] + d["tckfspx"] + 1))
+                    if vrcg_changed:
+                        # Figures 242/243 / Table 298: 150ns enable, 100ns
+                        # disable, each from its own MRW2. Enable overlaps tFC
+                        # when both bits change in that command.
+                        ps = 150000 if c.operand & 64 else 100000
+                        until = max(until, at + (ps + self.p["ck_ps"] - 1) // self.p["ck_ps"])
+                    self.des_until[rank] = until
+                    self.rank_ready[rank] = max(self.rank_ready[rank], until)
                 self.mr[rank][first.operand] = c.operand
                 self.last_mr[rank] = ("MRW", at)
-                if first.operand == 16:
-                    # Constant-CK FSP switching still requires the profile's
-                    # complete tFC interval before any new traffic.
-                    self.rank_ready[rank] = max(self.rank_ready[rank], at + d["tfc"])
-                    self.sr_recovery[rank] = False
                 return None
             bank = self.banks[rank][first.bank]
             require(bank.row is None and start >= bank.ready and start - bank.act >= d["trc"], "ACT bank recovery")

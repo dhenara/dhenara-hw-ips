@@ -5,7 +5,7 @@ module lpddr5_mc_lifecycle_tb;
   logic host_settled=1,backend_drained=1,integrity_drained=1,pages_closed=1,wck_disabled=1,urgent=0,extra=0;
   logic fault_input=0,reset_confirmed=0,train_ack=0;
   logic [31:0] profile_epoch=1,budget=3000,token=0;
-  lpddr5_mc_profile_t profile;
+  lpddr5_mc_profile_t profile,target_profile;
   lpddr5_mc_channel_command_t command=CH_CMD_NONE;
   lpddr5_mc_management_in_t management;
   logic [1:0] reports=3,rank_sr=0,phy_refresh_done=0;
@@ -22,7 +22,7 @@ module lpddr5_mc_lifecycle_tb;
   logic [7:0] fault_code;
   logic unused_debug, maintenance_enable;
   assign unused_debug=^{update_window,maintenance_enable,command_ready,issue_enable,stop_wck,maintenance_start,sr_enter,sr_exit,external_refresh,extra_service,syscs,refresh_request,first_fault,fault_code};
-  lpddr5_mc_lifecycle dut(.clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(cold_rst_n),.profile_i(profile),.profile_valid_i(profile_ready),.profile_epoch_i(profile_epoch),
+  lpddr5_mc_lifecycle dut(.clk_ck_i(clk),.rst_ni(rst_n),.cold_rst_ni(cold_rst_n),.profile_i(profile),.fsp_target_profile_i(target_profile),.profile_valid_i(profile_ready),.profile_epoch_i(profile_epoch),
     .command_valid_i(command_valid),.command_i(command),.command_ready_o(command_ready),.command_rejected_o(rejected),
     .host_settled_i(host_settled),.backend_drained_i(backend_drained),.integrity_drained_i(integrity_drained),.pages_closed_i(pages_closed),
     .wck_disabled_i(wck_disabled),.maintenance_urgent_i(urgent),.extra_refresh_i(extra),.refresh_budget_i(budget),.fault_i(fault_input),.reset_confirmed_i(reset_confirmed),
@@ -62,6 +62,7 @@ module lpddr5_mc_lifecycle_tb;
   initial begin
     logic [31:0] diagnostic;
     profile=fixture_profile(0,0,0,0,0,0);
+    target_profile=fixture_profile(1,0,0,0,0,0);
     reset(); repeat(8) tick(); assert(!train_request && !train_done && !trusted) else $fatal(1,"stale high boot");
     train_ack=1; token=0; tick(); train_ack=0; assert(rejected && !train_done) else $fatal(1,"unrequested token");
     boot(); send(CH_CMD_ENABLE); assert(admission) else $fatal(1,"enable");
@@ -94,9 +95,9 @@ module lpddr5_mc_lifecycle_tb;
     send(CH_CMD_FSP); repeat(3) tick(); assert(fsp_request && !fault) else $fatal(1,"FSP admission");
     fsp_busy=1; tick(); assert(!fsp_request) else $fatal(1,"FSP issued once"); fsp_busy=0; fsp_done=1; tick(); fsp_done=0;
     assert(state_value==1 && trusted) else $fatal(1,"FSP publication return");
-    budget=fsp_admission_budget(profile)+1;send(CH_CMD_FSP);repeat(4) tick();
+    budget=fsp_admission_budget(profile,target_profile)+1;send(CH_CMD_FSP);repeat(4) tick();
     assert(maintenance_enable && !fsp_request && !fault) else $fatal(1,"FSP reserve stranded maintenance");
-    budget=fsp_admission_budget(profile)+2;tick();assert(fsp_request && !maintenance_enable) else $fatal(1,"FSP reserve boundary");
+    budget=fsp_admission_budget(profile,target_profile)+2;tick();assert(fsp_request && !maintenance_enable) else $fatal(1,"FSP reserve boundary");
     fsp_busy=1;tick();fsp_busy=0;fsp_declined=1;tick();fsp_declined=0;
     budget=update_admission_budget(profile,0,0)+1;send(CH_CMD_UPDATE);repeat(4) tick();
     assert(maintenance_enable && !update_request && !update_window && !fault) else $fatal(1,"update reserve stranded maintenance");

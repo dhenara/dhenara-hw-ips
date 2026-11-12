@@ -217,9 +217,25 @@ class Fixture:
             elif self.kind == 1:
                 self.state["init_complete"] = 0
                 self.emit()
-                for ca in commands.mode_write(1, self.p["mr"]["1"]):
+                target = bindings()[1]
+                # Table 255: stage the inactive bank without changing OP.
+                # Figure 200: OP + VRCG high, recover, then normal VRCG.
+                images = [(16, 1)] + [
+                    (address, target["mr"].get(str(address), 0))
+                    for address in (1, 2, 3, 10, 11, 12, 14, 15, 17, 18, 19, 20, 22, 24, 30, 41, 58)
+                ]
+                for address, value in images:
+                    for ca in commands.mode_write(address, value):
+                        self.emit(cs=1, ca=ca)
+                    for _ in range(12):
+                        self.emit()
+                for ca in commands.mode_write(16, 0x45):
                     self.emit(cs=1, ca=ca)
-                for _ in range(max(self.p["dram_ck"]["tmrw"], self.p["dram_ck"]["tmrd"])):
+                for _ in range(201):
+                    self.emit()
+                for ca in commands.mode_write(16, 0x05):
+                    self.emit(cs=1, ca=ca)
+                for _ in range(80 + self.p["management_ck"]["tctrl_delay"]):
                     self.emit()
                 self.state["fsp"] = 0
                 self.emit()
@@ -657,7 +673,7 @@ class ObservationTests(unittest.TestCase):
                 sample(commands.maintenance("PRE", all_banks=kind == "PREab"))
                 end = max(pre + d["trp_ab" if kind == "PREab" else "trp_pb"], d["trc"]) + delay
             elif kind == "FSP":
-                for ca in commands.mode_write(16, 0):
+                for ca in commands.mode_write(16, 0x45):
                     sample(ca)
                 end = 1 + delay + d["tfc"]
             else:
@@ -677,6 +693,19 @@ class ObservationTests(unittest.TestCase):
             self.assertEqual(p.phy.dram.last_ck, end)
             self.assertTrue(p.drained(), kind)
             LEGAL_PATHS.append(dict(path=kind + " recovery boundary", before=before, at=p.row_recovery()))
+            if kind == "FSP":
+                with self.assertRaisesRegex(Violation, "normal VRCG/control restore") as caught:
+                    p.profile(bindings()[1])
+                REJECTIONS.append(dict(test=self.id(), observed=str(caught.exception)))
+                for ca in commands.mode_write(16, 0x05):
+                    sample(ca)
+                restored = p.phy.dram.last_ck + 80
+                while p.phy.dram.last_ck < restored - 1:
+                    sample()
+                with self.assertRaisesRegex(Violation, "profile change before independent") as caught:
+                    p.profile(bindings()[1])
+                REJECTIONS.append(dict(test=self.id(), observed=str(caught.exception)))
+                sample()
             p.profile(bindings()[1])
 
     def test_write_pin_and_dfi_flush_have_independent_origins(self):

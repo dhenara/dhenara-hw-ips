@@ -638,13 +638,21 @@ class OwnershipTests(unittest.TestCase):
             (6, "DISABLE", 0),
             (7, "FSP_WR", 1),
             (20, "PROGRAM", 1),
-            (40, "FSP_OP", 1),
+            (40, "FSP_OP_HIGH", 1),
             (241, "CLOCK_STABLE", 0),
-            (242, "TRAINED", 1),
-            (247, "PUBLISH", 1),
+            (242, "VRCG_NORMAL", 1),
+            (322, "TRAINED", 1),
+            (323, "PUBLISH", 1),
         ]
         check_fsp(steps, 1)
-        for index, value in [(2, (5, "DISABLE", 0)), (6, (240, "CLOCK_STABLE", 0)), (8, (247, "PUBLISH", 2))]:
+        for index, value in [
+            (2, (5, "DISABLE", 0)),
+            (4, (19, "PROGRAM", 1)),
+            (6, (240, "CLOCK_STABLE", 0)),
+            (7, (240, "VRCG_NORMAL", 1)),
+            (8, (321, "TRAINED", 1)),
+            (9, (323, "PUBLISH", 2)),
+        ]:
             bad = list(steps)
             bad[index] = value
             with self.assertRaises(ValueError):

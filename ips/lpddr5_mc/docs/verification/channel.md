@@ -76,6 +76,20 @@ Use `--channel-case 1` for write link, `2` for link plus inline, `3` for normal 
 
 Channel case9 contains eight component stimuli: controller update, FSP, power-down and PHY master, each with successful drain or error between the physical data result and shared-check result. Successful cases wait for an actual offered original completion and then hold it for eight further ticks. Entry requires exactly one successful original completion, released inline lock, independent data/check/return drain and WCK disable. Failed cases permit no successful original completion or ownership entry and require confirmed destructive reset, invalidated configuration and lost trust. These assertions describe source; execution of the new stream remains pending.
 
+The C2 source review at `790381e` demonstrated three checker misses on the retained synthetic fixture: removing the last PRE before update or master entry, and inserting PRE during master ACK. These are checker counterexamples, with no claim that RTL emitted them. The correction checks all independently decoded banks closed and ready at the first lifecycle PHY transfer as well as the external management entry. Readiness uses the last replayed DRAM CK, including the declared command delay, bank PRE/AP/REF/RFM recovery, last ACT plus thermally adjusted tRC, rank/FSP recovery, paired-refresh spacing and ZQ latch recovery. DUT drain flags remain separate status witnesses. Reports retain the observed CK, readiness deadline and open-bank list at each checked boundary.
+
+Controller-update setup, active request and lifecycle return retain PHY ownership with no controller CA commands. Master ACK requires a previously sampled master request and PHY ownership; handback requires sampled request withdrawal and a fresh low-then-valid rank report before ACK falls. PHY-update ACK similarly requires a sampled request and registered withdrawal. These exclusive phases reject ACT, PRE and other non-NOP controller commands before physical replay. Owner 1 also spans FSP: paired MRW is allowed only for the selected FSP operation with busy/init_start asserted and init_complete low. The independent model still checks MRW adjacency/recovery. Boot and post-ACK controller/quiescing return commands remain subject to normal physical legality. Synthetic legal fixtures now exercise PHY ownership rather than leaving the controller as owner through management.
+
+Run just the affected parser/adapter units after a checker-only correction, using a new evidence path and the documented Python environment:
+
+```sh
+PYTHONPATH="$PWD/ips/lpddr5_mc/dv/channel:$PWD/ips/lpddr5_mc/dv:$PWD/ips/lpddr5_mc/dv/integration" \
+  python3 ips/lpddr5_mc/dv/channel/observations_test.py \
+  --report "$PWD/ips/lpddr5_mc/evidence/c2-correction-new/units.json"
+```
+
+Create the report directory first. The fixtures challenge missing last PRE, too-recent PRE, one-CK-early recovery and forbidden CA during setup/active/return phases, alongside legal FSP and registered handback. They execute no RTL. Checker-only changes need no repeated channel-TB lint; observer/TB changes require that affected lint.
+
 Prepare only the parser fixtures and warning-fatal channel testbench lint:
 
 ```sh

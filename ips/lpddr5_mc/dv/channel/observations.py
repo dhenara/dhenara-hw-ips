@@ -13,6 +13,7 @@ from pathlib import Path
 
 from continuous import InlineDrain, identity
 from physical_stream import PhysicalStream, number
+from system.dram import decode
 from system.host import require
 
 IP = Path(__file__).resolve().parents[2]
@@ -80,13 +81,71 @@ class Case:
         self.interval_start = None
         self.intervals = []
         self.ownership = []
+        self.boundaries = []
         self.dirty_tick = self.request_tick = self.completion_tick = None
         self.held_ticks = self.completed = self.entries = self.aborted_originals = 0
         self.external_acks = 0
+        self.phy_acks = 0
+        self.phy_return = False
         self.init_low = self.init_high = self.power_ack = self.wake = False
         self.master_report_low = self.master_report_fresh = self.master_withdraw = False
         self.profile_images = {}
         self.configurations = set()
+
+    def check_ownership(self, e, old):
+        """Bind exclusive windows to requests, ACKs and sampled handback.
+
+        PHY ownership also spans UPDATE setup/return and FSP. Only an accepted
+        FSP window may emit MRW there. Boot exit and master handback CA use
+        controller/quiescing ownership; the physical model checks their timing.
+        """
+        kind = self.start["management"]
+        master = bool(e["master"])
+        update = bool(e["update"] or e["phy_update"])
+        selected_fsp = self.request_seen and kind == 1
+        selected_update = self.request_seen and (kind == 0 or kind == 2 and self.wake)
+        if master or update or selected_fsp and e["fsp_busy"]:
+            require(e["owner"] == 1, "management request/ACK without PHY ownership")
+        if master:
+            require(self.request_seen and kind == 3, "master ACK without associated request")
+            if not (old and old["master"]):
+                require(e["phymstr_req"] and old and old["phymstr_req"], "master ACK before sampled request")
+                self.master_report_low = self.master_report_fresh = self.master_withdraw = False
+        if old and old["master"] and not master:
+            require(
+                not old["phymstr_req"]
+                and not e["phymstr_req"]
+                and self.master_report_fresh
+                and e["rank_valid"] == (1 << self.profiles[e["profile"]]["ranks"]) - 1
+                and not e["refresh_request"],
+                "master ACK return before sampled withdrawal/fresh rank report",
+            )
+            self.master_withdraw = True
+        if e["update"]:
+            require(selected_update, "controller update without associated management request")
+        if e["ctrlupd_ack"]:
+            require(old and old["update"] and e["update"], "controller ACK without sampled update request")
+        if e["phy_update"]:
+            # Registered ACK stays high on the first sampled request-low edge.
+            require(selected_update and old and old["phyupd_req"], "PHY update ACK without sampled request")
+            self.phy_acks += 1
+        if old and old["phy_update"] and not e["phy_update"]:
+            require(not old["phyupd_req"], "PHY update ACK return before sampled withdrawal")
+            self.phy_return = True
+        if e["owner"] == 1:
+            if e["trusted"]:
+                require(master or selected_update or selected_fsp, "PHY ownership without associated management window")
+            op = decode(e["ca"]).kind if e["cs"] else "NOP"
+            require(
+                op == "NOP"
+                or selected_fsp
+                and self.init_low
+                and e["fsp_busy"]
+                and e["fsp"]
+                and not e["init_complete"]
+                and op in ("MRW1", "MRW2"),
+                "forbidden controller CA during exclusive PHY ownership",
+            )
 
     def close_physical(self, tick, reason, *, cancelled):
         if self.physical is not None:
@@ -212,14 +271,13 @@ class Case:
                 )
                 self.physical.profile(p)
                 self.profile_id = e["profile"]
+            self.check_ownership(e, old)
             self.physical.sample(e)
         if e["fault"]:
             self.fault_seen = True
         if not reset and (e["fault"] or not e["trusted"]):
             require(not e["request_ready"] or reset, "inline admission after trust loss")
             if e["cs"]:
-                from system.dram import decode
-
                 require(
                     decode(e["ca"]).kind not in ("ACT1", "RD", "WR", "MWR"),
                     "new access after trust loss",
@@ -254,10 +312,20 @@ class Case:
         if self.request_seen and not self.completion_tick and e["completion_valid"] and not e["completion_ready"]:
             self.held_ticks += 1
         entry = any(e[k] and not (old and old[k]) for k in ("update", "phy_update", "fsp", "power", "master"))
+        # Lifecycle UPDATE/FSP ownership starts before the external request.
+        transfer = e["owner"] == 1 and old and old["owner"] != 1 and e["trained"]
         # Boot init_start is not a dirty-management FSP entry.
         entry = entry and self.request_seen
-        if entry:
-            require(e[KINDS[self.start["management"]]], "wrong management entry kind")
+        if (entry or transfer) and self.request_seen and not reset:
+            if entry:
+                require(
+                    e[KINDS[self.start["management"]]] or self.start["management"] == 0 and e["phy_update"],
+                    "wrong management entry kind",
+                )
+            require(
+                self.physical is not None and self.physical.row_recovery()["ready"],
+                "management ownership before independent row closure/recovery",
+            )
             require(
                 not self.start["failed"]
                 and self.completed == 1
@@ -274,7 +342,8 @@ class Case:
                 and number(e["wck"]) == 0,
                 "management ownership before independent pin/data/check/original drain",
             )
-            self.entries += 1
+            self.boundaries.append(dict(tick=e["tick"], entry=bool(entry), **self.physical.row_recovery()))
+            self.entries += int(entry)
         if e["owner"] == 1 and e["trained"] and not reset:
             require(
                 number(e["wck"]) == 0 and number(e["write"]) >> 24 & 255 == 0 and number(e["read"]) >> 16 == 0,
@@ -291,9 +360,9 @@ class Case:
             self.init_high |= self.init_low and bool(e["init_complete"])
             self.power_ack |= bool(e["lp_ctrl_ack"] and e["lp_data_ack"])
             self.wake |= bool(e["command_valid"] and e["command_ready"] and e["command"] == 6)
-            self.master_report_low |= not e["rank_valid"]
-            self.master_report_fresh |= bool(self.master_report_low and e["rank_valid"] == 1)
-            self.master_withdraw |= bool(self.master_report_fresh and not e["phymstr_req"])
+            if e["master"]:
+                self.master_report_low |= not e["rank_valid"]
+                self.master_report_fresh |= bool(self.master_report_low and e["rank_valid"] == 1)
         if e["ctrlupd_ack"]:
             require(
                 self.entries and e["update"],
@@ -395,13 +464,15 @@ class Case:
                 and self.held_ticks >= 8
                 and not self.fault_seen
                 and self.last["trusted"]
-                and self.last["config_valid"],
+                and self.last["config_valid"]
+                and self.last["owner"] == 2
+                and not any(self.last[k] for k in ("update", "phy_update", "fsp", "fsp_busy", "master")),
                 "success dirty case missing held completion/entry/terminal accounting",
             )
         if not self.start["failed"]:
             kind = self.start["management"]
             require(
-                (kind != 0 or self.external_acks > 0)
+                (kind != 0 or self.external_acks > 0 or self.phy_acks > 0 and self.phy_return)
                 and (
                     kind != 1
                     or self.init_low
@@ -438,8 +509,10 @@ class Case:
                 for k in ("epochs", "accesses", "half_wck_samples", "disabled_epochs")
             },
             ownership=self.ownership,
+            management_boundaries=self.boundaries,
             reset_intervals=self.reset_intervals,
             ctrlupd_ack_ticks=self.external_acks,
+            phyupd_ack_ticks=self.phy_acks,
             settlement="component host_settled input attestation; no wrapper AXI settlement proof",
         )
 

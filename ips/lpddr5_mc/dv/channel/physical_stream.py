@@ -108,6 +108,30 @@ class PhysicalStream:
             "internal result before independent physical data/return/path tail",
         )
 
+    def row_recovery(self):
+        """Report closure/readiness from decoded CA in the DRAM CK domain.
+
+        Closing a row does not end PRE/AP/REF recovery or the last ACT's tRC.
+        Use last_ck, the sample just replayed through the explicit PHY delay;
+        self.ck already points at the *next* DFI sample after sample() returns.
+        Neither a DUT drained flag nor an internal result establishes this.
+        """
+        dram = self.phy.dram
+        trc = self.p["dram_ck"]["trc"] + dram.maintenance.timing_derating().get("trc", 0)
+        ready = max(
+            dram.zq_ready,
+            *dram.rank_ready,
+            *(max(b.ready, b.act + trc) for rank in dram.banks for b in rank),
+            *(at + self.p["dram_ck"]["tpbr2act"] for at in dram.last_pb),
+        )
+        opened = [
+            dict(rank=r, bank=n, row=b.row)
+            for r, rank in enumerate(dram.banks)
+            for n, b in enumerate(rank)
+            if b.row is not None
+        ]
+        return dict(at_ck=dram.last_ck, ready_ck=ready, open_banks=opened, ready=not opened and dram.last_ck >= ready)
+
     def drained(self):
         return (
             not self.requests
@@ -116,11 +140,12 @@ class PhysicalStream:
             and self.phy.dram.pending is None
             and not (self.phy.dram.sync and self.phy.dram.sync[2] in (1, 2))
             and self.wck.epoch is None
+            and self.row_recovery()["ready"]
         )
 
     def profile(self, p):
         require(
-            self.drained() and all(b.row is None for row in self.phy.dram.banks for b in row),
+            self.drained(),
             "profile change before independent physical/row/WCK drain",
         )
         require(p["ck_ps"] == self.p["ck_ps"], "unsupported CK change")
@@ -320,6 +345,7 @@ class PhysicalStream:
             self.wck.finish()
             require(self.wck.epoch is None, "unfinished WCK ownership tail")
         return dict(
+            row_recovery=self.row_recovery(),
             commands=self.commands,
             write_words=self.words,
             returned_slices=self.slices,

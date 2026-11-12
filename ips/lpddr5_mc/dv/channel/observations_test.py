@@ -13,6 +13,7 @@ from contracts import commands
 from contracts.integrity import dbi_encode
 from observations import FLAGS, HANDSHAKE_PHASE, PHASE, TICK_FIELDS, Case, binding_digest, bindings, check
 from physical_stream import PhysicalStream
+from system.dram import decode
 from system.ecc import InlineWitness
 from system.host import Violation
 from system.phy import DigitalPhy
@@ -49,14 +50,14 @@ class Fixture:
             pin_drained=1,
             ecc_drained=1,
             thermal=9,
-            owner=2,
+            owner=1,
             rank_valid=1,
         )
         self.emit(reset_n=0)
         self.emit()
         self.emit(config_commit=1, prepared=1, prepared_epoch=1)
         self.emit(train_ack=1, train_token=0)
-        self.state.update(trusted=1, trained=1, config=1, config_valid=1, init_complete=1)
+        self.state.update(trusted=1, trained=1, config=1, config_valid=1, init_complete=1, owner=2)
         self.emit()
         self.q = granule("inline_admit", tag=101, write=1, data=int.from_bytes(bytes(range(64)), "little"))
         self.emit(events=[dict(self.q, kind="original_admit"), self.q])
@@ -199,12 +200,30 @@ class Fixture:
             )
             self.state.update(inline_idle=1, drained=1, pin_drained=1, ecc_drained=1, settled=1)
             entry = ("update", "fsp", "power", "master")[self.kind]
+            if self.kind in (0, 1):
+                # Lifecycle ownership precedes the engine's request output.
+                self.state["owner"] = 1
+                self.emit()
             self.state[entry] = 1
+            if self.kind == 1:
+                self.state["fsp_busy"] = 1
+            elif self.kind == 3:
+                self.state["owner"] = 1
             self.emit()
             if self.kind == 0:
                 self.emit(ctrlupd_ack=1)
+                for _ in range(self.p["management_ck"]["tctrlupd_min"]):
+                    self.emit()
             elif self.kind == 1:
-                self.emit(init_complete=0)
+                self.state["init_complete"] = 0
+                self.emit()
+                for ca in commands.mode_write(1, self.p["mr"]["1"]):
+                    self.emit(cs=1, ca=ca)
+                for _ in range(max(self.p["dram_ck"]["tmrw"], self.p["dram_ck"]["tmrd"])):
+                    self.emit()
+                self.state["fsp"] = 0
+                self.emit()
+                self.state["init_complete"] = 1
                 self.emit(init_complete=1, fsp_ready=1)
                 self.emit(config_commit=1, prepared=1, prepared_epoch=2)
                 self.p = bindings()[1]
@@ -212,6 +231,7 @@ class Fixture:
                 self.gen.p = self.gen.dram.p = self.p
                 self.gen.dram.ck = 4
                 self.gen.dram.bus_slots.clear()
+                self.state["fsp_busy"] = 0
             elif self.kind == 2:
                 self.emit(lp_ctrl_ack=1, lp_data_ack=1)
                 self.emit(command_valid=1, command_ready=1, command=6)
@@ -219,7 +239,14 @@ class Fixture:
                 self.emit(rank_valid=0)
                 self.emit(rank_valid=1)
                 self.state["phymstr_req"] = 0
+                self.emit()
             self.state[entry] = 0
+            if self.kind in (0, 1, 3):
+                # ACK/request release is sampled before lifecycle handback.
+                if self.kind == 3:
+                    self.state["owner"] = 3
+                self.emit()
+                self.state["owner"] = 2
         self.emit()
         return self
 
@@ -272,6 +299,7 @@ def trace():
 
 
 REJECTIONS = []
+LEGAL_PATHS = []
 
 
 class ObservationTests(unittest.TestCase):
@@ -286,6 +314,9 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(sum(c["original_cancellations"] for c in r["cases"]), 4)
         self.assertTrue(all(c["physical_intervals"] for c in r["cases"]))
         for c in r["cases"]:
+            self.assertTrue(all(b["ready"] and not b["open_banks"] for b in c["management_boundaries"]))
+            if not c["failed"] and c["management"] in ("update", "fsp", "master"):
+                self.assertTrue(any(o["owner"] == 1 and not o["reset"] for o in c["ownership"]))
             for key, value in c["wck_total"].items():
                 self.assertEqual(value, sum(i["wck_total"][key] for i in c["physical_intervals"]))
             if c["failed"]:
@@ -294,6 +325,7 @@ class ObservationTests(unittest.TestCase):
         fsp = r["cases"][2]["physical_intervals"][0]
         self.assertTrue(fsp["prior_wck_profiles"])
         self.assertGreater(fsp["wck_total"]["accesses"], fsp["wck"]["accesses"])
+        LEGAL_PATHS.append(dict(path="eight-case ownership/row baseline", cases=r["cases"]))
 
     def reject(self, change, reason=None):
         altered = copy.deepcopy(self.events)
@@ -482,6 +514,197 @@ class ObservationTests(unittest.TestCase):
 
         self.reject(held, "held completion")
 
+    def test_missing_last_pre_and_unrecovered_management_entry(self):
+        for case in (0, 6):
+            for late in (False, True):
+
+                def change(t, case=case, late=late):
+                    ticks = [e for e in t if e["kind"] == "tick" and e["case_id"] == case]
+                    pre = [e for e in ticks if e["cs"] and decode(e["ca"]).kind == "PRE"][-1]
+                    pre.update(cs=0, ca=0)
+                    if late:
+                        first = next(i for i, e in enumerate(ticks) if e["owner"] == 1 and e["trained"])
+                        ticks[first - 1].update(cs=1, ca=commands.maintenance("PRE"))
+
+                with self.subTest(case=case, late=late):
+                    self.reject(change, "management ownership before independent row closure/recovery")
+
+    def test_exclusive_ca_setup_active_and_return_windows(self):
+        forbidden = [
+            commands.activate(0, 0)[0],
+            commands.activate(0, 0)[1],
+            commands.maintenance("PRE"),
+            commands.maintenance("REF"),
+            commands.maintenance("RFM"),
+            commands.access(False, 32, 0, 0),
+            commands.access(True, 32, 0, 0),
+            commands.mode_write(1, 0)[0],
+            commands.mode_read(4),
+            commands.cas("off"),
+            commands.pack(104, 0),
+            commands.pack(40, 0),
+            commands.pack(48, 0x06),
+        ]
+        for case, phase in ((0, "setup"), (0, "active"), (0, "return"), (6, "active")):
+            for ca in forbidden:
+
+                def change(t, case=case, phase=phase, ca=ca):
+                    ticks = [
+                        e
+                        for e in t
+                        if e["kind"] == "tick" and e["case_id"] == case and e["owner"] == 1 and e["trained"]
+                    ]
+                    e = ticks[0] if phase == "setup" else ticks[-1] if phase == "return" else ticks[1]
+                    e.update(cs=1, ca=ca)
+
+                with self.subTest(case=case, phase=phase, ca=ca):
+                    self.reject(change, "forbidden controller CA during exclusive PHY ownership")
+
+    def test_ownership_request_ack_and_fsp_associations(self):
+        for case, flag in ((0, "update"), (2, "fsp_busy"), (6, "master")):
+            self.reject(
+                lambda t, case=case, flag=flag: next(
+                    e for e in t if e["kind"] == "tick" and e["case_id"] == case and e[flag]
+                ).update(owner=2),
+                "management request/ACK without PHY ownership",
+            )
+        for field, value in (("fsp_busy", 0), ("fsp", 0), ("init_complete", 1)):
+            self.reject(
+                lambda t, field=field, value=value: next(
+                    e
+                    for e in t
+                    if e["kind"] == "tick" and e["case_id"] == 2 and e["cs"] and decode(e["ca"]).kind == "MRW1"
+                ).update({field: value}),
+                "forbidden controller CA",
+            )
+        for ca in (commands.activate(0, 0)[0], commands.maintenance("PRE")):
+            self.reject(
+                lambda t, ca=ca: next(
+                    e
+                    for e in t
+                    if e["kind"] == "tick" and e["case_id"] == 2 and e["cs"] and decode(e["ca"]).kind == "MRW1"
+                ).update(ca=ca),
+                "forbidden controller CA",
+            )
+
+        def withdraw(t, simultaneous):
+            ticks = [e for e in t if e["kind"] == "tick" and e["case_id"] == 6]
+            i = next(i for i in range(1, len(ticks)) if ticks[i - 1]["master"] and not ticks[i]["master"])
+            ticks[i - 1]["phymstr_req"] = 1
+            if not simultaneous:
+                ticks[i]["phymstr_req"] = 1
+
+        for simultaneous in (False, True):
+            self.reject(lambda t, simultaneous=simultaneous: withdraw(t, simultaneous), "master ACK return")
+
+        def ack_without_request(t):
+            ticks = [e for e in t if e["kind"] == "tick" and e["case_id"] == 6]
+            i = next(i for i, e in enumerate(ticks) if e["master"])
+            ticks[i - 1]["phymstr_req"] = 0
+
+        self.reject(ack_without_request, "master ACK before sampled request")
+
+    def test_phy_update_registered_request_ack_and_return(self):
+        altered = copy.deepcopy(self.events)
+        ticks = [e for e in altered if e["kind"] == "tick" and e["case_id"] == 0]
+        window = [e for e in ticks if e["owner"] == 1 and e["trained"]]
+        for i, e in enumerate(window):
+            e.update(
+                update=0, ctrlupd_ack=0, phyupd_req=int(i < len(window) - 2), phy_update=int(0 < i < len(window) - 1)
+            )
+        baseline = check(altered)["cases"][0]
+        self.assertGreater(baseline["phyupd_ack_ticks"], 0)
+        LEGAL_PATHS.append(dict(path="PHY-update registered ACK/return", case=baseline))
+        for ca in (commands.maintenance("PRE"), commands.activate(0, 0)[0]):
+            bad = copy.deepcopy(altered)
+            next(e for e in bad if e["kind"] == "tick" and e["phy_update"]).update(cs=1, ca=ca)
+            with self.assertRaisesRegex(Violation, "forbidden controller CA") as caught:
+                check(bad)
+            REJECTIONS.append(dict(test=self.id(), observed=str(caught.exception)))
+        for field in ("phyupd_req", "phy_update"):
+            bad = copy.deepcopy(altered)
+            sample = next(e for e in bad if e["kind"] == "tick" and e["phy_update"])
+            before = next(e for e in bad if e["kind"] == "tick" and e["tick"] == sample["tick"] - 1)
+            before[field] = int(field == "phy_update")
+            with self.assertRaisesRegex(Violation, "PHY update ACK") as caught:
+                check(bad)
+            REJECTIONS.append(dict(test=self.id(), observed=str(caught.exception)))
+
+    def test_decoded_recovery_exact_sample_boundary(self):
+        # Closed PREpb can recover before the same bank's last ACT+tRC.
+        # Separately exercise PREab, REF/RFM, FSP tFC and ZQ recovery.
+        for kind in ("PREpb", "PREab", "REF", "RFM", "FSP", "ZQ"):
+            p = PhysicalStream(bindings()[0])
+
+            def sample(ca=None, p=p):
+                p.sample(dict(trusted=0, cs=int(ca is not None), ca=ca or 0, wck=0, write=0, read=0, **{"return": 0}))
+
+            d, delay = p.p["dram_ck"], p.p["management_ck"]["tctrl_delay"]
+            if kind.startswith("PRE"):
+                for ca in commands.activate(0, 0):
+                    sample(ca)
+                self.assertFalse(p.drained())
+                while p.ck < d["tras_min"]:
+                    sample()
+                pre = p.ck
+                sample(commands.maintenance("PRE", all_banks=kind == "PREab"))
+                end = max(pre + d["trp_ab" if kind == "PREab" else "trp_pb"], d["trc"]) + delay
+            elif kind == "FSP":
+                for ca in commands.mode_write(16, 0):
+                    sample(ca)
+                end = 1 + delay + d["tfc"]
+            else:
+                ca = commands.pack(112, 6) if kind == "ZQ" else commands.maintenance(kind)
+                sample(ca)
+                end = delay + d["tzqlat" if kind == "ZQ" else "trfc_ab" if kind == "REF" else "trfm_ab"]
+            while p.phy.dram.last_ck < end - 1:
+                sample()
+            self.assertEqual(p.phy.dram.last_ck, end - 1)
+            self.assertEqual(p.row_recovery()["open_banks"], [])
+            self.assertFalse(p.drained(), kind)
+            before = p.row_recovery()
+            with self.assertRaisesRegex(Violation, "profile change before independent") as caught:
+                p.profile(bindings()[1])
+            REJECTIONS.append(dict(test=self.id(), recovery=kind, observed=str(caught.exception)))
+            sample()
+            self.assertEqual(p.phy.dram.last_ck, end)
+            self.assertTrue(p.drained(), kind)
+            LEGAL_PATHS.append(dict(path=kind + " recovery boundary", before=before, at=p.row_recovery()))
+            p.profile(bindings()[1])
+
+    def test_legal_boot_and_master_self_refresh_handback(self):
+        f = Fixture(3).dirty()
+        c = Case(dict(case_id=6, management=3, failed=0), bindings())
+        for e, h, events in f.frames:
+            c.sample(e)
+            c.events(h, events)
+        self.assertEqual(f.frames[1][0]["owner"], 1)  # boot has no MC CA
+        samples = []
+
+        def sample(**changes):
+            e = dict(c.last)
+            e.update(tick=e["tick"] + 1, cycles=e["cycles"] + 1, time_ps=e["time_ps"] + 5000, cs=0, ca=0)
+            e.update(changes)
+            c.sample(e)
+            samples.append(e)
+
+        # Legal SRE precedes exclusive ACK; SRX follows the registered return.
+        sample(owner=3, phymstr_req=1, cs=1, ca=commands.pack(104, 0))
+        for _ in range(12):
+            sample()
+        sample(owner=1, master=1)
+        sample(rank_valid=0)
+        sample(rank_valid=1, rank_sr=1)
+        sample(phymstr_req=0)
+        sample(master=0, owner=3)
+        sample(cs=1, ca=commands.pack(40, 0))
+        self.assertTrue(c.master_withdraw)
+        self.assertFalse(c.physical.row_recovery()["ready"])
+        while not c.physical.drained():
+            sample(owner=2)
+        c.physical.summary()
+        LEGAL_PATHS.append(dict(path="boot and self-refresh master handback CA", samples=samples))
+
     def test_fresh_recovery_and_stale_configuration_training(self):
         f = Fixture(0, 1).dirty()
         c = Case(dict(case_id=1, management=0, failed=1), bindings())
@@ -507,7 +730,7 @@ class ObservationTests(unittest.TestCase):
             REJECTIONS.append(dict(test=self.id(), observed=str(caught.exception)))
         c.sample(next_sample(config_commit=1, prepared=1, prepared_epoch=1))
         c.sample(next_sample(config_commit=0, train_ack=1, train_token=1, training_epoch=1))
-        c.sample(next_sample(train_ack=0, trusted=1, trained=1, config_valid=1, config=1))
+        c.sample(next_sample(train_ack=0, trusted=1, trained=1, config_valid=1, config=1, owner=2))
         self.assertTrue(c.last["trusted"])
 
     def test_original_offer_before_physical_completion_is_rejected(self):
@@ -536,6 +759,7 @@ if __name__ == "__main__":
             status="passed" if run.result.wasSuccessful() else "failed",
             tests=run.result.testsRun,
             negative_cases=REJECTIONS,
+            legal_paths=LEGAL_PATHS,
             synthetic_fixture_sha256=hashlib.sha256(raw.read_bytes()).hexdigest(),
             fixture=raw.name,
             limitations=["Synthetic parser/adapter fixtures only; no hardware simulation."],

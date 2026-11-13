@@ -25,6 +25,7 @@ class MasterRefresh:
         self.physical = [] if observations is None else observations
         self.windows = []
         self.credits = {}
+        self.entry_request_at = None
 
     def observe(self, edge, sample):
         """Consume pre-NBA inputs, then the matching registered output sample.
@@ -44,6 +45,8 @@ class MasterRefresh:
         active = (1 << self.dram.p["ranks"]) - 1
         require(not (edge["done"] | edge["request"] | sample["request"]) & ~active, "absent-rank refresh sideband")
         ack = bool(edge["ack"])
+        if edge["phy_request"] and not ack and self.entry_request_at is None:
+            self.entry_request_at = ck
         if ack:
             require(self.ack_at is not None and not self.returned, "master unobserved ACK entry")
             require(edge["settled"] and edge["closed"] and edge["wck_off"], "master source/row/WCK obligations")
@@ -120,6 +123,23 @@ class MasterRefresh:
                 edge["phy_request"] and edge["settled"] and edge["closed"] and edge["wck_off"],
                 "master entry obligations",
             )
+            if "backend_drained" in edge:
+                require(
+                    all(
+                        phase["backend_drained"]
+                        and not any(
+                            phase[k] for k in ("register_pending", "register_accept", "register_owner", "register_busy")
+                        )
+                        for phase in (edge, sample)
+                    ),
+                    "master entry register ownership",
+                )
+                require(ck >= self.dram.zq_ready, "master entry before physical ZQ recovery")
+                require(
+                    self.entry_request_at is not None
+                    and ck - self.entry_request_at <= self.dram.p["management_ck"]["tphymstr_resp"],
+                    "master entry response bound",
+                )
             self.ack_at = ck
             self.returned = False
             self.low = 0
@@ -134,6 +154,7 @@ class MasterRefresh:
             self.require_recovered(ck)
             require(ck - self.ack_at <= self.type_limit, "master type duration")
             self.returned = True
+            self.entry_request_at = None
             self.windows[-1]["return"] = ck
             require(sample["request"] == 0, "new REF on handback")
         self.previous = sample

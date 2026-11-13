@@ -65,7 +65,8 @@ module lpddr5_mc_register_io_tb;
         if(kind==2) assert(fault && !result_valid) else $fatal(1,"missing return fault");
         else begin
           assert(result_valid && !fault && result_rank==request_rank && result_zq==request_zq && result_address==address) else $fatal(1,"register result identity");
-          if(request_zq) assert(cycle-zq_at>=24 && command_count==1) else $fatal(1,"ZQ recovery");
+          if(request_zq) assert(cycle-zq_at==int'(profile.management_ck_tctrl_delay)+int'(profile.dram_ck_tzqlat) && command_count==1)
+            else $fatal(1,"physical ZQ recovery endpoint");
           else begin
             assert(cycle<=int'(periodic_register_budget(profile)))
               else $fatal(1,"periodic register completion exceeded reserve result=%0d budget=%0d",cycle,periodic_register_budget(profile));

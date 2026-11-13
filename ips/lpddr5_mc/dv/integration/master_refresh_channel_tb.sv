@@ -48,7 +48,7 @@ module master_refresh_channel_tb;
     .ca_o(ca),.wck_o(wck),.write_o(write_value),.read_request_o(read_value),.return_i(return_value),.status_o(status_value));
   lpddr5_mc_channel_memory memory_model(.profile_i(memory_profile),.ca_i(ca),.write_i(write_value),.read_i(read_value),.return_o(return_value),
     .mr43_i(mr43),.mr4_i(mr4),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
-  int ck=0,stream,mode=0,ack_at=-1,request_at[2],physical_at[2],ready_at[2];
+  int ck=0,stream,mode=0,entry_at=-1,ack_at=-1,request_at[2],physical_at[2],ready_at[2];
   int pin_cs=0,pin_ca=0;
   bit pin_owner=0;
   lpddr5_mc_ca_t ca_delay[2];
@@ -56,7 +56,7 @@ module master_refresh_channel_tb;
   task automatic capture(input string kind);
     string owner_text;
     owner_text=pin_owner ? "phy" : "controller";
-    $fdisplay(stream,"{\"kind\":\"%s\",\"ck\":%0d,\"ack\":%0d,\"request\":%0d,\"done\":%0d,\"external\":%0d,\"phy_request\":%0d,\"reports\":%0d,\"admission\":%0d,\"issue\":%0d,\"settled\":%0d,\"closed\":%0d,\"wck_off\":%0d,\"fault\":%0d,\"code\":%0d,\"budget\":%0d,\"thermal\":%0d,\"temperature_valid\":%0d,\"temperature\":%0d,\"mr4_request\":%0d,\"mr4_done\":%0d,\"zq_request\":%0d,\"zq_done\":%0d,\"pin_cs\":%0d,\"pin_ca\":%0d,\"pin_owner\":\"%s\",\"dfi_cs\":%0d,\"dfi_ca\":%0d,\"return_valid\":%0d,\"register_state\":%0d,\"register_result\":%0d,\"register_value\":%0d,\"backend_drained\":%0d,\"pin_drained\":%0d,\"register_pending\":%0d,\"register_valid\":%0d,\"register_ready\":%0d,\"register_accept\":%0d,\"register_owner\":%0d,\"register_busy\":%0d,\"service\":%0d,\"life_state\":%0d,\"recovered\":%0d,\"last_refresh0\":%0d,\"last_refresh1\":%0d,\"external_age0\":%0d,\"external_age1\":%0d}",
+    $fdisplay(stream,"{\"kind\":\"%s\",\"ck\":%0d,\"ack\":%0d,\"request\":%0d,\"done\":%0d,\"external\":%0d,\"phy_request\":%0d,\"reports\":%0d,\"admission\":%0d,\"issue\":%0d,\"settled\":%0d,\"closed\":%0d,\"wck_off\":%0d,\"fault\":%0d,\"code\":%0d,\"budget\":%0d,\"thermal\":%0d,\"temperature_valid\":%0d,\"temperature\":%0d,\"mr4_request\":%0d,\"mr4_done\":%0d,\"zq_request\":%0d,\"zq_done\":%0d,\"pin_cs\":%0d,\"pin_ca\":%0d,\"pin_owner\":\"%s\",\"dfi_cs\":%0d,\"dfi_ca\":%0d,\"return_valid\":%0d,\"register_state\":%0d,\"register_result\":%0d,\"register_value\":%0d,\"backend_drained\":%0d,\"pin_drained\":%0d,\"register_pending\":%0d,\"register_valid\":%0d,\"register_ready\":%0d,\"register_accept\":%0d,\"register_owner\":%0d,\"register_busy\":%0d,\"service\":%0d,\"life_state\":%0d,\"trusted\":%0d,\"recovered\":%0d,\"last_refresh0\":%0d,\"last_refresh1\":%0d,\"external_age0\":%0d,\"external_age1\":%0d}",
       kind,ck,management_out.phymstr_ack,management_out.refresh_request,phy_refresh_done,dut.external_refresh,
       management_in.phymstr_req,report_valid,dut.admission,dut.issue_enable,host_settled,
       dut.pages_closed,dut.wck_disabled,status_value.fault,status_value.fault_code,dut.refresh_budget,
@@ -64,7 +64,7 @@ module master_refresh_channel_tb;
       pin_cs,pin_ca,owner_text,ca.cs,ca.address,return_value.valid,dut.register_state_q,
       dut.register_result_valid,dut.register_result_value,dut.backend_drained,dut.pin_drained,
       dut.register_pending,dut.register_valid,dut.register_ready,dut.backend.register_accept,
-      dut.backend.register_owner_q,dut.backend.register_busy,dut.service,dut.lifecycle.state_q,dut.external_refresh_recovered,
+      dut.backend.register_owner_q,dut.backend.register_busy,dut.service,dut.lifecycle.state_q,status_value.memory_trusted,dut.external_refresh_recovered,
       dut.maintenance.last_refresh_q[0],dut.maintenance.last_refresh_q[1],dut.external_refresh_age[0],dut.external_refresh_age[1]);
   endtask
   task automatic tick;
@@ -73,7 +73,7 @@ module master_refresh_channel_tb;
     if(!pin_owner) begin pin_cs=int'(ca_delay[1].cs);pin_ca=int'(ca_delay[1].address);end
     ca_delay[1]=ca_delay[0];ca_delay[0]=ca;
     capture("edge");memory_model.sample();clk=1;#0.001;capture("sample");clk=0;#1.248;ck++;
-    assert(!status_value.fault) else $fatal(1,"channel fault ck=%0d code=%0d maint=%h",ck,status_value.fault_code,dut.maintenance_diagnostic);
+    assert(mode==5 || !status_value.fault) else $fatal(1,"channel fault ck=%0d code=%0d maint=%h",ck,status_value.fault_code,dut.maintenance_diagnostic);
   endtask
   task automatic send_command(input lpddr5_mc_channel_command_t value);
     assert(command_ready) else $fatal(1,"channel command not ready");
@@ -100,20 +100,47 @@ module master_refresh_channel_tb;
     // Real CA MRR, returned data, register result, and hottest-rank reduction.
     // Mode2 requests on the registered thermal-publication phase, before
     // the real pending ZQ owner has completed its drain/service sequence.
-    for(int n=0;n<3500;n++) begin tick();if(dut.temperature_valid) break;end
-    assert(dut.temperature_valid && dut.temperature==12 && mr4_count==int'(cfg.profile.ranks)) else $fatal(1,"natural MR4 report");
+    if(mode==5) begin
+      // Request at the real MR4 acceptance. Its actual return/WCK tail and
+      // already-due ZQ cannot be bypassed to satisfy a master response.
+      for(int n=0;n<3500;n++) begin
+        if(dut.backend.register_accept && !dut.register_zq_q) break;
+        tick();
+      end
+      assert(dut.backend.register_accept && !dut.register_zq_q && !status_value.fault) else $fatal(1,"natural MR4 acceptance");
+    end else begin
+      for(int n=0;n<3500;n++) begin tick();if(dut.temperature_valid) break;end
+      assert(dut.temperature_valid && dut.temperature==12 && mr4_count==int'(cfg.profile.ranks)) else $fatal(1,"natural MR4 report");
+      if(mode==3 || mode==4) begin
+        for(int n=0;n<100;n++) begin
+          if(mode==3 && dut.backend.register_accept && dut.register_zq_q) break;
+          if(mode==4 && dut.register_result_valid && dut.register_result_zq) break;
+          tick();
+        end
+        if(mode==3) assert(dut.backend.register_accept && dut.register_zq_q) else $fatal(1,"natural ZQ acceptance");
+        if(mode==4) assert(dut.register_result_valid && dut.register_result_zq) else $fatal(1,"natural ZQ completion");
+      end
+    end
     // At this actual-channel MR4 phase, the remaining rank budget can be
     // larger than a full master window. Let real ZQ service finish and wait
     // for a risky window naturally; never alter the timer or thermal report.
-    if(mode!=2) begin
+    if(mode<2) begin
     for(int n=0;n<800;n++) begin
       if(dut.refresh_budget<=432 && dut.refresh_budget>=266 && !dut.maintenance_urgent && dut.pages_closed && !dut.zq_request) break;
       tick();
     end
     assert(dut.refresh_budget<=432 && dut.refresh_budget>=266 && !dut.maintenance_urgent && dut.pages_closed) else $fatal(1,"natural active window");
     end
-    management_in.phymstr_req=1;management_in.phymstr_cs_state=3;
-    for(int n=0;n<int'(cfg.profile.management_ck_tphymstr_resp);n++) begin tick();if(management_out.phymstr_ack) break;end
+    management_in.phymstr_req=1;management_in.phymstr_cs_state=3;entry_at=ck;
+    for(int n=0;n<int'(cfg.profile.management_ck_tphymstr_resp)+2;n++) begin tick();if(management_out.phymstr_ack || status_value.fault) break;end
+    if(mode==5) begin
+      // The unchanged 96CK bound may expire with an accepted register visit
+      // still in flight. It must fail closed and never grant PHY ownership.
+      assert(status_value.fault && status_value.fault_code==12 && !management_out.phymstr_ack && !status_value.memory_trusted)
+        else $fatal(1,"entry timeout must fault without ACK ck=%0d request=%0d fault=%0d code=%0d",ck,entry_at,status_value.fault,status_value.fault_code);
+      repeat(180) begin tick();assert(status_value.fault && !management_out.phymstr_ack && !dut.admission && !dut.issue_enable && !status_value.memory_trusted) else $fatal(1,"persistent entry failure containment");end
+      $fclose(stream);$display("MASTER_REFRESH_CHANNEL mode=5 contained entry timeout request=%0d final=%0d",entry_at,ck);$finish;
+    end
     assert(management_out.phymstr_ack) else $fatal(1,"natural channel entry gate budget=%0d urgent=%0d closed=%0d backend=%0d reg=%0d",dut.refresh_budget,dut.maintenance_urgent,dut.pages_closed,dut.backend_drained,dut.register_state_q);
     ack_at=ck-1;report_valid=0;
     for(int n=0;n<256;n++) begin
@@ -128,11 +155,11 @@ module master_refresh_channel_tb;
         end
       end
       if(physical_at[0]>=0 && (mode!=1 || physical_at[1]>=0) && ck>=ready_at[0] && ck>=ready_at[1]) management_in.phymstr_req=0;
-      if(mode==2 && n==16) management_in.phymstr_req=0;
+      if(mode>=2 && n==16) management_in.phymstr_req=0;
       tick();if(!management_out.phymstr_ack) break;
     end
     assert(!management_out.phymstr_ack && ck-1-ack_at<=256) else $fatal(1,"recovered channel handback");
-    if(mode!=2) begin
+    if(mode<2) begin
       for(int r=0;r<int'(cfg.profile.ranks);r++) assert(physical_at[r]>ack_at) else $fatal(1,"missing active rank REF");
     end else assert(physical_at[0]<0) else $fatal(1,"unexpected REF in short thermal-publication window");
     phy_refresh_done=0;pin_owner=0;pin_cs=0;pin_ca=0;

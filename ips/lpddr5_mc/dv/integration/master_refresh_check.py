@@ -35,9 +35,15 @@ def replay(rows, profile, observations=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--channel", action="store_true", help="dedicated real channel/register fixture")
+    parser.add_argument("--channel-mode", type=int, choices=range(6), action="append", help="only these channel modes")
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
+    if args.channel_mode and not args.channel:
+        parser.error("--channel-mode requires --channel")
+    modes = args.channel_mode if args.channel_mode is not None else range(3 if args.channel else 19)
+    if len(set(modes)) != len(modes):
+        parser.error("duplicate channel mode")
     root = Path(__file__).resolve().parents[4]
     dv = Path(__file__).resolve().parent
     ip = root / "ips/lpddr5_mc"
@@ -101,6 +107,9 @@ def main():
         verilator=subprocess.check_output([str(tool / "bin/verilator"), "--version"], env=env, text=True).strip(),
         qualification="coupled lifecycle/maintenance proof; actual-channel and wrapper evidence separate",
         commands=[],
+        selected_modes=list(modes),
+        build=str(build),
+        tool_environment={k: env[k] for k in ("VERILATOR_ROOT", "VERILATOR_BIN")},
         source_sha256={str(p.relative_to(root) if p.is_relative_to(root) else p): digest(p) for p in inputs},
         seams=[
             "empty host and backend settlement, closed rows and disabled WCK",
@@ -139,22 +148,47 @@ def main():
     try:
         run([*base, "--lint-only", *map(str, sv)])
         run([*base, "--binary", "--Mdir", str(build), *map(str, sv), "-j", "2"], timeout=600 if args.channel else 120)
+        generated = [p for p in build.iterdir() if p.is_file() and p.suffix in (".cpp", ".h", ".mk", ".dat")]
+        generated += [build / f"V{top}"]
+        report["generated_sha256"] = {p.name: digest(p) for p in generated}
         sys.path[:0] = [str(dv), str(ip / "dv")]
         from system.host import Violation
 
         profile = json.loads((ip / "config/contracts/profiles.json").read_text())["profiles"][0]
         report["cases"] = []
-        for mode in range(3 if args.channel else 19):
+        for mode in modes:
             profile["ranks"] = (2 if mode == 1 else 1) if args.channel else 2 if mode in (0, 8, 13) else 1
             path = args.report.parent / f"mode-{mode}.jsonl"
             run([str(build / f"V{top}"), f"+mode={mode}", f"+observations={path}"])
             rows = [json.loads(line) for line in path.read_text().splitlines()]
             edges, samples = rows[::2], rows[1::2]
             requests = [e for e in edges if e["pin_owner"] == "phy" and e["pin_cs"]]
-            case = dict(mode=mode, records=len(rows), executions=requests, independent_phy_effects=[])
+            case = dict(
+                mode=mode, records=len(rows), raw_sha256=digest(path), executions=requests, independent_phy_effects=[]
+            )
             report["cases"].append(case)
             faults = [e for e in samples if e["fault"]]
-            if not args.channel and mode in (2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 16, 17):
+            if args.channel and mode == 5:
+                assert faults and faults[0]["code"] == 12 and not any(e["ack"] for e in samples)
+                assert all(not e["admission"] and not e["issue"] and not e["trusted"] for e in faults)
+                first = faults[0]
+                requested = next(e["ck"] for e in edges if e["phy_request"])
+                assert first["ck"] - requested == profile["management_ck"]["tphymstr_resp"] + 1
+                case["request_to_fault_ck"] = first["ck"] - requested
+                assert all(
+                    e["fault"] and not e["ack"] and not e["admission"] and not e["issue"] and not e["trusted"]
+                    for e in samples
+                    if e["ck"] >= first["ck"]
+                )
+                assert samples[-1]["ck"] - first["ck"] >= 180
+                try:
+                    replay(rows, profile, case["independent_phy_effects"]).finish()
+                except (Violation, ValueError) as error:
+                    assert str(error) == "unfinished master tail", str(error)
+                    case.update(verdict="contained entry response timeout", first_fault=first, rejection=str(error))
+                else:
+                    raise AssertionError("Unacknowledged entry passed")
+            elif not args.channel and mode in (2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 16, 17):
                 assert (
                     faults
                     and not faults[0]["admission"]
@@ -198,7 +232,7 @@ def main():
                 )
                 assert len(checker.windows) == (2 if mode == 8 else 1)
                 assert len(requests) == (
-                    (0 if mode == 2 else profile["ranks"]) if args.channel else 2 if mode == 0 else 1
+                    (0 if mode >= 2 else profile["ranks"]) if args.channel else 2 if mode == 0 else 1
                 )
                 if mode == 18 and not args.channel:
                     effect = case["independent_phy_effects"][0]
@@ -218,14 +252,22 @@ def main():
                     assert any(e["zq_done"] for e in edges)
                     case["thermal_publication"] = reports[0]
                     case["controller_ca_delay_ck"] = delay
+                    request_edge = next(e for e in edges if e["phy_request"])
+                    entry = next(s for e, s in zip(edges, samples, strict=True) if not e["ack"] and s["ack"])
+                    case["entry"] = dict(request=request_edge, ack=entry, response_ck=entry["ck"] - request_edge["ck"])
+                    zq = [
+                        e["ck"]
+                        for e in edges
+                        if e["pin_cs"] and e["pin_ca"] == 0x370 and e["pin_owner"] == "controller"
+                    ]
+                    assert zq and max(zq) + profile["dram_ck"]["tzqlat"] <= entry["ck"]
+                    case["physical_zq"] = dict(executions=zq, recovered=max(zq) + profile["dram_ck"]["tzqlat"])
         run([sys.executable, str(dv / "master_refresh_test.py")])
         assert all(
             digest(p) == report["source_sha256"][str(p.relative_to(root) if p.is_relative_to(root) else p)]
             for p in inputs
         )
-        generated = [p for p in build.iterdir() if p.is_file() and p.suffix in (".cpp", ".h", ".mk", ".dat")]
-        generated += [build / f"V{top}"]
-        report["generated_sha256"] = {p.name: digest(p) for p in generated}
+        assert all(digest(p) == report["generated_sha256"][p.name] for p in generated)
         report["status"] = "passed_channel_preparation" if args.channel else "passed_focused_repair"
     except Exception as error:
         report.update(status="failed", error=repr(error))

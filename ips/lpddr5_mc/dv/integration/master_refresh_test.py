@@ -56,6 +56,32 @@ def fixture():
 
 
 class MasterRefreshTest(unittest.TestCase):
+    def test_channel_entry_fences_and_physical_ZQ(self):
+        rows = [
+            r | dict(backend_drained=1, register_pending=0, register_accept=0, register_owner=0, register_busy=0)
+            for r in fixture()
+        ]
+        self.assertEqual(len(replay(rows, profile()).finish()), 2)
+        mutations = 0
+        for phase in ("edge", "sample"):
+            for key in ("backend_drained", "register_pending", "register_accept", "register_owner", "register_busy"):
+                changed = [
+                    r | {key: int(key != "backend_drained")} if r["ck"] == 1 and r["kind"] == phase else dict(r)
+                    for r in rows
+                ]
+                with (
+                    self.subTest(phase=phase, key=key),
+                    self.assertRaisesRegex(Violation, "master entry register ownership"),
+                ):
+                    replay(changed, profile()).finish()
+                mutations += 1
+        # A controller ZQ latch at CK0 requires physical recovery before the
+        # PHY can act, even if register/drain witnesses falsely claim idle.
+        changed = [r | dict(pin_cs=1, pin_ca=0x370) if r["ck"] == 0 and r["kind"] == "edge" else dict(r) for r in rows]
+        with self.assertRaisesRegex(Violation, "master entry before physical ZQ recovery"):
+            replay(changed, profile()).finish()
+        print(f"MASTER_ENTRY_SENSITIVITY rejected={mutations + 1}")
+
     def test_legal_execution_recovery_memory_and_tail(self):
         checker = replay(fixture(), profile())
         self.assertEqual([e["rank"] for e in checker.finish()], [0, 1])

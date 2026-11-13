@@ -78,7 +78,12 @@ module lpddr5_mc_backend #(
       +32'(config_i.profile.dram_ck_tmrr)+32'(config_i.profile.dram_ck_tmrw)+16);
   assign pin_drained_o=data_drained && !pair_pending && !register_owner_q;
   assign integrity_drained_o=epoch_drained && adapter_drained;
-  assign drained_o=adapter_drained && scheduler_drained && pin_drained_o && epoch_drained;
+  // Ownership entry consumes this witness on the same edge as register
+  // admission. Fence pending visits and that edge's acceptance, not only the
+  // old registered owner. Keep pin_drained/exclusive_ready independent: the
+  // register visit and urgent maintenance must still progress in DRAIN.
+  assign drained_o=adapter_drained && scheduler_drained && pin_drained_o && epoch_drained
+    && !register_pending_i && !register_accept;
   assign exclusive_ready=service_i && !fault_i && !fault_o && data_drained && pages_closed_o && wck_disabled_o && !pair_pending && !register_owner_q && !maintenance_valid_i;
   assign register_accept=(epoch_poll || register_valid_i) && reg_ready;
   assign epoch_poll_ready=reg_ready && epoch_poll;

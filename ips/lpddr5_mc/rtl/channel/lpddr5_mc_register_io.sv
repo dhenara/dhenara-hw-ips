@@ -91,7 +91,11 @@ module lpddr5_mc_register_io (
         STOP: if(wck_disabled || (stop_ready && mrr_recovered)) state_q<=DISABLE;
         DISABLE: if(wck_disabled && data_drained && mrr_recovered) state_q<=RESULT;
         ZQ: begin state_q<=ZQ_WAIT; elapsed_q<=0; end
-        ZQ_WAIT: if(elapsed_q+1>=32'(profile_i.dram_ck_tzqlat)) state_q<=RESULT;
+        // elapsed starts at the DFI MPC edge. Unlike the next controller CA
+        // (which has the same path delay), PHY ownership can act immediately
+        // at the pins. Retain the register owner through physical latch
+        // arrival plus tZQLAT before publishing completion.
+        ZQ_WAIT: if(elapsed_q+1>=32'(profile_i.management_ck_tctrl_delay)+32'(profile_i.dram_ck_tzqlat)) state_q<=RESULT;
         RESULT: if(result_ready_i) state_q<=IDLE;
         default: fault_o<=1;
       endcase

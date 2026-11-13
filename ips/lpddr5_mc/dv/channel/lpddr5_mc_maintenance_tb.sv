@@ -11,15 +11,17 @@ module lpddr5_mc_maintenance_tb;
   logic [31:0] budget,diagnostic;
   lpddr5_mc_profile_t profile,effective;
   lpddr5_mc_event_t event_value;
+  logic [1:0][31:0] rank_budget;
+  logic [1:0] recovered;
   logic unused_debug;
-  assign unused_debug=^{diagnostic,zq_request,effective};
+  assign unused_debug=^{rank_budget,recovered,diagnostic,zq_request,effective};
   lpddr5_mc_maintenance dut(.clk_ck_i(clk),.rst_ni(rst_n),.destructive_reset_i(reset_maintenance),.start_i(start),.profile_i(profile),.per_bank_i(per_bank),
     .pins_idle_i(1'b0),
     .event_i(event_value),.temperature_valid_i(temperature_valid),.temperature_i(temperature),.self_refresh_enter_i(sr_enter),.self_refresh_exit_i(sr_exit),
     .self_refresh_request_i(sr_request),.request_valid_o(request_valid),.request_ready_i(request_ready),.request_rank_o(request_rank),.request_rfm_o(request_rfm),
     .request_all_o(request_all),.request_pair_o(request_pair),.activate_allowed_o(allowed),.urgent_o(urgent),.fault_o(fault),.extra_pending_o(extra),
     .refresh_budget_o(budget),.effective_per_bank_o(effective_per_bank),.effective_profile_o(effective),.mr4_request_o(mr4_request),.zq_request_o(zq_request),.mr4_done_i(mr4_done),.zq_done_i(zq_done),
-    .thermal_o(thermal),.diagnostic_o(diagnostic),.external_refresh_i(external_refresh));
+    .thermal_o(thermal),.diagnostic_o(diagnostic),.external_refresh_i(external_refresh),.external_refresh_age_i({32'd1,32'd1}),.rank_refresh_budget_o(rank_budget),.external_refresh_recovered_o(recovered));
   task automatic tick; #1; clk=1; #1; clk=0; #1; endtask
   task automatic reset;
     rst_n=0; tick(); rst_n=1; event_value='0; sr_enter=0; sr_exit=0; external_refresh=0;sr_request=0; temperature_valid=0;

@@ -135,6 +135,30 @@ class MasterRefreshTest(unittest.TestCase):
         with self.assertRaises(Violation):
             dram.command(201, 1, 7)
 
+    def test_conservative_origin_and_recovery_observations(self):
+        rows = fixture()
+        for row in rows:
+            ck = row["ck"]
+            row.update(
+                last_refresh0=21 if ck >= 22 else 0,
+                last_refresh1=21 if ck >= 23 else 0,
+                external_age0=1,
+                external_age1=2,
+                recovered=int(ck <= 22 or ck >= 189) | (int(ck <= 23 or ck >= 190) << 1),
+            )
+        self.assertEqual(len(replay(rows, profile()).finish()), 2)
+        variants = {
+            "application used as execution": (22, "sample", dict(last_refresh0=22), "external REF retention origin"),
+            "latest used as earliest": (23, "sample", dict(last_refresh1=22), "external REF retention origin"),
+            "premature recovery": (24, "edge", dict(recovered=1), "early recovery attestation"),
+            "request on return": (191, "sample", dict(request=1), "new REF on handback"),
+        }
+        for name, (ck, phase, fields, reason) in variants.items():
+            changed = [r | fields if r["ck"] == ck and r["kind"] == phase else dict(r) for r in rows]
+            with self.subTest(name=name), self.assertRaisesRegex(Violation, reason):
+                replay(changed, profile()).finish()
+        print(f"MASTER_REFRESH_BOUND_SENSITIVITY rejected={len(variants)}")
+
     def test_RFM_does_not_discharge_retention(self):
         dram = DramModel(profile())
         dram.command(0, 1, 7)

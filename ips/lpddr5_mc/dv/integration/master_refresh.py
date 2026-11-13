@@ -23,6 +23,8 @@ class MasterRefresh:
         self.returned = False
         self.last_ck = -1
         self.physical = [] if observations is None else observations
+        self.windows = []
+        self.credits = {}
 
     def observe(self, edge, sample):
         """Consume pre-NBA inputs, then the matching registered output sample.
@@ -85,13 +87,25 @@ class MasterRefresh:
                 require("executed" in request and not request.get("done"), "done without new PHY REF")
                 require(ck - request["request"] <= self.response, "late PHY REF completion")
                 request["done"] = ck
+                self.credits[rank] = (request["request"] + 1, ck)
                 self.executions.append(
                     dict(rank=rank, **request, ready=request["executed"] + self.dram.p["dram_ck"]["trfc_ab"])
                 )
             expected_pulse = bit if ack and edge["request"] & edge["done"] & bit else 0
             require(sample["external"] & bit == expected_pulse, "registered REF consumption")
+            if edge["external"] & bit and "external_age0" in sample:
+                earliest, latest = self.credits[rank]
+                require(sample[f"last_refresh{rank}"] == earliest, "external REF retention origin")
+                require(earliest <= self.dram.maintenance.last_refresh[rank] <= latest, "execution attestation bounds")
+            if rank in self.credits and "recovered" in edge:
+                _, latest = self.credits[rank]
+                if ck > latest + 1 and edge["recovered"] & bit:
+                    require(ck >= latest + self.dram.p["dram_ck"]["trfc_ab"], "early recovery attestation")
             if sample["request"] & bit and not edge["request"] & bit:
+                require(edge["phy_request"], "new REF on handback")
                 require(ack and rank not in self.requests, "duplicate refresh request")
+                require(not edge["external"] & bit, "request before registered REF application")
+                require(ck >= max(b.ready for b in self.dram.banks[rank]), "request during REF recovery")
                 self.requests[rank] = dict(request=ck)
             if edge["request"] & bit and not sample["request"] & bit:
                 require(rank in self.requests and self.requests[rank].get("done") == ck, "uncompleted refresh request")
@@ -101,12 +115,15 @@ class MasterRefresh:
                     ck - self.requests[rank]["request"] <= self.response or sample["fault"], "missing PHY completion"
                 )
         if not edge["ack"] and sample["ack"]:
-            require(self.ack_at is None, "duplicate master ACK")
+            require(self.ack_at is None or self.returned, "duplicate master ACK")
             require(
                 edge["phy_request"] and edge["settled"] and edge["closed"] and edge["wck_off"],
                 "master entry obligations",
             )
             self.ack_at = ck
+            self.returned = False
+            self.low = 0
+            self.windows.append(dict(ack=ck))
             self.require_recovered(ck)
         if edge["ack"] and not sample["ack"]:
             require(
@@ -117,6 +134,8 @@ class MasterRefresh:
             self.require_recovered(ck)
             require(ck - self.ack_at <= self.type_limit, "master type duration")
             self.returned = True
+            self.windows[-1]["return"] = ck
+            require(sample["request"] == 0, "new REF on handback")
         self.previous = sample
 
     def require_recovered(self, ck):

@@ -13,6 +13,8 @@ module lpddr5_mc_lifecycle (
   input logic host_settled_i, backend_drained_i, integrity_drained_i,
   input logic pages_closed_i, wck_disabled_i, maintenance_urgent_i, extra_refresh_i,
   input logic [31:0] refresh_budget_i,
+  input logic [1:0][31:0] rank_refresh_budget_i,
+  input logic [1:0] external_refresh_recovered_i,
   input logic fault_i, reset_confirmed_i,
   input logic train_ack_i,
   input logic [31:0] train_token_i,
@@ -28,6 +30,7 @@ module lpddr5_mc_lifecycle (
   output logic maintenance_enable_o,
   output logic destructive_reset_o, maintenance_start_o,
   output logic [1:0] self_refresh_enter_o, self_refresh_exit_o, external_refresh_o,
+  output logic [1:0][31:0] external_refresh_age_o,
   output logic extra_service_o,
   output lpddr5_mc_contract_pkg::lpddr5_mc_ca_t ca_o,
   output logic lp_ctrl_request_o, lp_data_request_o, master_ack_o,
@@ -56,6 +59,7 @@ module lpddr5_mc_lifecycle (
   logic [1:0] active_ranks, boot_sr_q;
   logic drained, known_ranks;
   logic [31:0] master_limit, wake_limit, residency_limit;
+  logic [31:0] master_remaining, refresh_recovery_window;
   // All admitted profiles keep CK at 800 MHz. JESD209-5C Figure 150 /
   // Table 245 require tCSPD >= 10 ns + 1 CK, tCSH >= 3 ns and tCSL >=
   // 4 ns; self-refresh requires at least 15 ns before exit. Round up in CK.
@@ -98,6 +102,10 @@ module lpddr5_mc_lifecycle (
     endcase
     wake_limit=profile_i.management_ck_tlp_ctrl_wakeup>profile_i.management_ck_tlp_data_wakeup
       ? 32'(profile_i.management_ck_tlp_ctrl_wakeup) : 32'(profile_i.management_ck_tlp_data_wakeup);
+    master_remaining=master_elapsed_q<master_limit ? master_limit-master_elapsed_q : 0;
+    // Request is registered on this edge, execution may take tphymstr_rfsh
+    // further CK, then tRFC must expire before a sampled request-low return.
+    refresh_recovery_window=1+32'(profile_i.management_ck_tphymstr_rfsh)+32'(profile_i.dram_ck_trfc_ab);
     ca_o='0;
     if(state_q inside {BOOT_EXIT,LP_EXIT,MASTER_EXIT}) begin
       ca_o.cs=state_q==BOOT_EXIT ? boot_sr_q : state_q==MASTER_EXIT ? chosen_sr_q : active_ranks;
@@ -140,11 +148,18 @@ module lpddr5_mc_lifecycle (
       MASTER: begin
         for(int r=0;r<2;r++) if(active_ranks[r] && !chosen_sr_q[r]) begin
           if(phy_refresh_request_o[r]) begin
-            if(!phy_refresh_done_i[r] && refresh_age_q[r]+1>32'(profile_i.management_ck_tphymstr_rfsh)) failure_code=6;
+            if(refresh_age_q[r]+1>32'(profile_i.management_ck_tphymstr_rfsh)) failure_code=6;
           end else if(phy_refresh_done_i[r]) failure_code=7;
         end
         if(!management_i.phymstr_req && ((report_low_q & active_ranks)!=active_ranks || !known_ranks
-            || (rank_self_refresh_i & active_ranks)!=chosen_sr_q || phy_refresh_request_o!=0)) failure_code=9;
+            || (rank_self_refresh_i & active_ranks)!=chosen_sr_q || phy_refresh_request_o!=0
+            || external_refresh_o!=0
+            || ((external_refresh_recovered_i | chosen_sr_q) & active_ranks)!=active_ranks)) failure_code=9;
+        // A late thermal change cannot authorize a REF whose physical tail
+        // outlives the type bound. Fault rather than issue an unfinishable REF.
+        for(int r=0;r<2;r++) if(active_ranks[r] && !chosen_sr_q[r] && management_i.phymstr_req
+            && !phy_refresh_request_o[r] && !external_refresh_o[r] && external_refresh_recovered_i[r]
+            && rank_refresh_budget_i[r]<=master_remaining && master_remaining<refresh_recovery_window) failure_code=17;
         if(master_elapsed_q+1>master_limit) failure_code=8;
       end
       MASTER_RETURN: if(!master_fresh_q) failure_code=10;
@@ -159,6 +174,7 @@ module lpddr5_mc_lifecycle (
       if(master_ack_o && management_i.phymstr_req && (management_i.phymstr_type!=master_type_q
           || management_i.phymstr_cs_state!=master_choices_q || management_i.phymstr_state_sel!=master_sel_q)) failure_code=13;
       if(management_i.error || fault_i || update_fault_i || fsp_fault_i) failure_code=14;
+      if(phy_refresh_done_i!=0 && (state_q!=MASTER || (phy_refresh_done_i & (~active_ranks | chosen_sr_q))!=0)) failure_code=7;
       if(state_q!=BOOT && state_q!=BOOT_START && !profile_valid_i) failure_code=15;
       if((management_i.lp_ctrl_ack || management_i.lp_data_ack)
           && !(state_q inside {LP_ACCEPT,LP_ENTER,LP_HOLD,LP_RELEASE})) failure_code=16;
@@ -187,6 +203,7 @@ module lpddr5_mc_lifecycle (
       trusted_o<=0; train_request_o<=0; train_done_o<=0; fault_code_o<=0;
       command_rejected_o<=0; destructive_reset_o<=0; maintenance_start_o<=0;
       self_refresh_enter_o<=0; self_refresh_exit_o<=0; external_refresh_o<=0;
+      external_refresh_age_o<=0;
     end else begin
       operational_q<=1;
       command_rejected_o<=0; destructive_reset_o<=0; maintenance_start_o<=0;
@@ -307,14 +324,33 @@ module lpddr5_mc_lifecycle (
           master_elapsed_q<=master_elapsed_q+1;
           report_low_q<=report_low_q | (~rank_report_valid_i & active_ranks);
           for(int r=0;r<2;r++) if(active_ranks[r] && !chosen_sr_q[r]) begin
-            if(!phy_refresh_request_o[r] && refresh_budget_i<=32'(profile_i.management_ck_tphymstr_rfsh)+8) begin phy_refresh_request_o[r]<=1; refresh_age_q[r]<=0; end
+            // Renew at the start of a risky window, not just before the
+            // retention deadline. The horizon includes the remaining type
+            // window and one complete registered issue/recovery tail. Rank
+            // budgets and recovery are owned by maintenance. In particular,
+            // another rank's low budget cannot re-request a serviced rank.
+            if(management_i.phymstr_req && !phy_refresh_request_o[r] && !external_refresh_o[r]
+                && external_refresh_recovered_i[r] && master_remaining>=refresh_recovery_window
+                && rank_refresh_budget_i[r]<=master_remaining+refresh_recovery_window) begin
+              phy_refresh_request_o[r]<=1; refresh_age_q[r]<=0;
+            end
             if(phy_refresh_request_o[r]) begin
               refresh_age_q[r]<=refresh_age_q[r]+1;
-              if(phy_refresh_done_i[r]) begin external_refresh_o[r]<=1; phy_refresh_request_o[r]<=0; end
+              if(phy_refresh_done_i[r]) begin
+                external_refresh_o[r]<=1; phy_refresh_request_o[r]<=0;
+                // At next-edge maintenance application, the earliest known
+                // execution was the first sampling edge after request. The
+                // latest was this done edge. Never use application as issue.
+                external_refresh_age_o[r]<=refresh_age_q[r]+1;
+              end
             end
           end
           if(!management_i.phymstr_req) begin
-            if((report_low_q & active_ranks)==active_ranks && known_ranks && (rank_self_refresh_i & active_ranks)==chosen_sr_q && phy_refresh_request_o==0) begin master_ack_o<=0; master_fresh_q<=1; state_q<=MASTER_RETURN; elapsed_q<=0; end
+            if((report_low_q & active_ranks)==active_ranks && known_ranks && (rank_self_refresh_i & active_ranks)==chosen_sr_q
+                && phy_refresh_request_o==0 && external_refresh_o==0
+                && ((external_refresh_recovered_i | chosen_sr_q) & active_ranks)==active_ranks) begin
+              master_ack_o<=0; master_fresh_q<=1; state_q<=MASTER_RETURN; elapsed_q<=0;
+            end
           end
         end
         MASTER_RETURN: begin if(master_fresh_q) begin state_q<=chosen_sr_q==0 ? QUIET : MASTER_EXIT; end end

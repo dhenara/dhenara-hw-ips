@@ -65,6 +65,8 @@ module lpddr5_mc_channel #(
   logic [7:0] fault_code;
   logic [1:0] sr_enter,sr_exit,external_refresh,syscs,phy_refresh_request;
   logic lp_ctrl_req,lp_data_req,master_ack;
+  logic [1:0][31:0] rank_refresh_budget,external_refresh_age;
+  logic [1:0] external_refresh_recovered;
   lpddr5_mc_ca_t life_ca,backend_ca,fsp_ca;
   logic backend_valid,backend_ready,backend_completion_valid,backend_completion_ready;
   lpddr5_mc_granule_t backend_request;
@@ -207,7 +209,8 @@ module lpddr5_mc_channel #(
   lpddr5_mc_maintenance maintenance (
     .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.destructive_reset_i(destructive_reset),.start_i(maintenance_start),.profile_i(active.profile),.per_bank_i(PER_BANK_REFRESH),.event_i(event_value),
     .pins_idle_i(pin_drained && rows_closed && wck_disabled),
-    .temperature_valid_i(temperature_valid),.temperature_i(temperature),.self_refresh_enter_i(sr_enter),.self_refresh_exit_i(sr_exit),.external_refresh_i(external_refresh),.self_refresh_request_i(extra_service),
+    .temperature_valid_i(temperature_valid),.temperature_i(temperature),.self_refresh_enter_i(sr_enter),.self_refresh_exit_i(sr_exit),.external_refresh_i(external_refresh),.external_refresh_age_i(external_refresh_age),
+    .rank_refresh_budget_o(rank_refresh_budget),.external_refresh_recovered_o(external_refresh_recovered),.self_refresh_request_i(extra_service),
     .request_valid_o(maintenance_valid),.request_ready_i(maintenance_ready),.request_rank_o(maintenance_rank),.request_rfm_o(maintenance_rfm),.request_all_o(maintenance_all),.request_pair_o(maintenance_pair),
     .activate_allowed_o(activate_allowed),.urgent_o(maintenance_urgent),.fault_o(maintenance_fault),.extra_pending_o(extra_refresh),.refresh_budget_o(refresh_budget),.effective_per_bank_o(maintenance_per_bank),.effective_profile_o(effective_profile),
     .mr4_request_o(mr4_request),.zq_request_o(zq_request),.mr4_done_i(mr4_done),.zq_done_i(zq_done),.thermal_o(thermal),.diagnostic_o(maintenance_diagnostic));
@@ -226,12 +229,12 @@ module lpddr5_mc_channel #(
     .clk_ck_i(clk_ck_i),.rst_ni(rst_ni),.cold_rst_ni,.profile_i(effective_profile),.fsp_target_profile_i(prepared.profile),.profile_valid_i(active_valid),.profile_epoch_i(committed_epoch_o),
     .command_valid_i(command_valid_i),.command_i(command_i),.command_ready_o(command_ready_o),.command_rejected_o(command_rejected_o),
     .host_settled_i(host_settled_i),.backend_drained_i(backend_drained),.integrity_drained_i(integrity_drained && inline_drained),.pages_closed_i(pages_closed),.wck_disabled_i(wck_disabled),
-    .maintenance_urgent_i(maintenance_urgent),.extra_refresh_i(extra_refresh),.refresh_budget_i(refresh_budget),.fault_i(external_fault),.reset_confirmed_i(reset_confirmed_i),
+    .maintenance_urgent_i(maintenance_urgent),.extra_refresh_i(extra_refresh),.refresh_budget_i(refresh_budget),.rank_refresh_budget_i(rank_refresh_budget),.external_refresh_recovered_i(external_refresh_recovered),.fault_i(external_fault),.reset_confirmed_i(reset_confirmed_i),
     .train_ack_i(train_ack_i),.train_token_i(train_token_i),.management_i(management_i),.rank_report_valid_i(rank_report_valid_i),.rank_self_refresh_i(rank_self_refresh_i),.phy_refresh_done_i(phy_refresh_done_i),
     .update_busy_i(update_busy),.update_done_i(update_done),.update_fault_i(update_fault),.update_request_o(update_request),.update_window_o(update_window),
     .fsp_busy_i(fsp_busy),.fsp_done_i(fsp_published),.fsp_declined_i(fsp_declined),.fsp_fault_i(fsp_fault),.fsp_request_o(fsp_request),
     .admission_o(admission),.issue_o(issue_enable),.close_o(close_pages),.stop_o(stop_wck),.maintenance_enable_o(service),.destructive_reset_o(destructive_reset),.maintenance_start_o(maintenance_start),
-    .self_refresh_enter_o(sr_enter),.self_refresh_exit_o(sr_exit),.external_refresh_o(external_refresh),.extra_service_o(extra_service),.ca_o(life_ca),
+    .self_refresh_enter_o(sr_enter),.self_refresh_exit_o(sr_exit),.external_refresh_o(external_refresh),.external_refresh_age_o(external_refresh_age),.extra_service_o(extra_service),.ca_o(life_ca),
     .lp_ctrl_request_o(lp_ctrl_req),.lp_data_request_o(lp_data_req),.master_ack_o(master_ack),.syscs_state_o(syscs),.phy_refresh_request_o(phy_refresh_request),
     .state_o(life_state),.owner_o(owner),.fault_o(life_fault),.trusted_o(trusted),.train_request_o(train_request),.train_done_o(train_done),.boot_epoch_o(boot_epoch),.first_fault_o(first_fault),.fault_code_o(fault_code));
   always_ff @(posedge clk_ck_i or negedge rst_ni) begin

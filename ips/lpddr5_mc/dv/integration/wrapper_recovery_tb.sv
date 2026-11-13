@@ -23,6 +23,7 @@ module wrapper_recovery_tb;
     logic [7:0] unused_fault_code;
     logic unused_close,unused_stop,unused_maintenance,unused_maintenance_start,unused_extra;
     logic unused_update,unused_window,unused_fsp,unused_lp_ctrl,unused_lp_data,unused_master,unused_fault;
+    logic [1:0][31:0] unused_refresh_age;
     logic [1:0] unused_enter,unused_exit,unused_refresh,unused_syscs,unused_refresh_request;
     lpddr5_mc_ca_t unused_ca;
     lpddr5_mc_channel_config #(.CHANNEL_INDEX(c)) configuration (
@@ -36,14 +37,14 @@ module wrapper_recovery_tb;
       .profile_valid_i(active_valid[c]),.profile_epoch_i(epoch[c]),.command_valid_i(command_valid),.command_i(command),
       .command_ready_o(unused_ready),.command_rejected_o(unused_rejected),.host_settled_i(1'b1),
       .backend_drained_i(1'b1),.integrity_drained_i(1'b1),.pages_closed_i(1'b1),.wck_disabled_i(1'b1),
-      .maintenance_urgent_i(1'b0),.extra_refresh_i(1'b0),.refresh_budget_i(32'd3000),
+      .maintenance_urgent_i(1'b0),.extra_refresh_i(1'b0),.refresh_budget_i(32'd3000),.rank_refresh_budget_i({32'd3000,32'd3000}),.external_refresh_recovered_i(2'b11),
       .fault_i(fault_input),.reset_confirmed_i(authorized),.train_ack_i(train_ack),.train_token_i(boot[c]),
       .management_i(management[c]),.rank_report_valid_i(2'b01),.rank_self_refresh_i(2'b00),.phy_refresh_done_i(2'b00),
       .update_busy_i(1'b0),.update_done_i(1'b0),.update_fault_i(1'b0),.update_request_o(unused_update),.update_window_o(unused_window),
       .fsp_busy_i(1'b0),.fsp_done_i(1'b0),.fsp_declined_i(1'b0),.fsp_fault_i(1'b0),.fsp_request_o(unused_fsp),
       .admission_o(admission[c]),.issue_o(issue_enable[c]),.close_o(unused_close),.stop_o(unused_stop),
       .maintenance_enable_o(unused_maintenance),.destructive_reset_o(destructive[c]),.maintenance_start_o(unused_maintenance_start),
-      .self_refresh_enter_o(unused_enter),.self_refresh_exit_o(unused_exit),.external_refresh_o(unused_refresh),
+      .self_refresh_enter_o(unused_enter),.self_refresh_exit_o(unused_exit),.external_refresh_o(unused_refresh),.external_refresh_age_o(unused_refresh_age),
       .extra_service_o(unused_extra),.ca_o(unused_ca),.lp_ctrl_request_o(unused_lp_ctrl),.lp_data_request_o(unused_lp_data),
       .master_ack_o(unused_master),.syscs_state_o(unused_syscs),.phy_refresh_request_o(unused_refresh_request),
       .state_o(state_value[c]),.owner_o(owner[c]),.fault_o(unused_fault),.trusted_o(trusted[c]),.train_request_o(train_request[c]),

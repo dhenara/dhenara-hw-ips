@@ -10,6 +10,7 @@ module lpddr5_mc_maintenance (
   input logic [4:0] temperature_i,
   input logic [1:0] self_refresh_enter_i, self_refresh_exit_i,
   input logic [1:0] external_refresh_i,
+  input logic [1:0][31:0] external_refresh_age_i,
   input logic self_refresh_request_i,
   output logic request_valid_o,
   input logic request_ready_i,
@@ -18,6 +19,8 @@ module lpddr5_mc_maintenance (
   output logic [1:0][7:0] activate_allowed_o,
   output logic urgent_o, fault_o, extra_pending_o,
   output logic [31:0] refresh_budget_o,
+  output logic [1:0][31:0] rank_refresh_budget_o,
+  output logic [1:0] external_refresh_recovered_o,
   output logic effective_per_bank_o,
   output lpddr5_mc_channel_pkg::lpddr5_mc_profile_t effective_profile_o,
   output logic mr4_request_o, zq_request_o,
@@ -28,6 +31,7 @@ module lpddr5_mc_maintenance (
   import lpddr5_mc_channel_pkg::*;
   logic running_q,poll_refresh_q,mr4_pending_q,zq_pending_q;
   logic [63:0] ck_q, last_refresh_q[2], last_pair_q[2], thermal_deadline_q, last_mr4_q, last_zq_q;
+  logic [63:0] external_recovery_q[2];
   logic [31:0] raa_q[2][8];
   logic [1:0] self_refresh_q, extra_q, thermal_debt_q, all_bank_round_q;
   logic [2:0] next_pair_q[2];
@@ -127,13 +131,19 @@ module lpddr5_mc_maintenance (
     poll_refresh_needed=coalesced_policy && mr4_request_o && !poll_refresh_q;
     activate_allowed_o='0; candidate=0; candidate_rank=0; candidate_rfm=0; candidate_extra=0;
     periodic_due=0; rfm_due=0; all_bank_due=0;candidate_age=0; rank_age=0; budget_value=64'hffffffff;
+    rank_refresh_budget_o='1; external_refresh_recovered_o=0;
     for(int r=0;r<2;r++) begin
       if(r<int'(profile_i.ranks)) begin
+        // Evaluated for the upcoming consuming CK edge. Only that edge may
+        // release master ACK; a post-edge change does not attest handback.
+        external_refresh_recovered_o[r]=running_q && !fault_o && ck_q>=external_recovery_q[r];
         for(int p=0;p<8;p++) begin
           activate_allowed_o[r][p]=running_q && !fault_o && !self_refresh_q[r]
             && (!profile_i.mr27[0] || raa_q[r][p]<maximum);
         end
         if(!self_refresh_q[r] && running_q) begin
+          rank_refresh_budget_o[r]=ck_q-last_refresh_q[r]>=64'(interval_value)
+            ? 0 : 32'(64'(interval_value)-(ck_q-last_refresh_q[r]));
           if(ck_q-last_refresh_q[r]>=64'(interval_value)) budget_value=0;
           else if(64'(interval_value)-(ck_q-last_refresh_q[r])<budget_value) budget_value=64'(interval_value)-(ck_q-last_refresh_q[r]);
           periodic_due=poll_refresh_needed || thermal_debt_q[r] || ck_q-last_refresh_q[r]+64'(refresh_lead)>=64'(interval_value)
@@ -164,12 +174,12 @@ module lpddr5_mc_maintenance (
       self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0;
       pending_q<=0; pending_rank_q<=0; pending_rfm_q<=0; pending_all_q<=1; pending_pair_q<=0; pending_extra_q<=0;
       thermal_o<=9; thermal_deadline_q<=0; fault_o<=0; diagnostic_o<=0; last_mr4_q<=0; last_zq_q<=0;
-      for(int r=0;r<2;r++) begin last_refresh_q[r]<=0; last_pair_q[r]<=0; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
+      for(int r=0;r<2;r++) begin external_recovery_q[r]<=0; last_refresh_q[r]<=0; last_pair_q[r]<=0; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
     end else if(destructive_reset_i) begin
       running_q<=0; poll_refresh_q<=0; mr4_pending_q<=0; zq_pending_q<=0;
       self_refresh_q<=0; extra_q<=0; thermal_debt_q<=0;all_bank_round_q<=0; pending_q<=0;
       thermal_o<=9; thermal_deadline_q<=0; fault_o<=0; last_mr4_q<=ck_q; last_zq_q<=ck_q;
-      for(int r=0;r<2;r++) begin last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
+      for(int r=0;r<2;r++) begin external_recovery_q[r]<=0; last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; next_pair_q[r]<=0; for(int p=0;p<8;p++) raa_q[r][p]<=0; end
     end else begin
       ck_q<=ck_q+1;
       // RFM execution removes the debt that enlarged the polling lead. Keep
@@ -211,7 +221,14 @@ module lpddr5_mc_maintenance (
           end
           if(self_refresh_exit_i[r]) begin self_refresh_q[r]<=0; extra_q[r]<=1; last_refresh_q[r]<=ck_q; end
           if(external_refresh_i[r]) begin
-            last_refresh_q[r]<=ck_q; last_pair_q[r]<=ck_q; thermal_debt_q[r]<=0; next_pair_q[r]<=0;
+            // Lifecycle registers execution attestation one edge earlier.
+            // Retention uses the earliest possible physical execution;
+            // recovery uses the latest (the sampled done edge). Application
+            // is neither origin. One owner retains both bounds per rank.
+            last_refresh_q[r]<=ck_q-64'(external_refresh_age_i[r]);
+            last_pair_q[r]<=ck_q-64'(external_refresh_age_i[r]);
+            external_recovery_q[r]<=ck_q-1+64'(profile_i.dram_ck_trfc_ab);
+            thermal_debt_q[r]<=0; next_pair_q[r]<=0;
             all_bank_round_q[r]<=0;
             if(pending_q && pending_rank_q==1'(r)) pending_q<=0;
             for(int p=0;p<8;p++) raa_q[r][p]<=raa_q[r][p]>imt ? raa_q[r][p]-imt : 0;

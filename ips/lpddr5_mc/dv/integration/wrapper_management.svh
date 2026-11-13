@@ -8,14 +8,19 @@ bit [1:0] wm_probe_accepted=0;
 // remain asserted through handback/recovery and complete normally on return.
 task automatic wm_probe(input int p,id);
   repeat(4) source_positive(p);source_negative(p);
+  // Explicit sequential blocks keep each timed driver together when the
+  // qualified simulator inlines tasks inside a fork.
   fork
-    send_aw(p,16'(id),512+128*p,4);
-    send_ar(p,16'(id+1),576+128*p,4);
+    begin send_aw(p,16'(id),512+128*p,4);end
+    begin send_ar(p,16'(id+1),576+128*p,4);end
   join
   wm_probe_accepted[p]=1;
 endtask
 task automatic wm_finish_probes(input int id);
-  wait(&wm_probe_accepted);
+  for(int n=0;n<3000;n++) begin
+    @(negedge clk);if(&wm_probe_accepted) break;
+  end
+  check(&wm_probe_accepted,"both address probes accepted after return");
   for(int p=0;p<2;p++) begin
     inline_payload(p,512+128*p,8'(id+2*p));
     read_result(p,16'(id+2*p+1),576+128*p,4);
@@ -92,8 +97,8 @@ task automatic wm_case_run(input int kind,input bit failed);
   else begin management[0].phymstr_type=0;management[0].phymstr_cs_state=1;management[0].phymstr_state_sel=0;management[0].phymstr_req=1;end
   wm_probe_accepted=0;
   fork
-    wm_probe(0,base_id+12);
-    wm_probe(1,base_id+14);
+    begin wm_probe(0,base_id+12);end
+    begin wm_probe(1,base_id+14);end
   join_none
   if(failed) begin
     repeat(2) @(negedge clk);management[0].error=1;wm_mark("error");

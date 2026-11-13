@@ -103,7 +103,7 @@ python3 ips/lpddr5_mc/dv/channel/check.py --family channel --channel-case 9 --ch
   --report ips/lpddr5_mc/evidence/c2-fsp-vrcg-bfc10f9/report.json
 ```
 
-The unselected channel cases0/5 still contain the earlier nineteen-pair/OP-value FSP assertions. Their prior-source results do not qualify that broader FSP stimulus on `bfc10f9`; correction and execution of those cases remain pending. This does not change the selected owning or case9 results.
+Commit `3c52ef8` corrects the connected channel0/5 assertions to twenty pairs, exact staging/high-VRCG/normal-restore values, separate MRW2 recovery origins, DES intervals and the final command-path tail. Warning-fatal shared channel TB lint passes; those unselected hardware cases have not executed on the new FSP owner. Original failures and prior-source results remain historical. This does not broaden the selected Q19/Q20 owning/case9 results. Q22 separately records a failed real-wrapper invocation with no complete management case; component settlement remains insufficient for wrapper AXI claims.
 
 Run just the affected parser/adapter units after a checker-only correction, using a new evidence path and the documented Python environment:
 

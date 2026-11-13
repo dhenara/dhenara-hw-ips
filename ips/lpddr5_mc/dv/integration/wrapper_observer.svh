@@ -1,6 +1,9 @@
 // Explicit phase bridge: memory prepare/sample is at falling CK; the later
 // rising CK carries real internal handshakes. Both retain the identical raw
 // buses, so the adapter qualifies their mapping rather than borrowing C2 ticks.
+// Capture returns from the memory's procedural output immediately after
+// prepare. Its propagated integration net still has the prior value in this
+// delta cycle; the later edge records the actual receiver input independently.
 int wm_stream=0,wm_tick[CHANNELS],wm_edge_tick[CHANNELS];
 string wm_path,wm_profile_sha;
 initial begin
@@ -9,19 +12,19 @@ initial begin
     check($value$plusargs("wrapper_observations=%s",wm_path),"missing wrapper stream");
     check($value$plusargs("wrapper_profile_sha256=%s",wm_profile_sha),"missing wrapper profile digest");
     wm_stream=$fopen(wm_path,"w");check(wm_stream!=0,"wrapper stream open");
-    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":1,\"sample_phase\":\"negedge_after_prepare_before_sample\",\"handshake_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
+    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":2,\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
   end
 end
-task automatic wrapper_memory_sample(input int c);
+task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepared_return);
   // Observation executes synchronously in this helper below through constant
   // generate cases, before memory_model.sample can change its counters.
   if(WRAPPER_MANAGEMENT) begin
-    if(c==0) wm_observers[0].sample_pins();
-    else wm_observers[1].sample_pins();
+    if(c==0) wm_observers[0].sample_pins(prepared_return);
+    else wm_observers[1].sample_pins(prepared_return);
   end
 endtask
 for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
-  task automatic sample_pins;
+  task automatic sample_pins(input lpddr5_mc_return4_t prepared_return);
     if(wm_stream!=0 && !finish_observations) begin
       assert(qualified[0]==profile) else $fatal(1,"wrapper fixture profile differs from bound image");
       if(status_value[c].config_valid)
@@ -34,7 +37,7 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
         status_value[c].pin_drained,status_value[c].ecc_drained,dut.datapath.channels[c].channel.inline_ecc.data_committed_q,dut.datapath.channels[c].channel.admission,management_out[c].phyupd_ack,management_out[c].phymstr_ack,report_valid[c],
         report_sr[c],management_out[c].refresh_request,phy_refresh_done[c],management[c].phyupd_req,management[c].phymstr_req,management[c].phyupd_type,management[c].phymstr_type,
         management[c].phymstr_cs_state,management[c].phymstr_state_sel,management[c].error,mr4_value[c],8'd0,ca[c].cs,ca[c].address,
-        wck[c],writes[c],reads[c],returns[c],qualified[0]);
+        wck[c],writes[c],reads[c],prepared_return,qualified[0]);
       wm_tick[c]++;
     end
   endtask

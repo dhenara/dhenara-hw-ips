@@ -97,8 +97,11 @@ module controller_tb #(
     initial forever begin
       @(negedge clk);
       if(memory_reset || (WRAPPER_MANAGEMENT && dut.datapath.channels[c].channel.destructive_reset)) begin
-        memories[c].memory_model.reset();report_valid[c]=2'b11>>(2-RANKS);report_sr[c]=0;wrapper_memory_sample(c);
-      end else begin memories[c].memory_model.prepare();wrapper_memory_sample(c);memories[c].memory_model.sample();end
+        memories[c].memory_model.reset();report_valid[c]=2'b11>>(2-RANKS);report_sr[c]=0;
+        wrapper_memory_sample(c,memories[c].memory_model.return_o);
+      end else begin
+        memories[c].memory_model.prepare();wrapper_memory_sample(c,memories[c].memory_model.return_o);memories[c].memory_model.sample();
+      end
     end
   end
   for(genvar p=0;p<PORTS;p++) begin : monitors

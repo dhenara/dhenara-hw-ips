@@ -71,7 +71,10 @@ def entered(master=False):
 class PhaseTests(unittest.TestCase):
     def setUp(self):
         self.header = dict(
-            sample_phase="negedge_after_prepare_before_sample", handshake_phase="posedge_before_NBA", ck_ps=1250
+            sample_phase="negedge_after_prepare_before_sample",
+            return_source="memory_output_after_prepare",
+            handshake_phase="posedge_before_NBA",
+            ck_ps=1250,
         )
         self.records = []
         for c in range(2):
@@ -102,6 +105,19 @@ class PhaseTests(unittest.TestCase):
             mutant[1][field] = 1
             with self.assertRaisesRegex(Violation, "raw buses"):
                 qualify_phases(mutant, self.header)
+
+    def test_return_preparation_origin_required(self):
+        for origin in (None, "integration_net_in_prepare_delta"):
+            with self.assertRaisesRegex(Violation, "unqualified"):
+                qualify_phases(self.records, self.header | {"return_source": origin})
+
+    def test_prior_delta_return_cannot_match_receiver(self):
+        # The failed first run sampled the prior integration-net return in
+        # the prepare delta, while the receiver got newly prepared valid data.
+        mutant = copy.deepcopy(self.records)
+        mutant[1]["return"] = "0x300000000"
+        with self.assertRaisesRegex(Violation, "raw buses"):
+            qualify_phases(mutant, self.header)
 
     def test_missing_ck_and_wrong_phase(self):
         with self.assertRaisesRegex(Violation, "missing CK"):
@@ -149,7 +165,10 @@ class ComposedAdapterTests(unittest.TestCase):
             qualify_phases(
                 records,
                 dict(
-                    sample_phase="negedge_after_prepare_before_sample", handshake_phase="posedge_before_NBA", ck_ps=1250
+                    sample_phase="negedge_after_prepare_before_sample",
+                    return_source="memory_output_after_prepare",
+                    handshake_phase="posedge_before_NBA",
+                    ck_ps=1250,
                 ),
             ),
             len(f.frames),

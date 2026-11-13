@@ -108,6 +108,7 @@ def remaining_budget(p):
 def qualify_phases(records, header):
     require(
         header.get("sample_phase") == "negedge_after_prepare_before_sample"
+        and header.get("return_source") == "memory_output_after_prepare"
         and header.get("handshake_phase") == "posedge_before_NBA"
         and header["ck_ps"] == 1250,
         "unqualified wrapper observation phases",
@@ -499,7 +500,7 @@ def check(wrapper_path, source_path):
     source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
     header, p = records[0], profile_binding()
     require(
-        header["kind"] == "header" and header["version"] == 1 and header["profile_sha256"] == digest(p),
+        header["kind"] == "header" and header["version"] == 2 and header["profile_sha256"] == digest(p),
         "wrapper profile binding",
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")

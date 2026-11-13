@@ -33,7 +33,7 @@ initial begin
     check($value$plusargs("wrapper_observations=%s",wm_path),"missing wrapper stream");
     check($value$plusargs("wrapper_profile_sha256=%s",wm_profile_sha),"missing wrapper profile digest");
     wm_stream=$fopen(wm_path,"w");check(wm_stream!=0,"wrapper stream open");
-    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":5,\"maintenance_phase\":\"falling_and_rising_before_NBA\",\"host_phase\":\"posedge_before_NBA_next_edge_counter\",\"host_reset_phase\":\"negedge_core_reset_before_NBA\",\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
+    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":6,\"recovery_phase\":\"registered_reset_next_rising_then_falling_v1\",\"maintenance_phase\":\"falling_and_rising_before_NBA\",\"host_phase\":\"posedge_before_NBA_next_edge_counter\",\"host_reset_phase\":\"negedge_core_reset_before_NBA\",\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
   end
 end
 task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepared_return);
@@ -64,14 +64,15 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       if(status_value[c].config_valid)
         assert(dut.datapath.channels[c].channel.active.profile==qualified[0])
           else $fatal(1,"wrapper active profile differs from bound image");
-      $fdisplay(wm_stream,"{\"kind\":\"sample\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"memory_reset\":%0d,\"destructive\":%0d,\"confirmed\":%0d,\"reset_request\":%0d,\"settled\":%0d,\"enabled\":%0d,\"host_fault\":%0d,\"fault\":%0d,\"trusted\":%0d,\"owner\":%0d,\"boot\":%0d,\"config\":%0d,\"config_valid\":%0d,\"trained\":%0d,\"training_epoch\":%0d,\"state\":%0d,\"drained\":%0d,\"pin_drained\":%0d,\"ecc_drained\":%0d,\"data_committed\":%0d,\"admission\":%0d,\"phy_update\":%0d,\"master\":%0d,\"rank_valid\":%0d,\"rank_sr\":%0d,\"refresh_request\":%0d,\"refresh_done\":%0d,\"phyupd_req\":%0d,\"phymstr_req\":%0d,\"phyupd_type\":%0d,\"phymstr_type\":%0d,\"phymstr_cs_state\":%0d,\"phymstr_state_sel\":%0d,\"error\":%0d,\"mr4\":%0d,\"mr43\":%0d,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\",\"profile_image\":\"0x%h\"}",
+      $fdisplay(wm_stream,"{\"kind\":\"sample\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"memory_reset\":%0d,\"destructive\":%0d,\"confirmed\":%0d,\"reset_request\":%0d,\"settled\":%0d,\"enabled\":%0d,\"host_fault\":%0d,\"fault\":%0d,\"trusted\":%0d,\"owner\":%0d,\"boot\":%0d,\"config\":%0d,\"config_valid\":%0d,\"trained\":%0d,\"training_epoch\":%0d,\"state\":%0d,\"drained\":%0d,\"pin_drained\":%0d,\"ecc_drained\":%0d,\"data_committed\":%0d,\"admission\":%0d,\"phy_update\":%0d,\"master\":%0d,\"rank_valid\":%0d,\"rank_sr\":%0d,\"refresh_request\":%0d,\"refresh_done\":%0d,\"phyupd_req\":%0d,\"phymstr_req\":%0d,\"phyupd_type\":%0d,\"phymstr_type\":%0d,\"phymstr_cs_state\":%0d,\"phymstr_state_sel\":%0d,\"error\":%0d,\"mr4\":%0d,\"mr43\":%0d,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\",\"profile_image\":\"0x%h\",\"prepared_valid\":%0d,\"train_request\":%0d,\"issue\":%0d,\"reset_authorized\":%0d,\"recover_command\":%0d}",
         observer.timestamp_ps(),c,wm_tick[c],rst_n,memory_reset,dut.datapath.channels[c].channel.destructive_reset,reset_confirmed[c],
         reset_request,settled,enable,host_fault,status_value[c].fault,status_value[c].memory_trusted,status_value[c].owner,
         status_value[c].boot_epoch,status_value[c].config_epoch,status_value[c].config_valid,status_value[c].train_done,management[c].training_epoch,status_value[c].state,status_value[c].drained,
         status_value[c].pin_drained,status_value[c].ecc_drained,dut.datapath.channels[c].channel.inline_ecc.data_committed_q,dut.datapath.channels[c].channel.admission,management_out[c].phyupd_ack,management_out[c].phymstr_ack,report_valid[c],
         report_sr[c],management_out[c].refresh_request,phy_refresh_done[c],management[c].phyupd_req,management[c].phymstr_req,management[c].phyupd_type,management[c].phymstr_type,
         management[c].phymstr_cs_state,management[c].phymstr_state_sel,management[c].error,mr4_value[c],8'd0,ca[c].cs,ca[c].address,
-        wck[c],writes[c],reads[c],prepared_return,qualified[0]);
+        wck[c],writes[c],reads[c],prepared_return,qualified[0],
+      dut.datapath.channels[c].channel.prepared_valid_o,status_value[c].train_request,dut.datapath.channels[c].channel.issue_enable,dut.datapath.channels[c].channel.reset_confirmed_i,(dut.datapath.channels[c].channel.command_valid_i && dut.datapath.channels[c].channel.command_i==CH_CMD_RECOVER));
       observe_commands();
       snapshot("window_sample",wm_tick[c]);
       wm_tick[c]++;
@@ -97,12 +98,13 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       observer.timestamp_ps(),c,wm_tick[c]-1,ca[c].cs,ca[c].address,wck[c],writes[c],reads[c],returns[c]);
     // Live rising-edge inputs and registered outputs, read before NBA.
     // This separate record must never be synthesized from the falling record.
-    $fdisplay(wm_stream,"{\"kind\":\"management_edge\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"memory_reset\":%0d,\"destructive\":%0d,\"fault\":%0d,\"owner\":%0d,\"state\":%0d,\"settled\":%0d,\"drained\":%0d,\"pin_drained\":%0d,\"ecc_drained\":%0d,\"phy_update\":%0d,\"master\":%0d,\"phyupd_req\":%0d,\"phymstr_req\":%0d,\"phyupd_type\":%0d,\"phymstr_type\":%0d,\"phymstr_cs_state\":%0d,\"phymstr_state_sel\":%0d,\"rank_valid\":%0d,\"rank_sr\":%0d,\"refresh_request\":%0d,\"refresh_done\":%0d,\"boot\":%0d,\"config\":%0d}",
+    $fdisplay(wm_stream,"{\"kind\":\"management_edge\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"memory_reset\":%0d,\"destructive\":%0d,\"fault\":%0d,\"owner\":%0d,\"state\":%0d,\"settled\":%0d,\"drained\":%0d,\"pin_drained\":%0d,\"ecc_drained\":%0d,\"phy_update\":%0d,\"master\":%0d,\"phyupd_req\":%0d,\"phymstr_req\":%0d,\"phyupd_type\":%0d,\"phymstr_type\":%0d,\"phymstr_cs_state\":%0d,\"phymstr_state_sel\":%0d,\"rank_valid\":%0d,\"rank_sr\":%0d,\"refresh_request\":%0d,\"refresh_done\":%0d,\"boot\":%0d,\"config\":%0d,\"prepared_valid\":%0d,\"train_request\":%0d,\"issue\":%0d,\"reset_authorized\":%0d,\"recover_command\":%0d,\"config_valid\":%0d,\"trained\":%0d,\"trusted\":%0d,\"enabled\":%0d,\"admission\":%0d,\"confirmed\":%0d,\"reset_request\":%0d,\"training_epoch\":%0d}",
       observer.timestamp_ps(),c,wm_tick[c]-1,rst_n,memory_reset,dut.datapath.channels[c].channel.destructive_reset,status_value[c].fault,status_value[c].owner,
       status_value[c].state,settled,status_value[c].drained,status_value[c].pin_drained,status_value[c].ecc_drained,
       management_out[c].phyupd_ack,management_out[c].phymstr_ack,management[c].phyupd_req,management[c].phymstr_req,management[c].phyupd_type,
       management[c].phymstr_type,management[c].phymstr_cs_state,management[c].phymstr_state_sel,report_valid[c],report_sr[c],
-      management_out[c].refresh_request,phy_refresh_done[c],status_value[c].boot_epoch,status_value[c].config_epoch);
+      management_out[c].refresh_request,phy_refresh_done[c],status_value[c].boot_epoch,status_value[c].config_epoch,
+      dut.datapath.channels[c].channel.prepared_valid_o,status_value[c].train_request,dut.datapath.channels[c].channel.issue_enable,dut.datapath.channels[c].channel.reset_confirmed_i,(dut.datapath.channels[c].channel.command_valid_i && dut.datapath.channels[c].channel.command_i==CH_CMD_RECOVER),status_value[c].config_valid,status_value[c].train_done,status_value[c].memory_trusted,enable,dut.datapath.channels[c].channel.admission,reset_confirmed[c],reset_request,management[c].training_epoch);
     snapshot("window_edge",wm_tick[c]-1);
     if(rst_n && !dut.datapath.channels[c].channel.destructive_reset && dut.datapath.channels[c].channel.active.inline_ecc) begin
       if(dut.datapath.channels[c].channel.inline_ecc.request_valid_i && dut.datapath.channels[c].channel.inline_ready)

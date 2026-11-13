@@ -25,6 +25,7 @@ from wrapper_management_host_test import completion as host_completion
 from wrapper_management_host_test import edge as host_edge
 from wrapper_management_host_test import request as host_request
 from wrapper_management_host_test import row as host_row
+from wrapper_recovery import RECOVERY_PHASE
 
 
 def sample(**changes):
@@ -49,6 +50,11 @@ def sample(**changes):
         config_valid=1,
         trained=1,
         training_epoch=0,
+        prepared_valid=0,
+        train_request=0,
+        issue=0,
+        reset_authorized=0,
+        recover_command=0,
         state=1,
         drained=1,
         pin_drained=1,
@@ -119,7 +125,8 @@ def entered(master=False):
 class PhaseTests(unittest.TestCase):
     def setUp(self):
         self.header = dict(
-            version=5,
+            version=6,
+            recovery_phase=RECOVERY_PHASE,
             maintenance_phase="falling_and_rising_before_NBA",
             host_phase="posedge_before_NBA_next_edge_counter",
             host_reset_phase="negedge_core_reset_before_NBA",
@@ -477,37 +484,38 @@ class AddressTests(unittest.TestCase):
 
 class ComposedAdapterTests(unittest.TestCase):
     def test_both_channel_recoveries_require_fresh_confirmation_in_current_case(self):
+        from wrapper_management_recovery_test import fixture
+
         r = Run(profile_binding())
         r.marker(dict(name="begin", case=1, failed=1, ps=0))
-        for channel in range(2):
-            # Isolate recovery observation from physical traffic. These are
-            # synthetic samples, not an execution of destructive recovery.
-            fields = dict(channel=channel, reset_n=0, trusted=0, config_valid=0, trained=0)
-            for tick, changes in enumerate(
-                (
-                    dict(reset_request=1, confirmed=0),
-                    dict(reset_request=1, confirmed=1),
-                    dict(destructive=1, confirmed=1),
-                )
-            ):
-                e = sample(ps=1250 + tick * 1250, tick=tick, **changes, **fields)
-                r.sample(e)
-                r.event(witness(e))
+        for row in fixture():
+            if row["ps"] >= 6000:
+                break
+            if row["kind"] == "sample":
+                # Synthetic phase composition only; coupled RTL is separate.
+                r.sample(sample(**(row | dict(reset_n=0))))
+            elif row["kind"] == "management_edge":
+                s = r.last[row["channel"]]
+                r.event(witness(s, **row))
         self.assertEqual(r.recovery_channels, {0, 1})
-        self.assertFalse(any(r.confirmation_low + r.confirmation_high))
+        self.assertFalse(any(r.recovery.low + r.recovery.high))
 
     def test_old_or_unrequested_confirmation_cannot_prove_channel_recovery(self):
+        from wrapper_management_recovery_test import fixture
+
         for channel in range(2):
             r = Run(profile_binding())
-            r.confirmation_low = r.confirmation_high = [True, True]
+            r.recovery.low = r.recovery.high = [True, True]
             r.marker(dict(name="begin", case=1, failed=1, ps=0))
-            fields = dict(channel=channel, reset_n=0, trusted=0, config_valid=0, trained=0)
-            for tick, confirmed in enumerate((0, 1)):
-                e = sample(ps=1250 + tick * 1250, tick=tick, confirmed=confirmed, **fields)
-                r.sample(e)
-                r.event(witness(e))
-            with self.subTest(channel=channel), self.assertRaisesRegex(Violation, "fresh confirmation"):
-                r.sample(sample(ps=3750, tick=2, destructive=1, **fields))
+            with self.subTest(channel=channel), self.assertRaisesRegex(Violation, "unconfirmed"):
+                for row in fixture():
+                    if row.get("channel") != channel or row["ps"] >= 6000:
+                        continue
+                    row = row | dict(reset_request=0, reset_authorized=0)
+                    if row["kind"] == "sample":
+                        r.sample(sample(**(row | dict(reset_n=0))))
+                    else:
+                        r.event(witness(r.last[channel], **row))
 
     def test_populated_pin_phase_owner_and_source_bridge(self):
         # Reuse the reviewed independent CA/PHY generator, assigning the new
@@ -572,7 +580,8 @@ class ComposedAdapterTests(unittest.TestCase):
             qualify_phases(
                 records,
                 dict(
-                    version=5,
+                    version=6,
+                    recovery_phase=RECOVERY_PHASE,
                     maintenance_phase="falling_and_rising_before_NBA",
                     host_phase="posedge_before_NBA_next_edge_counter",
                     host_reset_phase="negedge_core_reset_before_NBA",

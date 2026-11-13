@@ -18,6 +18,7 @@ from host_completions import HOST_FIELDS, HostCompletions
 from maintenance_window import WINDOW_FIELDS, MaintenanceWindow, window_budget
 from system.host import Address, HostScoreboard, require
 from system.trace import number
+from wrapper_recovery import RECOVERY_FIELDS, RECOVERY_PHASE, RECOVERY_REGISTERED, RecoveryConsumption
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "channel"))
 from physical_stream import PhysicalStream  # noqa: E402
@@ -178,8 +179,8 @@ def final_tail_budget(p, page_idle=256):
 MANAGEMENT_FIELDS = (
     "reset_n memory_reset destructive fault owner state settled drained pin_drained ecc_drained "
     "phy_update master phyupd_req phymstr_req phyupd_type phymstr_type phymstr_cs_state "
-    "phymstr_state_sel rank_valid rank_sr refresh_request refresh_done boot config"
-).split()
+    "phymstr_state_sel rank_valid rank_sr refresh_request refresh_done boot config training_epoch"
+).split() + [k for k in RECOVERY_FIELDS if k not in ("boot", "config", "destructive")]
 REGISTERED_FIELDS = "phy_update master owner state".split()
 
 
@@ -285,7 +286,8 @@ def qualify_phases(records, header):
         and header.get("return_source") == "memory_output_after_prepare"
         and header.get("handshake_phase") == "posedge_before_NBA"
         and header.get("management_phase") == "posedge_before_NBA"
-        and header.get("version") == 5
+        and header.get("version") == 6
+        and header.get("recovery_phase") == RECOVERY_PHASE
         and header.get("maintenance_phase") == "falling_and_rising_before_NBA"
         and header.get("host_phase") == "posedge_before_NBA_next_edge_counter"
         and header.get("host_reset_phase") == "negedge_core_reset_before_NBA"
@@ -307,7 +309,7 @@ def qualify_phases(records, header):
         e, m = edges[key], management[key]
         require(m["ps"] == e["ps"], "management edge timestamp displacement")
         require(all(k in m for k in MANAGEMENT_FIELDS), "incomplete management witness")
-        require(all(m[k] == s[k] for k in REGISTERED_FIELDS), "management edge output binding")
+        require(all(m[k] == s[k] for k in REGISTERED_FIELDS + RECOVERY_REGISTERED), "management edge output binding")
         require(e["ps"] - s["ps"] == header["ck_ps"] // 2, "memory/handshake phase displacement")
         require(all(number(e[k]) == number(s[k]) for k in BUSES), "raw buses changed across qualified phase")
         if key[1]:
@@ -489,15 +491,12 @@ class Run:
         self.case = None
         self.cases = []
         self.management = [ManagementWitness(), ManagementWitness()]
-        self.reset_low = False
-        self.reset_high = False
         self.boot = 0
         self.profile_image = None
         self.closure_edges = defaultdict(int)
         self.host_completions = HostCompletions()
         self.recovery_channels = set()
-        self.confirmation_low = [False, False]
-        self.confirmation_high = [False, False]
+        self.recovery = RecoveryConsumption(ck_ps=p["ck_ps"])
         self.window = MaintenanceWindow(p)
 
     def marker(self, e):
@@ -507,12 +506,12 @@ class Run:
             self.case = dict(id=e["case"], failed=e["failed"], begin=e["ps"], entries=0, reset=False, fresh=False)
             self.host_completions.begin(e["case"], e["failed"])
             self.recovery_channels.clear()
-            self.confirmation_low = [False, False]
-            self.confirmation_high = [False, False]
+            self.recovery.begin()
         elif name == "maintenance_ready":
             require(self.case is not None and "readiness" not in self.case, "duplicate/outside-case readiness")
             self.case["readiness"] = self.window.begin(e["ps"], self.physical, self.source.settled())
         elif name == "recovery_baseline":
+            self.recovery.require_complete()
             self.host_completions.baseline(e, self.last, self.source.settled(), self.recovery_channels)
             self.case["baseline_ps"] = e["ps"]
         elif name == "request":
@@ -540,7 +539,7 @@ class Run:
             self.source.host.fail()
         elif name == "stale_confirmation_rejected":
             require(
-                self.source.settled() and self.last[0]["reset_request"] and self.last[0]["boot"] == self.boot,
+                self.source.settled() and all(s and s["reset_request"] and s["boot"] == self.boot for s in self.last),
                 "stale recovery accepted",
             )
             self.case["stale_rejected"] = True
@@ -549,9 +548,7 @@ class Run:
             require(
                 self.source.settled()
                 and not self.source.host.faulted
-                and self.last[0]["trusted"]
-                and self.last[0]["trained"]
-                and self.last[0]["config_valid"],
+                and all(s and s["enabled"] and s["trusted"] and s["trained"] and s["config_valid"] for s in self.last),
                 "fresh service lacks settlement/trust",
             )
             self.case["fresh"] = True
@@ -581,6 +578,7 @@ class Run:
             )
             require(c["entries"] == (0 if c["failed"] else 1), "missing or premature ownership outcome")
             require(not c["failed"] or c["reset"] and c.get("stale_rejected"), "missing confirmed recovery")
+            require(not c["failed"] or self.recovery_channels == {0, 1}, "missing both-channel recovery tail")
             require(c["failed"] or "ack_ps" in c and c.get("handback"), "missing ACK/withdrawal/handback")
             require(all(c.get("closed", {}).get(p, 0) > 0 for p in range(2)), "missing source closure observations")
             require(all(c["closure_probes"][p] > 0 for p in range(2)), "missing active AW/AR closure probes")
@@ -600,22 +598,9 @@ class Run:
             self.profile_image = e["profile_image"]
         require(e["profile_image"] == self.profile_image, "unbound profile mutation")
         c = self.case
-        if e["reset_request"] and not e["confirmed"]:
-            self.confirmation_low[channel] = True
-        if self.confirmation_low[channel] and e["confirmed"]:
-            self.confirmation_high[channel] = True
-        if e["destructive"] and not (old and old["destructive"]):
-            require(
-                self.source.settled() and self.confirmation_low[channel] and self.confirmation_high[channel],
-                "channel destructive recovery lacks fresh confirmation/source settlement",
-            )
-            self.recovery_channels.add(channel)
-            self.confirmation_low[channel] = self.confirmation_high[channel] = False
+        transition = self.recovery.sample(e, self.source.settled(), bool(c and c["failed"]))
+        self.recovery_channels = self.recovery.completed
         if channel == 0:
-            if not e["confirmed"]:
-                self.reset_low = True
-            if self.reset_low and e["confirmed"]:
-                self.reset_high = True
             # While admission is open the remote empty reduction may still
             # describe the edge before a new source acceptance crosses CDC.
             # It cannot authorize management entry: entry always checks the
@@ -624,11 +609,7 @@ class Run:
                 require(self.source.settled(), "internal settlement before actual W/R/B ledger")
             if e["reset_request"]:
                 require(self.source.settled(), "destructive recovery before source settlement")
-            if e["destructive"] and not (old and old["destructive"]):
-                require(
-                    self.source.settled() and self.reset_low and self.reset_high,
-                    "unconfirmed/stale destructive recovery",
-                )
+            if transition:
                 self.source.retired_epochs.append(
                     [
                         dict(
@@ -649,18 +630,10 @@ class Run:
                 )
                 self.source.host.reset(destructive=True)
                 self.source.tags.clear()
-                self.reset_low = self.reset_high = False
                 require(c and c["failed"], "unexpected destructive recovery")
                 c["reset"] = True
-            if old and e["boot"] != old["boot"]:
-                require(c and c["reset"] and e["boot"] == self.boot + 1, "stale boot recovery")
+            if transition:
                 self.boot = e["boot"]
-                require(
-                    not e["config_valid"] and not e["trained"] and not e["enabled"],
-                    "stale recovery configuration/training",
-                )
-            if e["trusted"]:
-                require(e["trained"] and e["config_valid"] and e["training_epoch"] == e["boot"], "stale trusted epoch")
         reset = not e["reset_n"] or e["memory_reset"] or e["destructive"]
         if reset:
             self.window.observe(e, None)
@@ -770,6 +743,7 @@ class Run:
         elif kind == "sample":
             self.sample(e)
         elif kind == "management_edge":
+            self.recovery.consume(e, self.source.settled())
             self.management[e["channel"]].consume(e)
         elif kind == "window_edge":
             self.window.diagnostic(e)
@@ -813,6 +787,7 @@ class Run:
         require(not self.addresses.held and not self.addresses.offers, "unconsumed pending address tail")
         require(all(c["entries"] == (not c["failed"]) for c in self.cases), "missing management entries")
         return dict(
+            recovery_consumptions=self.recovery.finish(),
             cases=self.cases,
             source=dict(self.source.counts),
             retired_epochs=self.source.retired_epochs,
@@ -849,7 +824,7 @@ def check(wrapper_path, source_path):
     source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
     header, p = records[0], profile_binding()
     require(
-        header["kind"] == "header" and header["version"] == 5 and header["profile_sha256"] == digest(p),
+        header["kind"] == "header" and header["version"] == 6 and header["profile_sha256"] == digest(p),
         "wrapper profile binding",
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")

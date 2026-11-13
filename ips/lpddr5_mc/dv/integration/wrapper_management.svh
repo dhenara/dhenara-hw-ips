@@ -3,6 +3,7 @@
 int wm_case=-1,wm_boot=0;
 bit wm_failed=0;
 bit [1:0] wm_probe_accepted=0;
+bit [1:0] wm_probe_pending=0;
 
 // Hold both legal address requests after the crossing closes admission. They
 // remain asserted through handback/recovery and complete normally on return.
@@ -21,6 +22,7 @@ task automatic wm_finish_probes(input int id);
     @(negedge clk);if(&wm_probe_accepted) break;
   end
   check(&wm_probe_accepted,"both address probes accepted after return");
+  wm_mark("probes_accepted");
   for(int p=0;p<2;p++) begin
     inline_payload(p,512+128*p,8'(id+2*p));
     read_result(p,16'(id+2*p+1),576+128*p,4);
@@ -95,7 +97,7 @@ task automatic wm_case_run(input int kind,input bit failed);
   wm_mark("request");
   if(kind==0) begin management[0].phyupd_type=0;management[0].phyupd_req=1;end
   else begin management[0].phymstr_type=0;management[0].phymstr_cs_state=1;management[0].phymstr_state_sel=0;management[0].phymstr_req=1;end
-  wm_probe_accepted=0;
+  wm_probe_accepted=0;wm_probe_pending=0;
   fork
     begin wm_probe(0,base_id+12);end
     begin wm_probe(1,base_id+14);end
@@ -113,6 +115,7 @@ task automatic wm_case_run(input int kind,input bit failed);
     drive_bready(1);
     for(int n=0;n<1000;n++) begin @(negedge clk);if(b_count[0]==prior0+2 && b_count[1]==prior1+1 && settled) break;end
     check(b_count[0]==prior0+2 && b_count[1]==prior1+1 && settled,"all W/R/B settled after fatal");
+    check(&wm_probe_pending,"both source probes pending before recovery");
     wm_mark("source_settled");
     for(int n=0;n<100;n++) begin @(negedge clk);if(reset_request) break;end
     check(reset_request,"settlement permits reset request");
@@ -139,6 +142,7 @@ task automatic wm_case_run(input int kind,input bit failed);
     end
     check(kind==0 ? management_out[0].phyupd_ack : management_out[0].phymstr_ack,"actual unsolicited ACK");
     check(settled && b_count[0]==prior0+1 && b_count[1]==prior1+1,"ACK after actual source settlement");
+    check(&wm_probe_pending,"both source probes pending before handback");
     wm_mark("ack");
     if(kind==0) begin repeat(4) @(negedge clk);management[0].phyupd_req=0;end
     else begin

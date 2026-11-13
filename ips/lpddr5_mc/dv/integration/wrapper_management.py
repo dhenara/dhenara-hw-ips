@@ -216,9 +216,47 @@ class Source:
             require(actual == b"".join(v.to_bytes(16, "little") for v in t.read_data), "returned original/source bytes")
 
 
+class Addresses:
+    """Bind stalled packed descriptors to independent source-edge admissions."""
+
+    def __init__(self):
+        self.held = {}
+        self.offers = {}
+        self.seen = set()
+
+    def sample(self, e, flags):
+        key = e["port"], e["ps"]
+        require(key not in self.seen and flags is not None and flags["ps"] == e["ps"], "address/source edge coverage")
+        self.seen.add(key)
+        for kind, vbit, rbit in (("aw", 9, 8), ("ar", 7, 6)):
+            valid, ready = e[kind + "valid"], e[kind + "ready"]
+            require(
+                valid == (flags["flags"] >> vbit & 1) and ready == (flags["flags"] >> rbit & 1),
+                "address/source VALID/READY mismatch",
+            )
+            identity = number(e[kind + "_bits"]), e[kind + "_id"], number(e[kind + "_address"])
+            owner = e["port"], kind
+            require(
+                owner not in self.held or valid and self.held[owner] == identity, "pending address withdrawn/changed"
+            )
+            if valid and not ready:
+                self.held[owner] = identity
+            else:
+                self.held.pop(owner, None)
+            if valid and ready:
+                self.offers[e["port"], kind, e["ps"]] = identity
+
+    def accept(self, e):
+        value = self.offers.pop((e["port"], e["kind"], e["ps"]), None)
+        require(
+            value is not None and value[1:] == (e["id"], number(e["address"])), "unbound/duplicate address handshake"
+        )
+
+
 class Run:
     def __init__(self, p):
         self.p = p
+        self.addresses = Addresses()
         self.source = Source()
         self.physical = [None, None]
         self.inline = [InlineDrain(), InlineDrain()]
@@ -278,6 +316,16 @@ class Run:
                 "fresh service lacks settlement/trust",
             )
             self.case["fresh"] = True
+        elif name == "probes_accepted":
+            require(
+                all(
+                    self.case.get("probe_handshakes", {}).get(f"{p}{kind}") == 1
+                    for p in range(2)
+                    for kind in ("aw", "ar")
+                ),
+                "probe W before exactly one renewed-service address handshake",
+            )
+            self.case["probes_accepted"] = True
         elif name == "end_case":
             c = self.case
             require(c["fresh"] and self.source.settled(), "missing fresh service/complete W/R/B tail")
@@ -286,6 +334,7 @@ class Run:
             require(c["failed"] or "ack_ps" in c and c.get("handback"), "missing ACK/withdrawal/handback")
             require(all(c.get("closed", {}).get(p, 0) > 0 for p in range(2)), "missing source closure observations")
             require(all(c["closure_probes"][p] > 0 for p in range(2)), "missing active AW/AR closure probes")
+            require(c.get("probes_accepted"), "missing actual probe admission before W")
             self.cases.append(c)
             self.case = None
 
@@ -433,7 +482,9 @@ class Run:
 
     def event(self, e):
         kind = e["kind"]
-        if kind in ("axi", "aw", "ar", "w", "b", "r"):
+        if kind == "address":
+            self.addresses.sample(e, self.source.flags.get(e["port"]))
+        elif kind in ("axi", "aw", "ar", "w", "b", "r"):
             c = self.case
             if c and "request" in c and not c.get("fresh") and kind == "axi" and e["ps"] >= c["request"]:
                 self.closure_edges[e["port"]] += 1
@@ -447,6 +498,21 @@ class Run:
                         probes[e["port"]] += 1
             if c and "request" in c and kind in ("aw", "ar") and not self.last[0]["enabled"]:
                 require(self.closure_edges[e["port"]] < 4, "new source admission after closure")
+            if kind in ("aw", "ar"):
+                self.addresses.accept(e)
+                if c and "request" in c and e["id"] == 20 + 20 * c["id"] + 12 + 2 * e["port"] + (kind == "ar"):
+                    require(
+                        self.last[0]["enabled"] and (c.get("handback") or c.get("reset")),
+                        "probe admission before renewed service",
+                    )
+                    counts = c.setdefault("probe_handshakes", {})
+                    key = f"{e['port']}{kind}"
+                    counts[key] = counts.get(key, 0) + 1
+                    require(counts[key] == 1, "duplicate probe admission")
+            if c and kind == "w" and self.source.host.aw[e["port"]]:
+                original = self.source.host.transactions[self.source.host.aw[e["port"]][0]].address
+                if original.id == 20 + 20 * c["id"] + 12 + 2 * e["port"]:
+                    require(c.get("probes_accepted"), "probe W before address admission witness")
             self.source.event(e)
         elif kind == "sample":
             self.sample(e)
@@ -478,6 +544,7 @@ class Run:
     def finish(self):
         require(self.case is None and [c["id"] for c in self.cases] == list(range(4)), "missing four-case wrapper tail")
         self.source.host.finish()
+        require(not self.addresses.held and not self.addresses.offers, "unconsumed pending address tail")
         require(all(c["entries"] == (not c["failed"]) for c in self.cases), "missing management entries")
         return dict(
             cases=self.cases,
@@ -505,19 +572,26 @@ def check(wrapper_path, source_path):
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")
     phases = qualify_phases(records[1:-1], header)
+    address_edges = [(e["port"], e["ps"]) for e in records if e["kind"] == "address"]
+    source_edges = [(e["port"], e["ps"]) for e in source if e["kind"] == "axi"]
+    require(
+        len(address_edges) == len(set(address_edges)) and set(address_edges) == set(source_edges),
+        "address/source edge coverage",
+    )
     # CK model samples before the later edge. All actual internal events carry
     # edge timestamps; source admission precedes owner acceptance at a tie.
     order = {
         "axi": 0,
-        "aw": 1,
-        "ar": 2,
-        "w": 3,
-        "inline_admit": 4,
-        "inline_physical": 5,
-        "inline_result": 6,
-        "inline_complete": 7,
-        "b": 8,
-        "r": 9,
+        "address": 1,
+        "aw": 2,
+        "ar": 3,
+        "w": 4,
+        "inline_admit": 5,
+        "inline_physical": 6,
+        "inline_result": 7,
+        "inline_complete": 8,
+        "b": 9,
+        "r": 10,
     }
     events = [e for e in records[1:-1] if e["kind"] != "edge"]
     events.extend(e for e in source[1:-1] if e["kind"] != "phy")
@@ -527,6 +601,7 @@ def check(wrapper_path, source_path):
         run.event(e)
     return run.finish() | {
         "phase_samples": phases,
+        "address_samples": len(address_edges),
         "raw_sha256": hashlib.sha256(Path(wrapper_path).read_bytes()).hexdigest(),
         "source_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest(),
     }

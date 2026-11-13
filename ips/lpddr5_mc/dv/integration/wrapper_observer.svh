@@ -23,6 +23,21 @@ task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepa
     else wm_observers[1].sample_pins(prepared_return);
   end
 endtask
+for(genvar p=0;p<PORTS;p++) begin : wm_sources
+  initial forever begin
+    @(posedge axi_clk[p]);
+    if(wm_stream!=0 && observe_traffic && monitor_rst_n[p] && !finish_observations) begin
+    $fdisplay(wm_stream,"{\"kind\":\"address\",\"ps\":%0d,\"port\":%0d,\"awvalid\":%0d,\"awready\":%0d,\"arvalid\":%0d,\"arready\":%0d,\"aw_bits\":\"0x%h\",\"ar_bits\":\"0x%h\",\"aw_id\":%0d,\"ar_id\":%0d,\"aw_address\":\"0x%h\",\"ar_address\":\"0x%h\"}",
+      observer.timestamp_ps(),p,awvalid[p],awready[p],arvalid[p],arready[p],aw[p],ar[p],aw[p].id,ar[p].id,aw[p].address,ar[p].address);
+    if(wm_case>=0 && (management[0].phyupd_req || management[0].phymstr_req) && !enable
+        && awvalid[p] && arvalid[p] && !awready[p] && !arready[p]) wm_probe_pending[p]=1;
+    end
+  end
+  assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p] || !WRAPPER_MANAGEMENT)
+    awvalid[p]&&!awready[p] |=> awvalid[p]&&$stable(aw[p]));
+  assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p] || !WRAPPER_MANAGEMENT)
+    arvalid[p]&&!arready[p] |=> arvalid[p]&&$stable(ar[p]));
+end
 for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
   task automatic sample_pins(input lpddr5_mc_return4_t prepared_return);
     if(wm_stream!=0 && !finish_observations) begin

@@ -4,7 +4,7 @@ import copy
 import unittest
 
 from system.host import Address, Violation
-from wrapper_management import BUSES, Run, Source, profile_binding, qualify_phases, remaining_budget
+from wrapper_management import Addresses, BUSES, Run, Source, profile_binding, qualify_phases, remaining_budget
 
 
 def sample(**changes):
@@ -124,6 +124,57 @@ class PhaseTests(unittest.TestCase):
             qualify_phases(self.records[:2] + self.records[4:], self.header)
         with self.assertRaisesRegex(Violation, "unqualified"):
             qualify_phases(self.records, self.header | {"sample_phase": "posedge"})
+
+
+class AddressTests(unittest.TestCase):
+    def sample(self, ready=0, **changes):
+        e = dict(kind="address", ps=100, port=0)
+        for kind in ("aw", "ar"):
+            e.update(
+                {kind + "valid": 1, kind + "ready": ready, kind + "_bits": 17, kind + "_id": 32, kind + "_address": 512}
+            )
+        return e | changes
+
+    def flags(self, e):
+        return dict(
+            ps=e["ps"], flags=(e["awvalid"] << 9) | (e["awready"] << 8) | (e["arvalid"] << 7) | (e["arready"] << 6)
+        )
+
+    def test_stable_pending_then_exactly_one_admission(self):
+        a = Addresses()
+        for ps in (100, 200):
+            e = self.sample(ps=ps)
+            a.sample(e, self.flags(e))
+        e = self.sample(ready=1, ps=300)
+        a.sample(e, self.flags(e))
+        for kind in ("aw", "ar"):
+            a.accept(dict(kind=kind, port=0, ps=300, id=32, address=512))
+        self.assertFalse(a.held or a.offers)
+        with self.assertRaisesRegex(Violation, "duplicate"):
+            a.accept(dict(kind="aw", port=0, ps=300, id=32, address=512))
+
+    def test_pending_withdrawal_or_any_packed_change_rejects(self):
+        for changes in ({"awvalid": 0}, {"aw_bits": 18}, {"ar_bits": 18}):
+            a = Addresses()
+            e = self.sample()
+            a.sample(e, self.flags(e))
+            e = self.sample(ps=200, **changes)
+            with self.assertRaisesRegex(Violation, "withdrawn/changed"):
+                a.sample(e, self.flags(e))
+
+    def test_missing_or_mismatched_source_edge_rejects(self):
+        for flags in (None, dict(ps=99, flags=640), dict(ps=100, flags=0)):
+            with self.assertRaises(Violation):
+                Addresses().sample(self.sample(), flags)
+
+    def test_probe_w_requires_all_address_handshakes(self):
+        r = Run(profile_binding())
+        r.case = dict(id=0, probe_handshakes={"0aw": 1})
+        with self.assertRaisesRegex(Violation, "exactly one"):
+            r.marker(dict(name="probes_accepted"))
+        r.case["probe_handshakes"] = {f"{p}{kind}": 1 for p in range(2) for kind in ("aw", "ar")}
+        r.marker(dict(name="probes_accepted"))
+        self.assertTrue(r.case["probes_accepted"])
 
 
 class ComposedAdapterTests(unittest.TestCase):

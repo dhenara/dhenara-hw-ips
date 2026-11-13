@@ -16,6 +16,7 @@ class WckObservations:
         self.ck = 2 * self.ratio
         self.last_ck = -1
         self.last_disabled = -1
+        self.last_off = None
         self.epoch = None
         self.epochs = self.accesses = self.samples = self.disabled = 0
 
@@ -53,11 +54,18 @@ class WckObservations:
                 ws = ck * self.ck + self.p["phy_half_wck"]["command"]
                 require(ws >= e["post"], "WCK WS_OFF before physical postamble")
                 e["off"] = ws
+                self.last_off = ws
             else:
                 require(op.operand in (1, 2) and e is None, "WCK synchronization before full disable")
                 direction = "write" if op.operand == 1 else "read"
                 origin = ck * self.ck + self.p["phy_half_wck"]["command"]
                 require(origin >= self.last_disabled, "WCK fresh CAS precedes final phase disable")
+                # JESD209-5C Table 363: WS_OFF to a fresh sync is >=3 CK,
+                # independently of serialized clock/rank release.
+                require(
+                    self.last_off is None or origin >= self.last_off + 3 * self.ck,
+                    "WCK fresh CAS before WS_OFF command recovery",
+                )
                 # JEDEC Tables 204/205/208/209, independently transcribed in
                 # the accepted waveform oracle. Static preamble is four CK,
                 # followed by one CK of half-rate toggling.

@@ -105,24 +105,203 @@ def remaining_budget(p):
     )
 
 
+def final_tail_budget(p, page_idle=256):
+    """Conservative continuous non-drain interval for this idle two-channel fixture.
+
+    After fresh_service all W/R/B and inline completions have retired. Keep
+    a full BL32 physical/recovery allowance, every bank's idle PRE, WCK
+    disable, and a carry-in plus newly arriving REF, one RFM, MR4 and ZQ per
+    channel. No new ACT debt is generated while idle. Summing both channels
+    bounds staggered tails, even though their owners run concurrently.
+
+    At thermal code9, REFab interval is3124CK and MR4/ZQ period3000CK.
+    Prove the sum shorter than the early poll lead window: a second newly
+    arriving group cannot extend this continuous busy interval. This is a
+    fixture bound, not a new profile or management response limit.
+    """
+    require(p["ranks"] == 1 and not p["always_on"] and page_idle > 0, "final tail fixture shape/page closure")
+    require(p["device"]["mr27"] == 69 and p["device"]["mr57"] == 3, "final tail RFM decrement/capability binding")
+    # MR27 permits at most4*IMT debt; MR57=3 removes4*IMT in one RFM.
+    r, t, d = p["ratio"], p["dram_ck"], p["dfi_wck"]
+
+    def ceil(n, unit=r):
+        return (n + unit - 1) // unit
+
+    disable = ceil(p["wck"]["twck_dis"])
+    physical = ceil(
+        p["phy_half_wck"]["command"]
+        + max(p["rl_ck"], p["wl_ck"]) * 2 * r
+        + max(p["phy_half_wck"]["dq_input"], p["phy_half_wck"]["dq_output"])
+        + 48
+        + 2 * p["wck"]["twck_toggle_post"],
+        2 * r,
+    )
+    # All16 banks, including a conservative full tRC/write recovery, close
+    # one at a time; no row/physical/ECC flag is substituted for quiescent.
+    residual = (
+        physical + max(t["trc"], t["twr"], t["tras_min"]) + page_idle + 16 * t["tppd"] + t["trp_ab"] + disable + 8
+    )
+    returned = ceil(d["trddata_en"] + 7 + d["tphy_rdlat"])
+    mrr_pin = ceil(
+        p["phy_half_wck"]["command"]
+        + p["rl_ck"] * 2 * r
+        + p["phy_half_wck"]["dq_output"]
+        + 16
+        + 2 * p["wck"]["twck_toggle_post"],
+        2 * r,
+    )
+    mr4 = max(returned, mrr_pin, t["tmrr"] + t["tmrw"]) + disable + 16
+    # Full recoveries even for carry-in work. Eight edges per command cover
+    # request selection, registered ownership/result and sample reductions.
+    maintenance = 2 * (t["trfc_ab"] + 8) + t["trfm_ab"] + 8 + mr4 + t["tzqlat"] + 8
+    total = 2 * (residual + maintenance) + 2
+    admission = max(
+        p["wl_ck"] + t["twr"] + 8 + t["trp_ab"] + t["trfc_ab"] + disable + 8,
+        t["tras_min"] + t["trp_ab"] + t["trfc_ab"] + 8,
+    )
+    poll_lead = 2 * admission + mr4  # includes one RFM before coalesced REF
+    renewal = min(t["trefi"] - admission, 3000 - poll_lead)
+    require(total < renewal, "final tail bound cannot exclude recurring maintenance")
+    require(total * p["ck_ps"] < 200_000_000, "final tail exceeds unchanged fixture deadline")
+    return dict(
+        page_idle_ck=page_idle,
+        residual_ck=residual,
+        mr4_ck=mr4,
+        maintenance_ck=maintenance,
+        total_ck=total,
+        renewal_floor_ck=renewal,
+    )
+
+
+MANAGEMENT_FIELDS = (
+    "reset_n memory_reset destructive fault owner state settled drained pin_drained ecc_drained "
+    "phy_update master phyupd_req phymstr_req phyupd_type phymstr_type phymstr_cs_state "
+    "phymstr_state_sel rank_valid rank_sr refresh_request refresh_done boot config"
+).split()
+REGISTERED_FIELDS = "phy_update master owner state".split()
+
+
+class ManagementWitness:
+    """DFI5.0 Table17 and4.15: sample request low, then register ACK low.
+
+    Falling samples observe the preceding NBA result. Rising observations
+    independently retain the request consumed by that NBA. Fault/disconnect
+    traces never establish a healthy return. Rank-report freshness is proved
+    using consumed rising samples, not a transient between clock edges.
+    """
+
+    def __init__(self):
+        self.edge = None
+        self.last_sample = None
+        self.low = self.fresh = False
+        self.releases = 0
+        self.request_fields = None
+        self.previous_edge = None
+
+    def sample(self, s):
+        old = self.edge
+        if self.last_sample is not None:
+            require(
+                old is not None and s["tick"] == old["tick"] + 1 and s["ps"] == old["ps"] + 625,
+                "missing management request-consumption edge",
+            )
+        released = False
+        healthy = old and all(
+            x["reset_n"] and not any(x[k] for k in ("memory_reset", "destructive", "fault")) for x in (old, s)
+        )
+        if healthy:
+            for ack, req in (("phy_update", "phyupd_req"), ("master", "phymstr_req")):
+                if old[ack]:
+                    require(s[ack] == old[req], "registered ACK release before withdrawal or missing release")
+                    if not s[ack]:
+                        if ack == "master":
+                            require(
+                                self.fresh
+                                and old["rank_valid"] == 1
+                                and old["rank_sr"] == 0
+                                and old["refresh_request"] == 0,
+                                "master handback lacks fresh sampled rank report/refresh settlement",
+                            )
+                        released = True
+                        self.releases += 1
+                elif s[ack]:
+                    require(
+                        old[req] and not old["phy_update"] and not old["master"], "ACK entry before sampled request"
+                    )
+                    require(
+                        all(old[k] for k in ("settled", "drained", "pin_drained", "ecc_drained")),
+                        "ACK entry before consumed drain",
+                    )
+        self.edge = None
+        self.last_sample = s
+        return released
+
+    def consume(self, e):
+        s = self.last_sample
+        require(
+            s is not None and self.edge is None and e["tick"] == s["tick"] and e["ps"] == s["ps"] + 625,
+            "wrong/duplicate/reordered management edge",
+        )
+        require(all(e[k] == s[k] for k in REGISTERED_FIELDS), "management outputs changed before consuming edge")
+        require(not (e["phy_update"] and e["master"]), "overlapping management ACKs")
+        if e["phyupd_req"] or e["phymstr_req"]:
+            fields = tuple(
+                e[k]
+                for k in (
+                    "phyupd_req",
+                    "phymstr_req",
+                    "phyupd_type",
+                    "phymstr_type",
+                    "phymstr_cs_state",
+                    "phymstr_state_sel",
+                )
+            )
+            require(
+                self.request_fields is None or fields == self.request_fields, "unstable consumed management request"
+            )
+            self.request_fields = fields
+        elif not (e["phy_update"] or e["master"]):
+            self.request_fields = None
+        self.edge = e
+        if e["master"] and not e["fault"]:
+            require(
+                not e["refresh_done"] or self.previous_edge and self.previous_edge["refresh_request"],
+                "unsolicited sampled refresh completion",
+            )
+            if not e["rank_valid"]:
+                self.low = True
+            elif self.low and e["rank_valid"] == 1 and e["rank_sr"] == 0:
+                self.fresh = True
+        else:
+            self.low = self.fresh = False
+        self.previous_edge = e
+
+
 def qualify_phases(records, header):
     require(
         header.get("sample_phase") == "negedge_after_prepare_before_sample"
         and header.get("return_source") == "memory_output_after_prepare"
         and header.get("handshake_phase") == "posedge_before_NBA"
+        and header.get("management_phase") == "posedge_before_NBA"
         and header["ck_ps"] == 1250,
         "unqualified wrapper observation phases",
     )
-    samples, edges = {}, {}
+    samples, edges, management = {}, {}, {}
+    sequence = defaultdict(list)
     for e in records:
-        if e["kind"] in ("sample", "edge"):
+        if e["kind"] in ("sample", "edge", "management_edge"):
             key = e["channel"], e["tick"]
-            target = samples if e["kind"] == "sample" else edges
+            target = samples if e["kind"] == "sample" else edges if e["kind"] == "edge" else management
+            sequence[e["channel"]].append((e["tick"], e["kind"]))
             require(key not in target, "duplicate phase sample")
             target[key] = e
     require(samples and samples.keys() == edges.keys(), "missing memory/edge phase tail")
+    require(samples.keys() == management.keys(), "missing rising management witness; old trace unqualified")
     for key, s in samples.items():
-        e = edges[key]
+        e, m = edges[key], management[key]
+        require(m["ps"] == e["ps"], "management edge timestamp displacement")
+        require(all(k in m for k in MANAGEMENT_FIELDS), "incomplete management witness")
+        require(all(m[k] == s[k] for k in REGISTERED_FIELDS), "management edge output binding")
         require(e["ps"] - s["ps"] == header["ck_ps"] // 2, "memory/handshake phase displacement")
         require(all(number(e[k]) == number(s[k]) for k in BUSES), "raw buses changed across qualified phase")
         if key[1]:
@@ -130,6 +309,14 @@ def qualify_phases(records, header):
                 (key[0], key[1] - 1) in samples and s["ps"] - samples[key[0], key[1] - 1]["ps"] == header["ck_ps"],
                 "missing CK sample",
             )
+    for channel, seen in sequence.items():
+        ticks = sum(k[0] == channel for k in samples)
+        require(
+            seen == [(t, kind) for t in range(ticks) for kind in ("sample", "edge", "management_edge")],
+            "reordered phase/witness stream",
+        )
+    times = [e["ps"] for e in records]
+    require(times == sorted(times), "reordered observation timestamps")
     return len(samples)
 
 
@@ -266,7 +453,7 @@ class Run:
         self.cancelled = []
         self.case = None
         self.cases = []
-        self.low = self.fresh = False
+        self.management = [ManagementWitness(), ManagementWitness()]
         self.reset_low = False
         self.reset_high = False
         self.boot = 0
@@ -316,6 +503,7 @@ class Run:
                 "fresh service lacks settlement/trust",
             )
             self.case["fresh"] = True
+            self.case["fresh_ps"] = e["ps"]
         elif name == "probes_accepted":
             require(
                 all(
@@ -329,6 +517,16 @@ class Run:
         elif name == "end_case":
             c = self.case
             require(c["fresh"] and self.source.settled(), "missing fresh service/complete W/R/B tail")
+            require(
+                0 <= e["ps"] - c["fresh_ps"] <= final_tail_budget(self.p)["total_ck"] * self.p["ck_ps"],
+                "fresh service final tail timeout",
+            )
+            require(
+                all(s and s["drained"] for s in self.last)
+                and all(p is not None and p.drained() for p in self.physical)
+                and all(i.live is None for i in self.inline),
+                "fresh service lacks all-owner/independent final drain",
+            )
             require(c["entries"] == (0 if c["failed"] else 1), "missing or premature ownership outcome")
             require(not c["failed"] or c["reset"] and c.get("stale_rejected"), "missing confirmed recovery")
             require(c["failed"] or "ack_ps" in c and c.get("handback"), "missing ACK/withdrawal/handback")
@@ -342,6 +540,9 @@ class Run:
         channel = e["channel"]
         old = self.last[channel]
         self.last[channel] = e
+        released = self.management[channel].sample(e)
+        if released and channel == 0 and self.case is not None:
+            self.case["handback"] = True
         if self.profile_image is None:
             self.profile_image = e["profile_image"]
         require(e["profile_image"] == self.profile_image, "unbound profile mutation")
@@ -425,12 +626,6 @@ class Run:
             ack = "phy_update" if c["id"] < 2 else "master"
             require(not c["failed"] and e[ack] and (e[selected] or old and old[ack]), "unsolicited/wrong ACK")
             c.setdefault("ack_ps", e["ps"])
-        if old and (old["phy_update"] or old["master"]) and not (e["phy_update"] or e["master"]) and not e["fault"]:
-            require(
-                not old["phyupd_req"] and not old["phymstr_req"] and not e["phyupd_req"] and not e["phymstr_req"],
-                "ACK release before request withdrawal",
-            )
-            c["handback"] = True
         if active and not e["fault"] and not was_active:
             require(not c["failed"] and self.source.settled() and e["settled"], "ownership before source settlement")
             require(
@@ -462,18 +657,6 @@ class Run:
             )
             require("request_fields" not in c or c["request_fields"] == key, "unstable management request")
             c["request_fields"] = key
-        if e["master"]:
-            if not e["rank_valid"]:
-                self.low = True
-            if self.low and e["rank_valid"] == 1 and not e["rank_sr"]:
-                self.fresh = True
-            require(not e["refresh_done"] or old and old["refresh_request"], "unsolicited refresh completion")
-        if old and old["master"] and not e["master"] and not e["fault"]:
-            require(
-                self.fresh and not e["phymstr_req"] and not e["refresh_request"],
-                "master handback lacks fresh rank report/refresh settlement",
-            )
-            self.low = self.fresh = False
         if active and not e["fault"]:
             require(
                 not e["cs"] and not number(e["write"]) >> 24 & 255 and not number(e["read"]) >> 16,
@@ -516,6 +699,8 @@ class Run:
             self.source.event(e)
         elif kind == "sample":
             self.sample(e)
+        elif kind == "management_edge":
+            self.management[e["channel"]].consume(e)
         elif kind == "marker":
             self.marker(e)
         elif kind.startswith("inline_"):
@@ -554,6 +739,7 @@ class Run:
             physical=[p.summary() for p in self.physical],
             profile_sha256=digest(self.p),
             schedule=remaining_budget(self.p),
+            final_tail_budget=final_tail_budget(self.p),
             limitations=[
                 "No trailing-W-at-request success or deadline-exhaustion hardware claim.",
                 "Short master window has no refresh request due; active PHY refresh service remains separate evidence.",
@@ -567,7 +753,7 @@ def check(wrapper_path, source_path):
     source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
     header, p = records[0], profile_binding()
     require(
-        header["kind"] == "header" and header["version"] == 2 and header["profile_sha256"] == digest(p),
+        header["kind"] == "header" and header["version"] == 3 and header["profile_sha256"] == digest(p),
         "wrapper profile binding",
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")
@@ -581,6 +767,9 @@ def check(wrapper_path, source_path):
     # CK model samples before the later edge. All actual internal events carry
     # edge timestamps; source admission precedes owner acceptance at a tie.
     order = {
+        "sample": -3,
+        "management_edge": -2,
+        "marker": -1,
         "axi": 0,
         "address": 1,
         "aw": 2,

@@ -53,12 +53,81 @@ def fixture(profile, write, beats=32, rank=0, reuse=False, mrr=False):
     return rows, enable, stop
 
 
+def natural_fixture(p, write, stop_delta=None, beats=32, rank=0, mrr=False):
+    """Independent idle-tail waveform with optional stop near natural release.
+
+    Natural disable originates at the access, explicit stop at its own CAS.
+    Rank stays selected/static through postamble and the full disable interval.
+    """
+    rows, enable, post = fixture(p, write, beats, rank, mrr=mrr)
+    access = 6
+    natural = access + p["wck"]["twck_dis"] // p["ratio"]
+    off = None if stop_delta is None else natural + stop_delta
+    release = natural if off is None or off >= natural else off + p["wck"]["twck_dis"] // p["ratio"]
+    result = []
+    for ck in range(max(release + 3, (off or 0) + 1)):
+        cs, ca, packed = 0, 0, 0
+        if ck == 5:
+            cs, ca = 1 << rank, commands.cas("write" if write else "read")
+        if ck == access:
+            cs, ca = 1 << rank, commands.mode_read(4) if mrr else commands.access(write, beats, 0, 0)
+        if ck == off:
+            cs, ca = 1 << rank, commands.cas("off")
+        if 5 < ck < release:
+            for phase in range(p["ratio"]):
+                for byte in range(2):
+                    lane = 2 * phase + byte
+                    packed |= (1 << rank) << (16 + 2 * lane)
+                    packed |= int(ck >= enable) << (32 + lane)
+                    toggle = 0 if ck < enable + 4 or ck >= post else 2 if ck < enable + 5 else 3
+                    packed |= toggle << (2 * lane)
+        result.append([ck, cs, ca, packed])
+    return result, natural, release
+
+
 class WckObservationTests(unittest.TestCase):
     def replay(self, profile, rows):
         model = WckObservations(profile)
         for row in rows:
             model.sample(*row)
         return model.finish()
+
+    def test_natural_disable_stop_before_at_after_and_fresh_owners(self):
+        for index in (0, 24):
+            p = copy.deepcopy(PROFILES[index])
+            p["ranks"] = 2
+            for write, beats, mrr in ((True, 32, False), (False, 32, False), (False, 16, True)):
+                for delta in (None, -1, 0, 1):
+                    rows, natural, release = natural_fixture(p, write, delta, beats, mrr=mrr)
+                    with self.subTest(profile=index, write=write, mrr=mrr, delta=delta):
+                        if delta in (0, 1):
+                            with self.assertRaisesRegex(Violation, "WS_OFF ownership"):
+                                self.replay(p, rows)
+                            continue
+                        self.assertEqual(self.replay(p, rows)["disabled_epochs"], 1)
+                        # Fresh opposite-rank read/write/MRR owner only after
+                        # actual full disable; no old-rank/static resurrection.
+                        next_rows, _, _ = natural_fixture(p, not write, beats=16, rank=1, mrr=write)
+                        origin = release + 1
+                        combined = rows[:origin] + [
+                            [ck + origin - 5, cs, ca, w] for ck, cs, ca, w in next_rows if ck >= 5
+                        ]
+                        self.assertEqual(self.replay(p, combined)["accesses"], 2)
+                        altered = copy.deepcopy(rows)
+                        altered[release + 1][3] = rows[release - 1][3]
+                        with self.assertRaisesRegex(Violation, "without decoded CAS"):
+                            self.replay(p, altered)
+
+    def test_ws_off_command_recovery_independent_of_rank_release(self):
+        p = copy.deepcopy(PROFILES[0])
+        rows, _, release = natural_fixture(p, True, -1)
+        # Artificially end the serialized selection one CK after WS_OFF.
+        # Postamble is complete, but Table363 still prohibits a fresh CAS.
+        off = next(ck for ck, cs, ca, _ in rows if cs and ca == commands.cas("off"))
+        rows[off + 1][3] = 0
+        rows[off + 1][1:3] = [1, commands.cas("read")]
+        with self.assertRaisesRegex(Violation, "WS_OFF command recovery"):
+            self.replay(p, rows[: off + 2])
 
     def test_both_ratios_modes_directions_burst_lengths_ranks_and_reuse(self):
         for index in (0, 4, 24, 28):

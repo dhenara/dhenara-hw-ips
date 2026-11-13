@@ -1,5 +1,6 @@
 // Four unsolicited real-wrapper cases. No internal state is assigned. The
 // observed owner and actual output buses select the dirty injection window.
+`include "wrapper_tail.svh"
 int wm_case=-1,wm_boot=0;
 bit wm_failed=0;
 bit [1:0] wm_probe_accepted=0;
@@ -157,8 +158,20 @@ task automatic wm_case_run(input int kind,input bit failed);
   end
   wm_finish_probes(base_id+12);
   wm_fresh_service(base_id+10);
-  for(int n=0;n<200;n++) begin
-    @(negedge clk);if(status_value[0].drained && status_value[1].drained) break;
+  // No new source work follows fresh_service. Preserve natural maintenance
+  // and all five quiescent owners. The generated bound accounts for staggered
+  // page/WCK recovery and carry-in/arriving REF, RFM, MR4 and ZQ on both channels.
+  check(mr4_value[0]==9 && mr4_value[1]==9,"final tail thermal fixture binding");
+  check(dut.datapath.channels[0].channel.active.page_idle_ck==WM_FINAL_PAGE_IDLE_CK
+    && dut.datapath.channels[1].channel.active.page_idle_ck==WM_FINAL_PAGE_IDLE_CK,"final tail page policy binding");
+  for(int n=0;n<WM_FINAL_TAIL_CK;n++) begin
+    @(negedge clk);
+    check(settled && !host_fault,"final tail source settlement/trust");
+    if(status_value[0].drained && status_value[1].drained) break;
+  end
+  if(!(status_value[0].drained && status_value[1].drained)) begin
+    wm_observers[0].tail_diagnostic();wm_observers[1].tail_diagnostic();
+    $fatal(1,"fresh service all-owner tail exceeded %0dCK",WM_FINAL_TAIL_CK);
   end
   check(status_value[0].drained && status_value[1].drained,"fresh service physical/WCK tail");
   wm_mark("end_case");

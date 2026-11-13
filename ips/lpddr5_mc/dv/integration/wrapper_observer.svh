@@ -12,7 +12,7 @@ initial begin
     check($value$plusargs("wrapper_observations=%s",wm_path),"missing wrapper stream");
     check($value$plusargs("wrapper_profile_sha256=%s",wm_profile_sha),"missing wrapper profile digest");
     wm_stream=$fopen(wm_path,"w");check(wm_stream!=0,"wrapper stream open");
-    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":2,\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
+    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":3,\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
   end
 end
 task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepared_return);
@@ -56,10 +56,33 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       wm_tick[c]++;
     end
   endtask
+  task automatic tail_diagnostic;
+    $display("WM_TAIL_TIMEOUT channel=%0d aggregate=%0d host=%0d backend=%0d inline=%0d pages=%0d rows=%0d wck_disabled=%0d register=%0d maintenance=%0d thermal=%0d ref_budget=%0d wck_tick=%0d disable=%0d post=%0d scheduler_ck=%0d open=%h",
+      c,status_value[c].drained,settled,dut.datapath.channels[c].channel.backend_drained,
+      dut.datapath.channels[c].channel.inline_drained,dut.datapath.channels[c].channel.pages_closed,
+      dut.datapath.channels[c].channel.rows_closed,dut.datapath.channels[c].channel.wck_disabled,
+      dut.datapath.channels[c].channel.register_state_q,dut.datapath.channels[c].channel.maintenance_urgent,
+      dut.datapath.channels[c].channel.thermal,dut.datapath.channels[c].channel.refresh_budget,
+      dut.datapath.channels[c].channel.backend.wck.tick_q,dut.datapath.channels[c].channel.backend.wck.disable_q,
+      dut.datapath.channels[c].channel.backend.wck.post_q,dut.datapath.channels[c].channel.backend.scheduler.ck_q,
+      dut.datapath.channels[c].channel.backend.scheduler.open_q);
+    for(int bank_index=0;bank_index<32;bank_index++) if(dut.datapath.channels[c].channel.backend.scheduler.act_ready_q[bank_index]
+        >dut.datapath.channels[c].channel.backend.scheduler.ck_q)
+      $display("WM_TAIL_BANK channel=%0d bank=%0d act_ready=%0d",c,bank_index,
+        dut.datapath.channels[c].channel.backend.scheduler.act_ready_q[bank_index]);
+  endtask
   always @(posedge clk) if(wm_stream!=0 && wm_tick[c]>wm_edge_tick[c]) begin
     wm_edge_tick[c]<=wm_tick[c];
     $fdisplay(wm_stream,"{\"kind\":\"edge\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\"}",
       observer.timestamp_ps(),c,wm_tick[c]-1,ca[c].cs,ca[c].address,wck[c],writes[c],reads[c],returns[c]);
+    // Live rising-edge inputs and registered outputs, read before NBA.
+    // This separate record must never be synthesized from the falling record.
+    $fdisplay(wm_stream,"{\"kind\":\"management_edge\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"memory_reset\":%0d,\"destructive\":%0d,\"fault\":%0d,\"owner\":%0d,\"state\":%0d,\"settled\":%0d,\"drained\":%0d,\"pin_drained\":%0d,\"ecc_drained\":%0d,\"phy_update\":%0d,\"master\":%0d,\"phyupd_req\":%0d,\"phymstr_req\":%0d,\"phyupd_type\":%0d,\"phymstr_type\":%0d,\"phymstr_cs_state\":%0d,\"phymstr_state_sel\":%0d,\"rank_valid\":%0d,\"rank_sr\":%0d,\"refresh_request\":%0d,\"refresh_done\":%0d,\"boot\":%0d,\"config\":%0d}",
+      observer.timestamp_ps(),c,wm_tick[c]-1,rst_n,memory_reset,dut.datapath.channels[c].channel.destructive_reset,status_value[c].fault,status_value[c].owner,
+      status_value[c].state,settled,status_value[c].drained,status_value[c].pin_drained,status_value[c].ecc_drained,
+      management_out[c].phyupd_ack,management_out[c].phymstr_ack,management[c].phyupd_req,management[c].phymstr_req,management[c].phyupd_type,
+      management[c].phymstr_type,management[c].phymstr_cs_state,management[c].phymstr_state_sel,report_valid[c],report_sr[c],
+      management_out[c].refresh_request,phy_refresh_done[c],status_value[c].boot_epoch,status_value[c].config_epoch);
     if(rst_n && !dut.datapath.channels[c].channel.destructive_reset && dut.datapath.channels[c].channel.active.inline_ecc) begin
       if(dut.datapath.channels[c].channel.inline_ecc.request_valid_i && dut.datapath.channels[c].channel.inline_ready)
         wm_granule("inline_admit",c,dut.datapath.channels[c].channel.request_i);

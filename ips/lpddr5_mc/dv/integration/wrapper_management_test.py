@@ -1,10 +1,24 @@
 """Owning phase, source-ledger and entry/recovery sensitivity; no RTL run."""
 
 import copy
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
 from system.host import Address, Violation
-from wrapper_management import BUSES, Addresses, Run, Source, profile_binding, qualify_phases, remaining_budget
+from wrapper_management import (
+    BUSES,
+    MANAGEMENT_FIELDS,
+    Addresses,
+    ManagementWitness,
+    Run,
+    Source,
+    final_tail_budget,
+    profile_binding,
+    qualify_phases,
+    remaining_budget,
+)
 
 
 def sample(**changes):
@@ -61,6 +75,34 @@ def sample(**changes):
     return e | changes
 
 
+def witness(s, **changes):
+    return (
+        dict(
+            kind="management_edge",
+            channel=s["channel"],
+            tick=s["tick"],
+            ps=s["ps"] + 625,
+            **{k: s[k] for k in MANAGEMENT_FIELDS},
+        )
+        | changes
+    )
+
+
+def phase_records(s):
+    return [
+        s,
+        dict(kind="edge", channel=s["channel"], tick=s["tick"], ps=s["ps"] + 625, **{k: s[k] for k in BUSES}),
+        witness(s),
+    ]
+
+
+def advance(run, s, **consumed):
+    old = run.last[s["channel"]]
+    if old is not None:
+        run.event(witness(old, **consumed))
+    run.sample(s)
+
+
 def entered(master=False):
     run = Run(profile_binding())
     run.case = dict(id=0, failed=0, request=0, entries=0)
@@ -74,19 +116,19 @@ class PhaseTests(unittest.TestCase):
             sample_phase="negedge_after_prepare_before_sample",
             return_source="memory_output_after_prepare",
             handshake_phase="posedge_before_NBA",
+            management_phase="posedge_before_NBA",
             ck_ps=1250,
         )
         self.records = []
-        for c in range(2):
+        for c in range(1):
             for tick in range(3):
                 s = sample(channel=c, tick=tick, ps=1250 + tick * 1250)
-                self.records += [
-                    s,
-                    dict(kind="edge", channel=c, tick=tick, ps=s["ps"] + 625, **{k: s[k] for k in BUSES}),
-                ]
+                self.records += phase_records(s)
+        self.records.sort(key=lambda e: e["ps"])
 
     def test_positive_independent_phases(self):
-        self.assertEqual(qualify_phases(self.records, self.header), 6)
+        both = sorted(self.records + [e | {"channel": 1} for e in self.records], key=lambda e: e["ps"])
+        self.assertEqual(qualify_phases(both, self.header), 6)
 
     def test_c2_offset_cannot_be_copied(self):
         for shift in (-625, 625, 1250):
@@ -97,7 +139,7 @@ class PhaseTests(unittest.TestCase):
 
     def test_missing_edge_tail(self):
         with self.assertRaisesRegex(Violation, "phase tail"):
-            qualify_phases(self.records[:-1], self.header)
+            qualify_phases(self.records[:-2] + self.records[-1:], self.header)
 
     def test_each_raw_bus_is_bound(self):
         for field in BUSES:
@@ -121,9 +163,198 @@ class PhaseTests(unittest.TestCase):
 
     def test_missing_ck_and_wrong_phase(self):
         with self.assertRaisesRegex(Violation, "missing CK"):
-            qualify_phases(self.records[:2] + self.records[4:], self.header)
+            qualify_phases(self.records[:3] + self.records[6:], self.header)
         with self.assertRaisesRegex(Violation, "unqualified"):
             qualify_phases(self.records, self.header | {"sample_phase": "posedge"})
+
+    def test_witness_missing_wrong_duplicate_reordered_and_old_phase(self):
+        original = copy.deepcopy(self.records)
+        mutants = []
+        mutants.append(([e for e in original if e["kind"] != "management_edge"], "old trace unqualified"))
+        changed = copy.deepcopy(original)
+        changed[2]["ps"] += 1
+        mutants.append((changed, "timestamp"))
+        changed = copy.deepcopy(original)
+        changed.insert(3, changed[2])
+        mutants.append((changed, "duplicate"))
+        changed = copy.deepcopy(original)
+        changed[1], changed[2] = changed[2], changed[1]
+        mutants.append((changed, "reordered"))
+        changed = copy.deepcopy(original)
+        changed[2]["tick"] = 100
+        mutants.append((changed, "missing rising"))
+        for rows, reason in mutants:
+            with self.subTest(reason=reason), self.assertRaisesRegex(Violation, reason):
+                qualify_phases(rows, self.header)
+        with self.assertRaisesRegex(Violation, "unqualified"):
+            qualify_phases(original, self.header | {"management_phase": None})
+        self.assertEqual(self.records, original)
+
+
+class ManagementWitnessTests(unittest.TestCase):
+    def test_both_registered_releases_allow_adjacent_falling_11_then_00(self):
+        for master in (False, True):
+            m = ManagementWitness()
+            fields = dict(
+                master=int(master), phy_update=int(not master), phymstr_req=int(master), phyupd_req=int(not master)
+            )
+            s = sample(**fields)
+            m.sample(s)
+            if master:
+                m.consume(witness(s, rank_valid=0))
+                s = sample(ps=2500, tick=1, **fields)
+                m.sample(s)
+            # The live rising request withdraws AFTER the falling snapshot.
+            # Fresh returned state is consumed on this rising edge as well.
+            m.consume(witness(s, phymstr_req=0, phyupd_req=0))
+            result = sample(ps=s["ps"] + 1250, tick=s["tick"] + 1, master=0, phy_update=0, phymstr_req=0, phyupd_req=0)
+            self.assertTrue(m.sample(result))
+            self.assertEqual(m.releases, 1)
+
+    def test_high_request_early_release_and_missing_registered_release(self):
+        for master in (False, True):
+            fields = dict(
+                master=int(master), phy_update=int(not master), phymstr_req=int(master), phyupd_req=int(not master)
+            )
+            for stays in (False, True):
+                m = ManagementWitness()
+                s = sample(**fields)
+                m.sample(s)
+                m.consume(
+                    witness(s, phymstr_req=0 if stays else int(master), phyupd_req=0 if stays else int(not master))
+                )
+                with self.assertRaisesRegex(Violation, "registered ACK"):
+                    m.sample(
+                        sample(
+                            ps=2500,
+                            tick=1,
+                            master=int(stays and master),
+                            phy_update=int(stays and not master),
+                            phymstr_req=0,
+                            phyupd_req=0,
+                        )
+                    )
+
+    def test_falling_only_low_rank_does_not_establish_fresh_report(self):
+        m = ManagementWitness()
+        s = sample(master=1, phyupd_req=0, phymstr_req=1, rank_valid=0)
+        m.sample(s)
+        m.consume(witness(s, rank_valid=1, phymstr_req=0))
+        with self.assertRaisesRegex(Violation, "fresh sampled rank"):
+            m.sample(sample(ps=2500, tick=1, phyupd_req=0))
+
+    def test_entry_requires_consumed_request_and_actual_drain(self):
+        for mutation, reason in (({"phyupd_req": 0}, "sampled request"), ({"drained": 0}, "consumed drain")):
+            m = ManagementWitness()
+            s = sample()
+            m.sample(s)
+            m.consume(witness(s, **mutation))
+            with self.assertRaisesRegex(Violation, reason):
+                m.sample(sample(ps=2500, tick=1, phy_update=1))
+
+    def test_live_type_mutation_and_unsolicited_refresh_rejected(self):
+        m = ManagementWitness()
+        s = sample(phy_update=1)
+        m.sample(s)
+        m.consume(witness(s))
+        s = sample(ps=2500, tick=1, phy_update=1)
+        m.sample(s)
+        with self.assertRaisesRegex(Violation, "unstable consumed"):
+            m.consume(witness(s, phyupd_type=1))
+        m = ManagementWitness()
+        s = sample(master=1, phyupd_req=0, phymstr_req=1)
+        m.sample(s)
+        with self.assertRaisesRegex(Violation, "unsolicited sampled refresh"):
+            m.consume(witness(s, refresh_done=1))
+
+    def test_missing_duplicate_and_wrong_rising_edge(self):
+        m = ManagementWitness()
+        s = sample()
+        m.sample(s)
+        for e in (witness(s, tick=1), witness(s, ps=1800), witness(s, master=1)):
+            with self.assertRaises(Violation):
+                m.consume(e)
+        with self.assertRaisesRegex(Violation, "missing management"):
+            m.sample(sample(ps=2500, tick=1))
+        m = ManagementWitness()
+        m.sample(s)
+        m.consume(witness(s))
+        with self.assertRaisesRegex(Violation, "duplicate"):
+            m.consume(witness(s))
+
+
+class FinalTailTests(unittest.TestCase):
+    def test_generated_bound_is_scoped_to_wrapper_include(self):
+        from vectors import generate
+
+        with tempfile.TemporaryDirectory(dir=os.environ.get("DHENARA_AGENT_TOOL_STORAGE_ROOT")) as directory:
+            destination = Path(directory)
+            generate(destination)
+            self.assertEqual(
+                {p.name for p in destination.iterdir()},
+                {"expected_profiles.svh", "images.txt", "read_link_encoder.svh", "wrapper_tail.svh"},
+            )
+            bound = final_tail_budget(profile_binding())["total_ck"]
+            self.assertIn(f"WM_FINAL_TAIL_CK={bound}", (destination / "wrapper_tail.svh").read_text())
+            self.assertNotIn("WM_FINAL_TAIL", (destination / "expected_profiles.svh").read_text())
+
+    def test_selected_bound_covers_refresh_recovery_and_staggered_owners(self):
+        p = profile_binding()
+        b = final_tail_budget(p)
+        self.assertEqual(b["total_ck"], 2152)
+        self.assertGreater(b["maintenance_ck"], 2 * p["dram_ck"]["trfc_ab"])
+        self.assertLess(b["total_ck"], b["renewal_floor_ck"])
+        self.assertEqual(remaining_budget(p)["total_ck"], 83)
+
+    def test_bound_changes_with_profile_and_rejects_nonfinite_workload(self):
+        p = profile_binding()
+        b = final_tail_budget(p)
+        p["dram_ck"]["trfc_ab"] += 1
+        self.assertGreater(final_tail_budget(p)["total_ck"], b["total_ck"])
+        for page_idle in (0, 3000):
+            with self.assertRaises(Violation):
+                final_tail_budget(profile_binding(), page_idle)
+        p = profile_binding()
+        p["dram_ck"]["tzqlat"] = 3000
+        with self.assertRaisesRegex(Violation, "recurring maintenance"):
+            final_tail_budget(p)
+
+    def test_exact_deadline_and_late_tail_and_false_aggregate(self):
+        # Real independent PhysicalStream instances; zero raw idle samples
+        # establish their drained state. A pending request cannot be erased
+        # with internal aggregate or pin/ECC flags.
+        def ready():
+            r = Run(profile_binding())
+            for c in range(2):
+                r.sample(sample(channel=c, phyupd_req=0))
+            r.case = dict(
+                id=0,
+                failed=False,
+                fresh=True,
+                fresh_ps=1250,
+                entries=1,
+                ack_ps=1,
+                handback=True,
+                closed={0: 1, 1: 1},
+                closure_probes={0: 1, 1: 1},
+                probes_accepted=True,
+            )
+            return r
+
+        deadline = 1250 + final_tail_budget(profile_binding())["total_ck"] * 1250
+        r = ready()
+        r.marker(dict(name="end_case", ps=deadline))
+        r = ready()
+        with self.assertRaisesRegex(Violation, "timeout"):
+            r.marker(dict(name="end_case", ps=deadline + 1))
+        for aggregate in (False, True):
+            r = ready()
+            if aggregate:
+                r.physical[0].expect(dict(tag=1, generation=0, boot=0, config=1, write=1, bytes=64))
+            else:
+                r.last[0]["drained"] = 0
+            with self.assertRaisesRegex(Violation, "all-owner/independent"):
+                r.marker(dict(name="end_case", ps=deadline))
 
 
 class AddressTests(unittest.TestCase):
@@ -193,8 +424,9 @@ class ComposedAdapterTests(unittest.TestCase):
         for tick, (raw, _, events) in enumerate(f.frames):
             e = sample(**{k: v for k, v in raw.items() if k in sample()})
             e.update(ps=1250 + tick * 1250, tick=tick)
-            records += [e, dict(kind="edge", channel=0, tick=tick, ps=e["ps"] + 625, **{k: e[k] for k in BUSES})]
+            records += phase_records(e)
             r.sample(e)
+            r.event(witness(e))
             for event in events:
                 if event["kind"] == "inline_admit":
                     r.source.event(dict(kind="aw", port=0, id=1, address=0, length=3, size=4, burst=1, lock=0))
@@ -219,6 +451,7 @@ class ComposedAdapterTests(unittest.TestCase):
                     sample_phase="negedge_after_prepare_before_sample",
                     return_source="memory_output_after_prepare",
                     handshake_phase="posedge_before_NBA",
+                    management_phase="posedge_before_NBA",
                     ck_ps=1250,
                 ),
             ),
@@ -320,7 +553,7 @@ class EntryRecoveryTests(unittest.TestCase):
 
     def test_positive_drained_entry(self):
         r = entered()
-        r.sample(sample(ps=2500, tick=1, owner=1, phy_update=1))
+        advance(r, sample(ps=2500, tick=1, owner=1, phy_update=1))
         self.assertEqual(r.case["entries"], 1)
 
     def test_internal_settled_cannot_erase_source(self):
@@ -328,21 +561,21 @@ class EntryRecoveryTests(unittest.TestCase):
             r = entered()
             r.source.host.admit(Address(0, 1, 0, 3), write)
             with self.assertRaisesRegex(Violation, "actual W/R/B"):
-                r.sample(sample(ps=2500, tick=1, owner=1, phy_update=1))
+                advance(r, sample(ps=2500, tick=1, owner=1, phy_update=1))
 
     def test_missing_physical_tail(self):
         r = entered()
         r.physical[0].expect(dict(tag=1, generation=0, boot=0, config=1, write=1, bytes=64))
         with self.assertRaisesRegex(Violation, "physical/row/WCK"):
-            r.sample(sample(ps=2500, tick=1, owner=1, phy_update=1))
+            advance(r, sample(ps=2500, tick=1, owner=1, phy_update=1))
 
     def test_stale_recovery_and_training(self):
         r = entered()
         with self.assertRaisesRegex(Violation, "unconfirmed/stale"):
-            r.sample(sample(ps=2500, tick=1, destructive=1))
+            advance(r, sample(ps=2500, tick=1, destructive=1))
         r = entered()
         with self.assertRaisesRegex(Violation, "stale trusted epoch"):
-            r.sample(sample(ps=2500, tick=1, training_epoch=1))
+            advance(r, sample(ps=2500, tick=1, training_epoch=1))
 
     def test_missing_wck_tail(self):
         r = entered()
@@ -361,10 +594,9 @@ class EntryRecoveryTests(unittest.TestCase):
     def test_master_return_requires_fresh_rank(self):
         r = entered(True)
         r.case["id"] = 2
-        r.sample(sample(ps=2500, tick=1, owner=1, master=1, phyupd_req=0, phymstr_req=1))
-        r.sample(sample(ps=3750, tick=2, owner=1, master=1, phyupd_req=0, phymstr_req=0))
-        with self.assertRaisesRegex(Violation, "fresh rank"):
-            r.sample(sample(ps=5000, tick=3, owner=2, phyupd_req=0, phymstr_req=0))
+        advance(r, sample(ps=2500, tick=1, owner=1, master=1, phyupd_req=0, phymstr_req=1))
+        with self.assertRaisesRegex(Violation, "fresh sampled rank"):
+            advance(r, sample(ps=3750, tick=2, owner=2, phyupd_req=0, phymstr_req=0), phymstr_req=0)
 
 
 if __name__ == "__main__":

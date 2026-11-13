@@ -1,7 +1,7 @@
 module controller_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
   parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,
-  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0,INLINE_LIFECYCLE=0
+  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0,INLINE_LIFECYCLE=0,WRAPPER_MANAGEMENT=0
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
@@ -77,7 +77,7 @@ module controller_tb #(
     .management_i(management),.rank_report_valid_i(report_valid),.rank_self_refresh_i(report_sr),.phy_refresh_done_i(phy_refresh_done),.management_o(management_out),
     .ca_o(ca),.wck_o(wck),.write_o(writes),.read_request_o(reads),.return_i(returns),.status_o(status_value),
     .enabled_o(enable),.fault_o(host_fault),.host_settled_o(settled));
-  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(BENCHMARK)) observer (
+  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(BENCHMARK || WRAPPER_MANAGEMENT)) observer (
     .clk_ck_i(clk),.rst_ni(observe_traffic),.axi_clk_i(axi_clk),.axi_rst_ni(monitor_rst_n),
     .awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_i(awready),.arready_i(arready),.wready_i(wready),
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
@@ -96,9 +96,9 @@ module controller_tb #(
       .mr43_i(8'd0),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
     initial forever begin
       @(negedge clk);
-      if(memory_reset) begin
-        memories[c].memory_model.reset();report_valid[c]=2'b11>>(2-RANKS);report_sr[c]=0;
-      end else begin memories[c].memory_model.prepare();memories[c].memory_model.sample();end
+      if(memory_reset || (WRAPPER_MANAGEMENT && dut.datapath.channels[c].channel.destructive_reset)) begin
+        memories[c].memory_model.reset();report_valid[c]=2'b11>>(2-RANKS);report_sr[c]=0;wrapper_memory_sample(c);
+      end else begin memories[c].memory_model.prepare();wrapper_memory_sample(c);memories[c].memory_model.sample();end
     end
   end
   for(genvar p=0;p<PORTS;p++) begin : monitors
@@ -114,6 +114,7 @@ module controller_tb #(
     assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p]) rvalid[p]&&!rready[p] |=> rvalid[p]&&$stable(r[p]));
   end
   `include "continuous_observer.svh"
+  `include "wrapper_observer.svh"
   `include "expected_profiles.svh"
   task automatic check(input logic condition,input string message);
     assert(condition) else $fatal(1,"stage%0d: %s",stage,message);checks++;
@@ -237,6 +238,7 @@ module controller_tb #(
   `include "benchmark.svh"
   `include "runtime_reset.svh"
   `include "inline_lifecycle.svh"
+  `include "wrapper_management.svh"
   initial begin
     int before_b;
     string path;
@@ -261,7 +263,7 @@ module controller_tb #(
     end
     $fclose(stream);staging_image[INDEX_FSP_VALID]=7;
     staging_image[INDEX_MODE][10:8]=3'(SERVICE_DIV);
-    if(INLINE_LIFECYCLE) begin
+    if(INLINE_LIFECYCLE || WRAPPER_MANAGEMENT) begin
       staging_image[INDEX_MODE][1]=1;
       // Publication requires every enabled region to agree with MODE's ECC
       // reservation. The default generated image has inline ECC disabled.
@@ -305,6 +307,7 @@ module controller_tb #(
     if(BENCHMARK) benchmark_run();
     if(RUNTIME_RESET) runtime_reset_run();
     if(INLINE_LIFECYCLE) inline_lifecycle_run();
+    if(WRAPPER_MANAGEMENT) wrapper_management_run();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);
     send_ar(PORTS-1,2,4096,128);read_result(PORTS-1,2,4096,128);wait_settled();stage=2;
     if(power_policy!=0) begin
@@ -388,5 +391,5 @@ module controller_tb #(
       stage,settled,host_fault,dut.coordinator.state_q,status_value[0].state,status_value[CHANNELS-1].state,reset_request,status_value[0].boot_epoch);
     $fflush();
   end
-  initial begin #(BENCHMARK ? 650000 : RESET_MATRIX ? 600000 : RUNTIME_RESET || INLINE_LIFECYCLE ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
+  initial begin #(BENCHMARK ? 650000 : RESET_MATRIX ? 600000 : RUNTIME_RESET || INLINE_LIFECYCLE || WRAPPER_MANAGEMENT ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
 endmodule

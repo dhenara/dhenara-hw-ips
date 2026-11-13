@@ -79,6 +79,12 @@ def main() -> None:
     parser.add_argument("--axi-stress-seed", type=int)
     parser.add_argument("--axi-overlap", action="store_true")
     parser.add_argument("--inline-lifecycle", action="store_true")
+    parser.add_argument("--wrapper-management", action="store_true")
+    parser.add_argument(
+        "--prepare-wrapper-management",
+        action="store_true",
+        help="owning units and warning-fatal TB lint; no hardware simulation",
+    )
     parser.add_argument("--continuous-observer", action="store_true")
     parser.add_argument("--id-bits", type=int, choices=range(4, 17))
     parser.add_argument("--address-bits", type=int, choices=range(32, 41), default=40)
@@ -94,6 +100,22 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.prepare_wrapper_management:
+        args.wrapper_management = True
+    if args.wrapper_management and (
+        args.family != "controller"
+        or args.inline_lifecycle
+        or args.continuous_observer
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy
+        or args.benchmark_direction
+        or args.integrity_mode
+        or args.cap_mode
+        or args.fairness_mode is not None
+    ):
+        parser.error("wrapper management requires the default controller fixture alone")
     if args.continuous_observer and not args.inline_lifecycle:
         parser.error(
             "continuous observation binds the inline lifecycle fixture; other boot/profile bindings remain pending"
@@ -256,6 +278,11 @@ def main() -> None:
         args.cap_mode is not None,
         args.fairness_mode is not None,
     )
+    if args.wrapper_management:
+        wrapper_path = report.with_name("wrapper-management.jsonl")
+        with wrapper_path.open("x"):
+            pass
+        reserved.append(wrapper_path)
     if args.continuous_observer:
         continuous_path = report.with_name("continuous-observations.jsonl")
         with continuous_path.open("x"):
@@ -283,6 +310,7 @@ def main() -> None:
     dependencies = [
         *sorted((IP / "dv/integration").glob("*.py")),
         *sorted((IP / "dv/integration").glob("*.svh")),
+        *sorted((IP / "dv/channel").glob("*.py")),
         *sorted((IP / "dv/system").rglob("*.py")),
         *sorted((IP / "dv/contracts").rglob("*.py")),
         *sorted((IP / "config/contracts").glob("*.json")),
@@ -305,6 +333,8 @@ def main() -> None:
         "runtime_reset_matrix": args.runtime_reset_matrix,
         "runtime_reset_case": args.runtime_reset_case,
         "inline_lifecycle": args.inline_lifecycle,
+        "wrapper_management": args.wrapper_management,
+        "preparation_only": args.prepare_wrapper_management,
         "continuous_observer": args.continuous_observer,
         "cap_mode": args.cap_mode,
         "cap_granule_bytes": args.cap_granule_bytes,
@@ -320,6 +350,13 @@ def main() -> None:
         "reserved_observations": [str(path) for path in reserved],
         "limitations": ["Boundary regression only; complete controller and final qualification remain pending."],
     }
+    if args.wrapper_management:
+        generated = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(build.iterdir()) if p.is_file()}
+        result["generated_inputs"] = generated
+        retained = report.parent / "generated-inputs"
+        retained.mkdir()
+        for name in generated:
+            shutil.copyfile(build / name, retained / name)
     if args.expect_legacy_loss:
         old = build / "lpddr5_mc_apb.sv"
         old.write_bytes(
@@ -342,7 +379,7 @@ def main() -> None:
         [str(tool / "bin/verilator"), "--version"],
         [
             str(tool / "bin/verilator"),
-            "--lint-only" if args.family == "lint" else "--binary",
+            "--lint-only" if args.family == "lint" or args.prepare_wrapper_management else "--binary",
             "--timing",
             "--timescale-override",
             "1ns/1ps",
@@ -360,6 +397,7 @@ def main() -> None:
             or args.axi_stress_seed is not None
             or args.axi_overlap
             or args.inline_lifecycle
+            or args.wrapper_management
             else "OPT_FAST=-O0 OPT_SLOW=-O0",
             "--top-module",
             top,
@@ -390,6 +428,7 @@ def main() -> None:
             *(["-GRUNTIME_RESET=1'b1"] if args.runtime_reset else []),
             *(["-GRESET_MATRIX=1'b1"] if args.runtime_reset_matrix else []),
             *(["-GINLINE_LIFECYCLE=1'b1"] if args.inline_lifecycle else []),
+            *(["-GWRAPPER_MANAGEMENT=1'b1"] if args.wrapper_management else []),
             *map(str, sources),
             "-j",
             "2",
@@ -408,6 +447,17 @@ def main() -> None:
         commands.pop()
     if args.axi_stress_seed is not None:
         commands[-1].append(f"+axi_stress_seed={args.axi_stress_seed}")
+    if args.wrapper_management:
+        from wrapper_management import digest, profile_binding, remaining_budget
+
+        result["wrapper_profile"] = profile_binding()
+        result["wrapper_schedule"] = remaining_budget(result["wrapper_profile"])
+        commands[-1].extend(
+            [
+                "+wrapper_observations=" + str(wrapper_path),
+                "+wrapper_profile_sha256=" + digest(result["wrapper_profile"]),
+            ]
+        )
     if args.family == "controller":
         commands[-1].append("+recovery_observations=" + str(report.with_name("recovery-observations.jsonl")))
         if args.continuous_observer:
@@ -447,8 +497,13 @@ def main() -> None:
         simulation = commands.pop()
         scenarios = range(4) if args.scenario is None else [args.scenario]
         commands.extend([*simulation, f"+scenario={scenario}"] for scenario in scenarios)
+    if args.prepare_wrapper_management:
+        commands.pop()  # lint elaboration only, never execute a simulator
+    result["planned_commands"] = commands
     report.write_text(json.dumps(result, indent=2) + "\n")
     try:
+        if args.wrapper_management and not args.prepare_wrapper_management and result["dirty"]:
+            raise RuntimeError("Wrapper hardware requires a clean committed source")
         command = [
             sys.executable,
             "-m",
@@ -460,6 +515,18 @@ def main() -> None:
             "*_test.py",
             "-v",
         ]
+        if args.wrapper_management:
+            command = [
+                sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                str(IP / "dv/integration"),
+                "-p",
+                "wrapper_management_test.py",
+                "-v",
+            ]
         log = report.with_name(report.stem + "-tooling.log")
         start = time.monotonic()
         with log.open("w") as stream:
@@ -509,6 +576,16 @@ def main() -> None:
                 raise RuntimeError(f"Command failed; see {log}")
             elif index >= 2 and (args.family.upper() + "_INTEGRATION_PASS") not in output:
                 raise RuntimeError("Missing behavior completion marker")
+        if args.prepare_wrapper_management:
+            after = {
+                str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in [REPO / p for p in manifest]
+            }
+            if after != manifest:
+                raise RuntimeError("Source changed during preparation")
+            result["source_after"] = after
+            result["status"] = "passed"
+            return
         if args.family in ("datapath", "controller"):
             from connected import check
 
@@ -526,6 +603,10 @@ def main() -> None:
                 )
                 if not args.benchmark_smoke:
                     require_full_performance(result["benchmark_observations"])
+            elif args.wrapper_management:
+                from wrapper_management import check as check_wrapper_management
+
+                result["wrapper_management_observations"] = check_wrapper_management(wrapper_path, trace_path)
             elif args.inline_lifecycle:
                 from inline_lifecycle import check as check_inline_lifecycle
 
@@ -581,6 +662,7 @@ def main() -> None:
                 and args.power_policy is None
                 and not args.benchmark_direction
                 and not args.inline_lifecycle
+                and not args.wrapper_management
             ):
                 result["recovered_external_observations"] = check(
                     report.with_name("recovery-observations.jsonl"),
@@ -616,7 +698,7 @@ def main() -> None:
                     build / "fairness-mutant.jsonl",
                     result["external_observations"],
                 )
-            if not args.benchmark_direction:
+            if not args.benchmark_direction and not args.wrapper_management:
                 from workload_costs import measure
 
                 if args.axi_stress_seed is not None:
@@ -676,12 +758,22 @@ def main() -> None:
         }
         if after != manifest:
             raise RuntimeError("Source changed during checks")
+        result["source_after"] = after
         result["status"] = "passed"
     except BaseException as error:
         result["status"] = "failed"
         result["error"] = str(error)
         raise
     finally:
+        if args.wrapper_management:
+            result["generated_inputs_after"] = {
+                name: hashlib.sha256((build / name).read_bytes()).hexdigest() for name in generated
+            }
+            if result["generated_inputs_after"] != generated:
+                result["status"] = "failed"
+                result["error"] = "Generated inputs changed during checks"
+                report.write_text(json.dumps(result, indent=2) + "\n")
+                raise RuntimeError(result["error"])
         if args.benchmark_direction and trace_path.exists():
             with (
                 trace_path.open("rb") as source,

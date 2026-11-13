@@ -140,7 +140,7 @@ module master_refresh_channel_tb;
         else $fatal(1,"entry timeout must fault without ACK ck=%0d request=%0d fault=%0d code=%0d",ck,entry_at,status_value.fault,status_value.fault_code);
       repeat(180) begin tick();assert(status_value.fault && !management_out.phymstr_ack && !dut.admission && !dut.issue_enable && !status_value.memory_trusted) else $fatal(1,"persistent entry failure containment");end
       $fclose(stream);$display("MASTER_REFRESH_CHANNEL mode=5 contained entry timeout request=%0d final=%0d",entry_at,ck);$finish;
-    end
+    end else begin
     assert(management_out.phymstr_ack) else $fatal(1,"natural channel entry gate budget=%0d urgent=%0d closed=%0d backend=%0d reg=%0d",dut.refresh_budget,dut.maintenance_urgent,dut.pages_closed,dut.backend_drained,dut.register_state_q);
     ack_at=ck-1;report_valid=0;
     for(int n=0;n<256;n++) begin
@@ -170,5 +170,6 @@ module master_refresh_channel_tb;
     repeat(200) tick();
     assert(zq_count>=int'(cfg.profile.ranks)) else $fatal(1,"pending natural ZQ");
     $fclose(stream);$display("MASTER_REFRESH_CHANNEL mode=%0d ack=%0d REF=%0d/%0d MR4=%0d ZQ=%0d",mode,ack_at,physical_at[0],physical_at[1],mr4_count,zq_count);$finish;
+    end
   end
 endmodule

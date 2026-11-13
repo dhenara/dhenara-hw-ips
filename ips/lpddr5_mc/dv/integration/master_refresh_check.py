@@ -35,7 +35,7 @@ def replay(rows, profile, observations=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--channel", action="store_true", help="dedicated real channel/register fixture")
-    parser.add_argument("--channel-mode", type=int, choices=range(6), action="append", help="only these channel modes")
+    parser.add_argument("--channel-mode", type=int, choices=range(8), action="append", help="only these channel modes")
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
@@ -72,7 +72,13 @@ def main():
         (build / "inputs").mkdir()
         generate_read_encoder(build / "inputs")
         includes = ["-I" + str(build / "inputs")]
-    inputs = [*sv, Path(__file__), dv / "master_refresh.py", dv / "master_refresh_test.py"]
+    inputs = [
+        *sv,
+        Path(__file__),
+        dv / "master_refresh.py",
+        dv / "master_refresh_test.py",
+        dv / "master_refresh_rfm.py",
+    ]
     inputs += list((ip / "dv/contracts").glob("*.py"))
     inputs += [ip / "dv/system/dram.py", ip / "dv/system/host.py", ip / "config/contracts/profiles.json"]
     if args.channel:
@@ -122,7 +128,8 @@ def main():
     if args.channel:
         report["qualification"] = "actual channel/register reachability; full AXI wrapper remains downstream"
         report["seams"] = [
-            "empty granule source and settled host; explicit initial memory sentinel",
+            "modes0-5 empty granules; modes6/7 real accepted zero-image reads and ledger-derived settlement",
+            "channel/granule proof only; no actual AXI or new independent pin-WCK/data qualification",
             "real CA-driven MRR returns and register/ZQ completion; no done constants",
             "controller CA physical delay is profile16 half-WCK / 8 = 2CK",
             "external PHY REF is directly decoded separately from sampled execution attestation",
@@ -168,7 +175,15 @@ def main():
             )
             report["cases"].append(case)
             faults = [e for e in samples if e["fault"]]
-            if args.channel and mode == 5:
+            if args.channel and mode in (6, 7):
+                from master_refresh_rfm import replay_rfm, sensitivity_rfm
+
+                case["rfm_proof"] = replay_rfm(rows, profile, mode)
+                case["sensitivity"] = sensitivity_rfm(rows, profile, mode)
+                case["verdict"] = (
+                    "contained pending RFM timeout" if mode == 6 else "healthy late RFM recovered handback"
+                )
+            elif args.channel and mode == 5:
                 assert faults and faults[0]["code"] == 12 and not any(e["ack"] for e in samples)
                 assert all(not e["admission"] and not e["issue"] and not e["trusted"] for e in faults)
                 first = faults[0]

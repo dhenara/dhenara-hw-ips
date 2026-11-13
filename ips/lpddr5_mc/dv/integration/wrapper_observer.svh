@@ -3,7 +3,12 @@
 // The offline window verdict instead uses decoded CA and complete pin returns.
 longint signed wm_ref_tick[CHANNELS],wm_mrr_tick[CHANNELS],wm_zq_tick[CHANNELS];
 bit wm_mr4_complete[CHANNELS],wm_setup_live=0;
-wire [CHANNELS-1:0] wm_ready_start,wm_ready_request;
+`include "wrapper_readiness.svh"
+// Evaluate at the marker's actual +1ps boundary, not in a continuous assign
+// that cannot be awakened by the passage of simulation time alone.
+function automatic bit wm_ready_window(input int required_ck,input bit idle);
+  return wm_observers[0].ready(required_ck,idle) && wm_observers[1].ready(required_ck,idle);
+endfunction
 longint unsigned wm_setup_ps=0;
 initial for(int c=0;c<CHANNELS;c++) begin
   wm_ref_tick[c]=-1;wm_mrr_tick[c]=-1;wm_zq_tick[c]=-1;wm_mr4_complete[c]=0;

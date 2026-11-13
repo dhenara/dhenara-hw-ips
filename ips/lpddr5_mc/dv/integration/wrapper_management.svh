@@ -70,9 +70,9 @@ task automatic wm_case_run(input int kind,input bit failed);
   // this selection cannot gain headroom from a delayed internal done pulse.
   for(int n=0;n<8000;n++) begin
     @(negedge clk);#0.001;
-    if((&wm_ready_start)) break;
+    if(wm_ready_window(WM_WINDOW_TOTAL_CK,1)) break;
   end
-  check(enable && (&wm_ready_start),"natural both-channel maintenance window unavailable");
+  check(enable && wm_ready_window(WM_WINDOW_TOTAL_CK,1),"natural both-channel maintenance window unavailable");
   wm_setup_ps=observer.timestamp_ps();wm_setup_live=1;wm_mark("maintenance_ready");
   prior1=b_count[1];send_aw(1,16'(base_id),64,4);inline_payload(1,64,8'(base_id));wait_b(1,16'(base_id),prior1+1);wait_settled();
   drive_bready(0);prior0=b_count[0];prior1=b_count[1];
@@ -97,7 +97,7 @@ task automatic wm_case_run(input int kind,input bit failed);
     end
   end
   check(seen_check && dirty_words==12 && !settled && !status_value[0].ecc_drained,"dirty final check transfer window");
-  check((&wm_ready_request),"dirty request maintenance reserve");
+  check(wm_ready_window(WM_WINDOW_REQUEST_CK,0),"dirty request maintenance reserve/phase");
   check(observer.timestamp_ps()-wm_setup_ps<=64'(WM_WINDOW_SETUP_CK)*1250,"all priming/setup exceeded budget");
   wm_setup_live=0;
   wm_mark("request");

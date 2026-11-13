@@ -54,6 +54,57 @@ def renewed():
 
 
 class WindowTests(unittest.TestCase):
+    def test_pending_rising_clear_falling_pair_requires_next_real_rising(self):
+        # Reproduce the sixth run's case-0 phase identities synthetically.
+        # No historical records are replayed/edited. The admission fixture
+        # explicitly supplies complete MR4, recovered physical state, normal
+        # thermal/RFM history, settled source and sufficient raw-origin time.
+        for pending in ("zq", "mr4"):
+            w, p, _ = renewed()
+            for c in range(2):
+                w.origins[c] = {key: value + 24593 for key, value in w.origins[c].items()}
+                w.observe(raw(c, 24692), p[c])
+                w.diagnostic(
+                    diagnostic(
+                        raw(c, 24692),
+                        **{pending + "_pending": 1, pending + "_request": 1, pending + "_done": 1},
+                    )
+                )
+                w.observe(raw(c, 24693), p[c])
+                self.assertTrue(p[c].drained())
+                self.assertTrue(w.samples[c]["trusted"] and w.samples[c]["config_valid"])
+                self.assertEqual(w.samples[c]["ps"], 30867500)
+                self.assertEqual(w.diagnostics[c]["ps"], 30866875)
+                self.assertEqual(p[c].phy.dram.maintenance.interval, 3124)
+                self.assertFalse(p[c].phy.dram.maintenance.debt)
+            with self.subTest(pending=pending), self.assertRaisesRegex(Violation, "pending maintenance"):
+                w.begin(30867501, p, True)
+            self.assertIsNone(w.start)
+            # The next actual rising record is clear. Current falling samples
+            # advance as well; retaining the old diagnostic would still fail.
+            for c in range(2):
+                w.diagnostic(diagnostic(raw(c, 24693)))
+                w.observe(raw(c, 24694), p[c])
+            w.begin(30868751, p, True)
+
+    def test_historical_first_fault_is_not_current_pending_work(self):
+        w, p, ps = renewed()
+        for d in w.diagnostics:
+            d["life_first_fault"] = 7
+        w.begin(ps, p, True)
+
+    def test_waiting_for_clear_rising_rechecks_current_headroom(self):
+        w, p, ps = renewed()
+        w.diagnostics[1]["zq_pending"] = 1
+        with self.assertRaisesRegex(Violation, "pending maintenance"):
+            w.begin(ps, p, True)
+        w.origins[0]["zq"] = 101 + w.budget["total_ck"] - 3000 + w.budget["poll_lead_ck"]
+        for c in range(2):
+            w.diagnostic(diagnostic(raw(c, 100)))
+            w.observe(raw(c, 101), p[c])
+        with self.assertRaisesRegex(Violation, "headroom"):
+            w.begin(raw(0, 101)["ps"] + 1, p, True)
+
     def test_full_setup_and_remaining_entry_fit_a_natural_period(self):
         w, p, ps = renewed()
         b = w.budget
@@ -117,6 +168,7 @@ class WindowTests(unittest.TestCase):
                 "register_state",
                 "register_owner",
                 "maintenance_valid",
+                "register_valid",
                 "register_result_valid",
                 "life_failure",
                 "life_fault_code",

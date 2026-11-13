@@ -448,10 +448,12 @@ def main() -> None:
     if args.axi_stress_seed is not None:
         commands[-1].append(f"+axi_stress_seed={args.axi_stress_seed}")
     if args.wrapper_management:
+        from maintenance_window import window_budget
         from wrapper_management import digest, profile_binding, remaining_budget
 
         result["wrapper_profile"] = profile_binding()
         result["wrapper_schedule"] = remaining_budget(result["wrapper_profile"])
+        result["wrapper_maintenance_window"] = window_budget(result["wrapper_profile"])
         commands[-1].extend(
             [
                 "+wrapper_observations=" + str(wrapper_path),

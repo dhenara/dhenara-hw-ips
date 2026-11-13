@@ -1,3 +1,19 @@
+// Current combinational failure decision and sampled ages/obligations are
+// diagnostic witnesses. first_fault deliberately survives destructive recovery.
+// The offline window verdict instead uses decoded CA and complete pin returns.
+longint signed wm_ref_tick[CHANNELS],wm_mrr_tick[CHANNELS],wm_zq_tick[CHANNELS];
+bit wm_mr4_complete[CHANNELS],wm_setup_live=0;
+wire [CHANNELS-1:0] wm_ready_start,wm_ready_request;
+longint unsigned wm_setup_ps=0;
+initial for(int c=0;c<CHANNELS;c++) begin
+  wm_ref_tick[c]=-1;wm_mrr_tick[c]=-1;wm_zq_tick[c]=-1;wm_mr4_complete[c]=0;
+end
+// This watchdog cannot defer the dirty request or restart a failed setup.
+initial forever begin
+  @(negedge clk);
+  if(WRAPPER_MANAGEMENT && wm_setup_live)
+    check(observer.timestamp_ps()-wm_setup_ps<=64'(WM_WINDOW_SETUP_CK)*1250,"all priming/setup budget exhausted");
+end
 // Explicit phase bridge: memory prepare/sample is at falling CK; the later
 // rising CK carries real internal handshakes. Both retain the identical raw
 // buses, so the adapter qualifies their mapping rather than borrowing C2 ticks.
@@ -12,7 +28,7 @@ initial begin
     check($value$plusargs("wrapper_observations=%s",wm_path),"missing wrapper stream");
     check($value$plusargs("wrapper_profile_sha256=%s",wm_profile_sha),"missing wrapper profile digest");
     wm_stream=$fopen(wm_path,"w");check(wm_stream!=0,"wrapper stream open");
-    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":4,\"host_phase\":\"posedge_before_NBA_next_edge_counter\",\"host_reset_phase\":\"negedge_core_reset_before_NBA\",\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
+    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":5,\"maintenance_phase\":\"falling_and_rising_before_NBA\",\"host_phase\":\"posedge_before_NBA_next_edge_counter\",\"host_reset_phase\":\"negedge_core_reset_before_NBA\",\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
   end
 end
 task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepared_return);
@@ -39,6 +55,7 @@ for(genvar p=0;p<PORTS;p++) begin : wm_sources
     arvalid[p]&&!arready[p] |=> arvalid[p]&&$stable(ar[p]));
 end
 for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
+  `include "wrapper_maintenance_observer.svh"
   task automatic sample_pins(input lpddr5_mc_return4_t prepared_return);
     if(wm_stream!=0 && !finish_observations) begin
       assert(qualified[0]==profile) else $fatal(1,"wrapper fixture profile differs from bound image");
@@ -53,6 +70,8 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
         report_sr[c],management_out[c].refresh_request,phy_refresh_done[c],management[c].phyupd_req,management[c].phymstr_req,management[c].phyupd_type,management[c].phymstr_type,
         management[c].phymstr_cs_state,management[c].phymstr_state_sel,management[c].error,mr4_value[c],8'd0,ca[c].cs,ca[c].address,
         wck[c],writes[c],reads[c],prepared_return,qualified[0]);
+      observe_commands();
+      snapshot("window_sample",wm_tick[c]);
       wm_tick[c]++;
     end
   endtask
@@ -83,6 +102,7 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       management_out[c].phyupd_ack,management_out[c].phymstr_ack,management[c].phyupd_req,management[c].phymstr_req,management[c].phyupd_type,
       management[c].phymstr_type,management[c].phymstr_cs_state,management[c].phymstr_state_sel,report_valid[c],report_sr[c],
       management_out[c].refresh_request,phy_refresh_done[c],status_value[c].boot_epoch,status_value[c].config_epoch);
+    snapshot("window_edge",wm_tick[c]-1);
     if(rst_n && !dut.datapath.channels[c].channel.destructive_reset && dut.datapath.channels[c].channel.active.inline_ecc) begin
       if(dut.datapath.channels[c].channel.inline_ecc.request_valid_i && dut.datapath.channels[c].channel.inline_ready)
         wm_granule("inline_admit",c,dut.datapath.channels[c].channel.request_i,dut.datapath.request_boot[c],dut.datapath.request_epoch[c]);

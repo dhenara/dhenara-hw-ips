@@ -61,13 +61,20 @@ def generate(destination: Path) -> None:
                 rows.extend(f"{image[reg['name']]:08x}" for reg in schema["registers"])
     # The wrapper final-tail deadline is generated from the selected profile;
     # no independent magic loop bound lives in the HDL fixture.
+    from maintenance_window import window_budget
     from wrapper_management import final_tail_budget, profile_binding
 
     tail = final_tail_budget(profile_binding())
+    window = window_budget(profile_binding())
     include += ['    default: $fatal(1,"unknown profile");', "  endcase", "endtask"]
     (destination / "wrapper_tail.svh").write_text(
         f"localparam int WM_FINAL_TAIL_CK={tail['total_ck']};\n"
         f"localparam int WM_FINAL_PAGE_IDLE_CK={tail['page_idle_ck']};\n"
+        + "".join(
+            f"localparam int WM_WINDOW_{k.upper()}={v};\n"
+            for k, v in window.items()
+            if k in ("setup_ck", "request_ck", "total_ck", "refresh_lead_ck", "poll_lead_ck")
+        )
     )
     (destination / "expected_profiles.svh").write_text("\n".join(include) + "\n")
     (destination / "images.txt").write_text("\n".join(rows) + "\n")

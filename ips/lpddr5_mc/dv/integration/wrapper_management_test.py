@@ -10,6 +10,7 @@ from system.host import Address, Violation
 from wrapper_management import (
     BUSES,
     MANAGEMENT_FIELDS,
+    WINDOW_FIELDS,
     Addresses,
     ManagementWitness,
     Run,
@@ -117,7 +118,8 @@ def entered(master=False):
 class PhaseTests(unittest.TestCase):
     def setUp(self):
         self.header = dict(
-            version=4,
+            version=5,
+            maintenance_phase="falling_and_rising_before_NBA",
             host_phase="posedge_before_NBA_next_edge_counter",
             host_reset_phase="negedge_core_reset_before_NBA",
             sample_phase="negedge_after_prepare_before_sample",
@@ -132,6 +134,19 @@ class PhaseTests(unittest.TestCase):
                 s = sample(channel=c, tick=tick, ps=1250 + tick * 1250)
                 self.records += phase_records(s)
                 self.records.append(host_edge(tick) | dict(ps=s["ps"] + 625))
+        for e in list(self.records):
+            if e["kind"] in ("sample", "management_edge"):
+                self.records.append(
+                    dict(
+                        kind="window_sample" if e["kind"] == "sample" else "window_edge",
+                        ps=e["ps"],
+                        tick=e["tick"],
+                        channel=e["channel"],
+                        **dict.fromkeys(WINDOW_FIELDS, 0),
+                    )
+                )
+        # Existing bus/management counterexamples address this first triplet.
+        # Sorting by time is required by the wire contract; use kind lookup below.
         self.records.sort(key=lambda e: e["ps"])
 
     def test_positive_independent_phases(self):
@@ -143,7 +158,7 @@ class PhaseTests(unittest.TestCase):
     def test_c2_offset_cannot_be_copied(self):
         for shift in (-625, 625, 1250):
             mutant = copy.deepcopy(self.records)
-            mutant[1]["ps"] += shift
+            next(e for e in mutant if e["kind"] == "edge")["ps"] += shift
             with self.assertRaisesRegex(Violation, "displacement"):
                 qualify_phases(mutant, self.header)
 
@@ -154,7 +169,7 @@ class PhaseTests(unittest.TestCase):
     def test_each_raw_bus_is_bound(self):
         for field in BUSES:
             mutant = copy.deepcopy(self.records)
-            mutant[1][field] = 1
+            next(e for e in mutant if e["kind"] == "edge")[field] = 1
             with self.assertRaisesRegex(Violation, "raw buses"):
                 qualify_phases(mutant, self.header)
 
@@ -167,7 +182,7 @@ class PhaseTests(unittest.TestCase):
         # The failed first run sampled the prior integration-net return in
         # the prepare delta, while the receiver got newly prepared valid data.
         mutant = copy.deepcopy(self.records)
-        mutant[1]["return"] = "0x300000000"
+        next(e for e in mutant if e["kind"] == "edge")["return"] = "0x300000000"
         with self.assertRaisesRegex(Violation, "raw buses"):
             qualify_phases(mutant, self.header)
 
@@ -182,16 +197,18 @@ class PhaseTests(unittest.TestCase):
         mutants = []
         mutants.append(([e for e in original if e["kind"] != "management_edge"], "old trace unqualified"))
         changed = copy.deepcopy(original)
-        changed[2]["ps"] += 1
+        next(e for e in changed if e["kind"] == "management_edge")["ps"] += 1
         mutants.append((changed, "timestamp"))
         changed = copy.deepcopy(original)
-        changed.insert(3, changed[2])
+        changed.insert(4, next(e for e in changed if e["kind"] == "management_edge"))
         mutants.append((changed, "duplicate"))
         changed = copy.deepcopy(original)
-        changed[1], changed[2] = changed[2], changed[1]
+        i = next(i for i, e in enumerate(changed) if e["kind"] == "edge")
+        j = next(i for i, e in enumerate(changed) if e["kind"] == "management_edge")
+        changed[i], changed[j] = changed[j], changed[i]
         mutants.append((changed, "reordered"))
         changed = copy.deepcopy(original)
-        changed[2]["tick"] = 100
+        next(e for e in changed if e["kind"] == "management_edge")["tick"] = 100
         mutants.append((changed, "missing rising"))
         for rows, reason in mutants:
             with self.subTest(reason=reason), self.assertRaisesRegex(Violation, reason):
@@ -489,6 +506,11 @@ class ComposedAdapterTests(unittest.TestCase):
             e = sample(**{k: v for k, v in raw.items() if k in sample()})
             e.update(ps=1250 + tick * 1250, tick=tick)
             records += phase_records(e)
+            records += [
+                dict(kind=kind, ps=e["ps"] + shift, tick=tick, channel=0, **dict.fromkeys(WINDOW_FIELDS, 0))
+                for kind, shift in (("window_sample", 0), ("window_edge", 625))
+            ]
+            records.sort(key=lambda record: record["ps"])
             r.sample(e)
             r.event(witness(e))
             admitted = next((v for v in events if v["kind"] == "inline_admit"), None)
@@ -530,7 +552,8 @@ class ComposedAdapterTests(unittest.TestCase):
             qualify_phases(
                 records,
                 dict(
-                    version=4,
+                    version=5,
+                    maintenance_phase="falling_and_rising_before_NBA",
                     host_phase="posedge_before_NBA_next_edge_counter",
                     host_reset_phase="negedge_core_reset_before_NBA",
                     sample_phase="negedge_after_prepare_before_sample",

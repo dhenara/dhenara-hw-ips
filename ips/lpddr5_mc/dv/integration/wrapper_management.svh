@@ -65,13 +65,15 @@ task automatic wm_case_run(input int kind,input bit failed);
   check(kind inside {0,1},"wrapper management kind");
   wm_case=2*kind+int'(failed);wm_failed=failed;base_id=20+wm_case*20;
   wm_mark("begin");
-  // Start after natural maintenance has renewed ample budget. This does not
-  // close admission or alter the profile/maintenance owner.
+  // Wait without traffic for a complete natural REF/MR4/ZQ renewal on
+  // BOTH channels. Raw command origins are earlier than timer renewal, so
+  // this selection cannot gain headroom from a delayed internal done pulse.
   for(int n=0;n<8000;n++) begin
-    @(negedge clk);
-    if(dut.datapath.channels[0].channel.refresh_budget>1500 && !dut.datapath.channels[0].channel.maintenance_urgent) break;
+    @(negedge clk);#0.001;
+    if((&wm_ready_start)) break;
   end
-  check(enable && dut.datapath.channels[0].channel.refresh_budget>1500,"natural refresh headroom");
+  check(enable && (&wm_ready_start),"natural both-channel maintenance window unavailable");
+  wm_setup_ps=observer.timestamp_ps();wm_setup_live=1;wm_mark("maintenance_ready");
   prior1=b_count[1];send_aw(1,16'(base_id),64,4);inline_payload(1,64,8'(base_id));wait_b(1,16'(base_id),prior1+1);wait_settled();
   drive_bready(0);prior0=b_count[0];prior1=b_count[1];
   send_aw(1,16'(base_id+1),64,4);inline_payload(1,64,8'(base_id+1));wm_wait_ready(1);
@@ -95,7 +97,9 @@ task automatic wm_case_run(input int kind,input bit failed);
     end
   end
   check(seen_check && dirty_words==12 && !settled && !status_value[0].ecc_drained,"dirty final check transfer window");
-  check(dut.datapath.channels[0].channel.refresh_budget>400,"entry refresh reserve");
+  check((&wm_ready_request),"dirty request maintenance reserve");
+  check(observer.timestamp_ps()-wm_setup_ps<=64'(WM_WINDOW_SETUP_CK)*1250,"all priming/setup exceeded budget");
+  wm_setup_live=0;
   wm_mark("request");
   if(kind==0) begin management[0].phyupd_type=0;management[0].phyupd_req=1;end
   else begin management[0].phymstr_type=0;management[0].phymstr_cs_state=1;management[0].phymstr_state_sel=0;management[0].phymstr_req=1;end

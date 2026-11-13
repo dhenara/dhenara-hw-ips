@@ -15,6 +15,7 @@ from pathlib import Path
 
 from continuous import InlineDrain, offset
 from host_completions import HOST_FIELDS, HostCompletions
+from maintenance_window import WINDOW_FIELDS, MaintenanceWindow, window_budget
 from system.host import Address, HostScoreboard, require
 from system.trace import number
 
@@ -284,7 +285,8 @@ def qualify_phases(records, header):
         and header.get("return_source") == "memory_output_after_prepare"
         and header.get("handshake_phase") == "posedge_before_NBA"
         and header.get("management_phase") == "posedge_before_NBA"
-        and header.get("version") == 4
+        and header.get("version") == 5
+        and header.get("maintenance_phase") == "falling_and_rising_before_NBA"
         and header.get("host_phase") == "posedge_before_NBA_next_edge_counter"
         and header.get("host_reset_phase") == "negedge_core_reset_before_NBA"
         and header["ck_ps"] == 1250,
@@ -319,6 +321,28 @@ def qualify_phases(records, header):
             seen == [(t, kind) for t in range(ticks) for kind in ("sample", "edge", "management_edge")],
             "reordered phase/witness stream",
         )
+    for kind, reference in (("window_sample", samples), ("window_edge", management)):
+        witnesses = [e for e in records if e["kind"] == kind]
+        require(len(witnesses) == len(reference), "missing/duplicate maintenance phase witness")
+        require(
+            [(e["channel"], e["tick"]) for e in witnesses] == list(reference), "reordered maintenance phase witness"
+        )
+        for w in witnesses:
+            ref = reference[w["channel"], w["tick"]]
+            require(
+                w["ps"] == ref["ps"] and all(k in w for k in WINDOW_FIELDS),
+                "incomplete/misphased maintenance phase witness",
+            )
+    window_samples = {(e["channel"], e["tick"]): e for e in records if e["kind"] == "window_sample"}
+    for e in records:
+        if e["kind"] == "window_edge":
+            s = window_samples[e["channel"], e["tick"]]
+            stable = (
+                "life_fault_code life_first_fault master_pending master_age master_elapsed life_elapsed "
+                "maint_ck running pending mr4_pending zq_pending thermal thermal_debt thermal_deadline "
+                "last_refresh last_mr4 last_zq register_state register_owner register_io_state"
+            ).split()
+            require(all(e[k] == s[k] for k in stable), "maintenance registered phase binding")
     host = [e for e in records if e["kind"] == "host_edge"]
     ticks = sorted(t for channel, t in samples if channel == 0)
     require([e["tick"] for e in host] == ticks, "missing/duplicate/reordered host witness; old trace unqualified")
@@ -474,6 +498,7 @@ class Run:
         self.recovery_channels = set()
         self.confirmation_low = [False, False]
         self.confirmation_high = [False, False]
+        self.window = MaintenanceWindow(p)
 
     def marker(self, e):
         name = e["name"]
@@ -484,6 +509,9 @@ class Run:
             self.recovery_channels.clear()
             self.confirmation_low = [False, False]
             self.confirmation_high = [False, False]
+        elif name == "maintenance_ready":
+            require(self.case is not None and "readiness" not in self.case, "duplicate/outside-case readiness")
+            self.case["readiness"] = self.window.begin(e["ps"], self.physical, self.source.settled())
         elif name == "recovery_baseline":
             self.host_completions.baseline(e, self.last, self.source.settled(), self.recovery_channels)
             self.case["baseline_ps"] = e["ps"]
@@ -501,6 +529,7 @@ class Run:
             owed = sum(len(t.ranges) - len(t.w) for t in h.transactions.values() if t.write and not t.done)
             require(owed > 0 if c["failed"] else owed == 0, "incorrect trailing-W success/failure split")
             require(not self.source.settled(), "pre-quiesced unsolicited stimulus")
+            self.window.request(e["ps"], self.physical)
             c.update(request=e["ps"], owed=owed)
             c["schedule"] = remaining_budget(self.p)
             c["closure_probes"] = {0: 0, 1: 0}
@@ -634,6 +663,7 @@ class Run:
                 require(e["trained"] and e["config_valid"] and e["training_epoch"] == e["boot"], "stale trusted epoch")
         reset = not e["reset_n"] or e["memory_reset"] or e["destructive"]
         if reset:
+            self.window.observe(e, None)
             if self.physical[channel] is not None:
                 require(e["destructive"], "physical work cancelled without destructive reset")
                 self.cancelled.append(
@@ -652,6 +682,7 @@ class Run:
             self.physical[channel] = PhysicalStream(copy.deepcopy(self.p))
         physical = self.physical[channel]
         physical.sample(e | {"time_ps": e["ps"]})
+        self.window.observe(e, physical)
         if channel != 0 or c is None or "request" not in c or c.get("reset"):
             return
         active = e["phy_update"] or e["master"] or e["owner"] == 1
@@ -740,6 +771,10 @@ class Run:
             self.sample(e)
         elif kind == "management_edge":
             self.management[e["channel"]].consume(e)
+        elif kind == "window_edge":
+            self.window.diagnostic(e)
+        elif kind == "window_sample":
+            pass  # Full phase/field coverage is checked before any replay.
         elif kind == "host_edge":
             self.host_completions.edge(e)
         elif kind == "host_reset":
@@ -764,6 +799,7 @@ class Run:
                 self.tags[channel] = self.source.owner(e, channel)
                 self.q[channel] = e
             elif kind == "inline_physical":
+                self.window.physical_transfer()
                 self.physical[channel].expect(e)
             elif kind == "inline_result":
                 self.physical[channel].result(e)
@@ -785,6 +821,7 @@ class Run:
             physical=[p.summary() for p in self.physical],
             profile_sha256=digest(self.p),
             schedule=remaining_budget(self.p),
+            maintenance_window_budget=window_budget(self.p),
             final_tail_budget=final_tail_budget(self.p),
             limitations=[
                 "No trailing-W-at-request success or deadline-exhaustion hardware claim.",
@@ -799,7 +836,7 @@ def check(wrapper_path, source_path):
     source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
     header, p = records[0], profile_binding()
     require(
-        header["kind"] == "header" and header["version"] == 4 and header["profile_sha256"] == digest(p),
+        header["kind"] == "header" and header["version"] == 5 and header["profile_sha256"] == digest(p),
         "wrapper profile binding",
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")
@@ -813,7 +850,9 @@ def check(wrapper_path, source_path):
     # CK model samples before the later edge. All actual internal events carry
     # edge timestamps; source admission precedes owner acceptance at a tie.
     order = {
-        "sample": -4,
+        "sample": -5,
+        "window_sample": -4,
+        "window_edge": -2,
         "host_edge": -3,
         "host_reset": -3,
         "management_edge": -2,

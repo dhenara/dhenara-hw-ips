@@ -19,6 +19,10 @@ from wrapper_management import (
     qualify_phases,
     remaining_budget,
 )
+from wrapper_management_host_test import completion as host_completion
+from wrapper_management_host_test import edge as host_edge
+from wrapper_management_host_test import request as host_request
+from wrapper_management_host_test import row as host_row
 
 
 def sample(**changes):
@@ -113,6 +117,9 @@ def entered(master=False):
 class PhaseTests(unittest.TestCase):
     def setUp(self):
         self.header = dict(
+            version=4,
+            host_phase="posedge_before_NBA_next_edge_counter",
+            host_reset_phase="negedge_core_reset_before_NBA",
             sample_phase="negedge_after_prepare_before_sample",
             return_source="memory_output_after_prepare",
             handshake_phase="posedge_before_NBA",
@@ -124,10 +131,13 @@ class PhaseTests(unittest.TestCase):
             for tick in range(3):
                 s = sample(channel=c, tick=tick, ps=1250 + tick * 1250)
                 self.records += phase_records(s)
+                self.records.append(host_edge(tick) | dict(ps=s["ps"] + 625))
         self.records.sort(key=lambda e: e["ps"])
 
     def test_positive_independent_phases(self):
-        both = sorted(self.records + [e | {"channel": 1} for e in self.records], key=lambda e: e["ps"])
+        both = sorted(
+            self.records + [e | {"channel": 1} for e in self.records if e["kind"] != "host_edge"], key=lambda e: e["ps"]
+        )
         self.assertEqual(qualify_phases(both, self.header), 6)
 
     def test_c2_offset_cannot_be_copied(self):
@@ -139,7 +149,7 @@ class PhaseTests(unittest.TestCase):
 
     def test_missing_edge_tail(self):
         with self.assertRaisesRegex(Violation, "phase tail"):
-            qualify_phases(self.records[:-2] + self.records[-1:], self.header)
+            qualify_phases([e for e in self.records if not (e["kind"] == "edge" and e["tick"] == 2)], self.header)
 
     def test_each_raw_bus_is_bound(self):
         for field in BUSES:
@@ -163,7 +173,7 @@ class PhaseTests(unittest.TestCase):
 
     def test_missing_ck_and_wrong_phase(self):
         with self.assertRaisesRegex(Violation, "missing CK"):
-            qualify_phases(self.records[:3] + self.records[6:], self.header)
+            qualify_phases([e for e in self.records if e["tick"] != 1], self.header)
         with self.assertRaisesRegex(Violation, "unqualified"):
             qualify_phases(self.records, self.header | {"sample_phase": "posedge"})
 
@@ -189,6 +199,26 @@ class PhaseTests(unittest.TestCase):
         with self.assertRaisesRegex(Violation, "unqualified"):
             qualify_phases(original, self.header | {"management_phase": None})
         self.assertEqual(self.records, original)
+
+    def test_version4_requires_complete_atomic_host_edges_and_explicit_phases(self):
+        for kind in ("missing", "duplicate", "channel", "field", "timestamp"):
+            records = copy.deepcopy(self.records)
+            hosts = [e for e in records if e["kind"] == "host_edge"]
+            if kind == "missing":
+                records.remove(hosts[-1])
+            elif kind == "duplicate":
+                records.append(hosts[-1])
+            elif kind == "channel":
+                hosts[0]["channels"].pop()
+            elif kind == "field":
+                del hosts[0]["count"]
+            else:
+                hosts[0]["ps"] += 1
+            with self.subTest(kind=kind), self.assertRaises(Violation):
+                qualify_phases(records, self.header)
+        for fields in (dict(version=3), dict(host_phase=None), dict(host_reset_phase=None)):
+            with self.assertRaisesRegex(Violation, "unqualified"):
+                qualify_phases(self.records, self.header | fields)
 
 
 class ManagementWitnessTests(unittest.TestCase):
@@ -343,7 +373,7 @@ class FinalTailTests(unittest.TestCase):
 
         deadline = 1250 + final_tail_budget(profile_binding())["total_ck"] * 1250
         r = ready()
-        r.marker(dict(name="end_case", ps=deadline))
+        r.marker(dict(name="end_case", ps=deadline, count=0))
         r = ready()
         with self.assertRaisesRegex(Violation, "timeout"):
             r.marker(dict(name="end_case", ps=deadline + 1))
@@ -409,6 +439,39 @@ class AddressTests(unittest.TestCase):
 
 
 class ComposedAdapterTests(unittest.TestCase):
+    def test_both_channel_recoveries_require_fresh_confirmation_in_current_case(self):
+        r = Run(profile_binding())
+        r.marker(dict(name="begin", case=1, failed=1, ps=0))
+        for channel in range(2):
+            # Isolate recovery observation from physical traffic. These are
+            # synthetic samples, not an execution of destructive recovery.
+            fields = dict(channel=channel, reset_n=0, trusted=0, config_valid=0, trained=0)
+            for tick, changes in enumerate(
+                (
+                    dict(reset_request=1, confirmed=0),
+                    dict(reset_request=1, confirmed=1),
+                    dict(destructive=1, confirmed=1),
+                )
+            ):
+                e = sample(ps=1250 + tick * 1250, tick=tick, **changes, **fields)
+                r.sample(e)
+                r.event(witness(e))
+        self.assertEqual(r.recovery_channels, {0, 1})
+        self.assertFalse(any(r.confirmation_low + r.confirmation_high))
+
+    def test_old_or_unrequested_confirmation_cannot_prove_channel_recovery(self):
+        for channel in range(2):
+            r = Run(profile_binding())
+            r.confirmation_low = r.confirmation_high = [True, True]
+            r.marker(dict(name="begin", case=1, failed=1, ps=0))
+            fields = dict(channel=channel, reset_n=0, trusted=0, config_valid=0, trained=0)
+            for tick, confirmed in enumerate((0, 1)):
+                e = sample(ps=1250 + tick * 1250, tick=tick, confirmed=confirmed, **fields)
+                r.sample(e)
+                r.event(witness(e))
+            with self.subTest(channel=channel), self.assertRaisesRegex(Violation, "fresh confirmation"):
+                r.sample(sample(ps=3750, tick=2, destructive=1, **fields))
+
     def test_populated_pin_phase_owner_and_source_bridge(self):
         # Reuse the reviewed independent CA/PHY generator, assigning the new
         # phases explicitly. This is a synthetic adapter test, not RTL evidence.
@@ -421,12 +484,30 @@ class ComposedAdapterTests(unittest.TestCase):
         f.dirty()
         r = Run(profile_binding())
         records = []
+        pending = None
         for tick, (raw, _, events) in enumerate(f.frames):
             e = sample(**{k: v for k, v in raw.items() if k in sample()})
             e.update(ps=1250 + tick * 1250, tick=tick)
             records += phase_records(e)
             r.sample(e)
             r.event(witness(e))
+            admitted = next((v for v in events if v["kind"] == "inline_admit"), None)
+            completed = next((v for v in events if v["kind"] == "inline_complete"), None)
+            if admitted is not None:
+                pending = host_request(**{k: v for k, v in admitted.items() if k != "kind"})
+            h = host_edge(
+                tick,
+                [host_row(pending, source_generation=pending["generation"])] if pending is not None else [],
+                [(0, pending)] if admitted else [],
+                [(0, host_completion(pending, **{k: v for k, v in completed.items() if k != "kind"}))]
+                if completed
+                else [],
+                reset_n=e["reset_n"],
+                config_boot=e["boot"],
+                config_epoch=e["config"],
+            ) | dict(ps=e["ps"] + 625)
+            records.append(h)
+            r.event(h)
             for event in events:
                 if event["kind"] == "inline_admit":
                     r.source.event(dict(kind="aw", port=0, id=1, address=0, length=3, size=4, burst=1, lock=0))
@@ -444,10 +525,14 @@ class ComposedAdapterTests(unittest.TestCase):
                     r.event(event | {"channel": 0, "tick": tick, "ps": e["ps"] + 625})
                 if event["kind"] == "inline_complete":
                     r.source.event(dict(kind="b", port=0, id=1, response=0, ready=1))
+                    pending = None
         self.assertEqual(
             qualify_phases(
                 records,
                 dict(
+                    version=4,
+                    host_phase="posedge_before_NBA_next_edge_counter",
+                    host_reset_phase="negedge_core_reset_before_NBA",
                     sample_phase="negedge_after_prepare_before_sample",
                     return_source="memory_output_after_prepare",
                     handshake_phase="posedge_before_NBA",
@@ -571,7 +656,7 @@ class EntryRecoveryTests(unittest.TestCase):
 
     def test_stale_recovery_and_training(self):
         r = entered()
-        with self.assertRaisesRegex(Violation, "unconfirmed/stale"):
+        with self.assertRaisesRegex(Violation, "fresh confirmation/source settlement"):
             advance(r, sample(ps=2500, tick=1, destructive=1))
         r = entered()
         with self.assertRaisesRegex(Violation, "stale trusted epoch"):

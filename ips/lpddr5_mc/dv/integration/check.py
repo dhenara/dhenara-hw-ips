@@ -524,7 +524,7 @@ def main() -> None:
                 "-s",
                 str(IP / "dv/integration"),
                 "-p",
-                "wrapper_management_test.py",
+                "wrapper_management*_test.py",
                 "-v",
             ]
         log = report.with_name(report.stem + "-tooling.log")

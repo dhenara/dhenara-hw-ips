@@ -12,7 +12,7 @@ initial begin
     check($value$plusargs("wrapper_observations=%s",wm_path),"missing wrapper stream");
     check($value$plusargs("wrapper_profile_sha256=%s",wm_profile_sha),"missing wrapper profile digest");
     wm_stream=$fopen(wm_path,"w");check(wm_stream!=0,"wrapper stream open");
-    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":3,\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
+    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":4,\"host_phase\":\"posedge_before_NBA_next_edge_counter\",\"host_reset_phase\":\"negedge_core_reset_before_NBA\",\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
   end
 end
 task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepared_return);
@@ -85,9 +85,9 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       management_out[c].refresh_request,phy_refresh_done[c],status_value[c].boot_epoch,status_value[c].config_epoch);
     if(rst_n && !dut.datapath.channels[c].channel.destructive_reset && dut.datapath.channels[c].channel.active.inline_ecc) begin
       if(dut.datapath.channels[c].channel.inline_ecc.request_valid_i && dut.datapath.channels[c].channel.inline_ready)
-        wm_granule("inline_admit",c,dut.datapath.channels[c].channel.request_i);
+        wm_granule("inline_admit",c,dut.datapath.channels[c].channel.request_i,dut.datapath.request_boot[c],dut.datapath.request_epoch[c]);
       if(dut.datapath.channels[c].channel.inline_physical_valid && dut.datapath.channels[c].channel.inline_physical_ready)
-        wm_granule("inline_physical",c,dut.datapath.channels[c].channel.inline_physical);
+        wm_granule("inline_physical",c,dut.datapath.channels[c].channel.inline_physical,status_value[c].boot_epoch,status_value[c].config_epoch);
       if(dut.datapath.channels[c].channel.inline_ecc.result_valid_i && dut.datapath.channels[c].channel.inline_result_ready)
         wm_result("inline_result",c,dut.datapath.channels[c].channel.backend_completion);
       if(dut.datapath.channels[c].channel.inline_completion_valid && dut.datapath.channels[c].channel.completion_ready_i)
@@ -95,9 +95,9 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
     end
   end
 end
-task automatic wm_granule(input string kind,input int channel,input lpddr5_mc_granule_t g);
+task automatic wm_granule(input string kind,input int channel,input lpddr5_mc_granule_t g,input logic [31:0] boot,epoch);
   $fdisplay(wm_stream,"{\"kind\":\"%s\",\"tick\":%0d,\"ps\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"rank\":%0d,\"row\":%0d,\"bank\":%0d,\"column\":%0d,\"write\":%0d,\"bytes\":%0d,\"mask\":\"0x%h\",\"data\":\"0x%h\"}",
-    kind,wm_tick[channel]-1,observer.timestamp_ps(),channel,g.tag,g.generation,status_value[channel].boot_epoch,status_value[channel].config_epoch,
+    kind,wm_tick[channel]-1,observer.timestamp_ps(),channel,g.tag,g.generation,boot,epoch,
     g.rank_index,g.row,{g.bank_group,g.bank},g.column,g.is_write,g.is_64_bytes ? 64 : 32,g.byte_enable,g.data);
 endtask
 task automatic wm_result(input string kind,input int channel,input lpddr5_mc_channel_completion_t v);
@@ -105,6 +105,7 @@ task automatic wm_result(input string kind,input int channel,input lpddr5_mc_cha
     kind,wm_tick[channel]-1,observer.timestamp_ps(),channel,v.identity.tag,v.identity.generation,v.identity.boot_epoch,v.identity.config_epoch,
     v.is_write,v.physical_done,v.integrity_done,v.failed,v.response,v.data);
 endtask
+`include "wrapper_host_observer.svh"
 final begin
   if(wm_stream!=0) begin
     $fdisplay(wm_stream,"{\"kind\":\"end\",\"ps\":%0d}",observer.timestamp_ps());$fclose(wm_stream);

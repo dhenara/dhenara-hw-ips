@@ -14,6 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from continuous import InlineDrain, offset
+from host_completions import HOST_FIELDS, HostCompletions
 from system.host import Address, HostScoreboard, require
 from system.trace import number
 
@@ -283,6 +284,9 @@ def qualify_phases(records, header):
         and header.get("return_source") == "memory_output_after_prepare"
         and header.get("handshake_phase") == "posedge_before_NBA"
         and header.get("management_phase") == "posedge_before_NBA"
+        and header.get("version") == 4
+        and header.get("host_phase") == "posedge_before_NBA_next_edge_counter"
+        and header.get("host_reset_phase") == "negedge_core_reset_before_NBA"
         and header["ck_ps"] == 1250,
         "unqualified wrapper observation phases",
     )
@@ -315,6 +319,13 @@ def qualify_phases(records, header):
             seen == [(t, kind) for t in range(ticks) for kind in ("sample", "edge", "management_edge")],
             "reordered phase/witness stream",
         )
+    host = [e for e in records if e["kind"] == "host_edge"]
+    ticks = sorted(t for channel, t in samples if channel == 0)
+    require([e["tick"] for e in host] == ticks, "missing/duplicate/reordered host witness; old trace unqualified")
+    for e in host:
+        require(e["ps"] == edges[0, e["tick"]]["ps"], "host witness timestamp displacement")
+        require(all(k in e for k in HOST_FIELDS), "incomplete host core witness")
+        require([c["channel"] for c in e["channels"]] == [0, 1], "host witness lacks both channels")
     times = [e["ps"] for e in records]
     require(times == sorted(times), "reordered observation timestamps")
     return len(samples)
@@ -459,12 +470,23 @@ class Run:
         self.boot = 0
         self.profile_image = None
         self.closure_edges = defaultdict(int)
+        self.host_completions = HostCompletions()
+        self.recovery_channels = set()
+        self.confirmation_low = [False, False]
+        self.confirmation_high = [False, False]
 
     def marker(self, e):
         name = e["name"]
         if name == "begin":
             require(self.case is None, "overlapping wrapper cases")
             self.case = dict(id=e["case"], failed=e["failed"], begin=e["ps"], entries=0, reset=False, fresh=False)
+            self.host_completions.begin(e["case"], e["failed"])
+            self.recovery_channels.clear()
+            self.confirmation_low = [False, False]
+            self.confirmation_high = [False, False]
+        elif name == "recovery_baseline":
+            self.host_completions.baseline(e, self.last, self.source.settled(), self.recovery_channels)
+            self.case["baseline_ps"] = e["ps"]
         elif name == "request":
             c, h = self.case, self.source.host
             require(
@@ -494,6 +516,7 @@ class Run:
             )
             self.case["stale_rejected"] = True
         elif name == "fresh_service":
+            self.host_completions.checkpoint(e)
             require(
                 self.source.settled()
                 and not self.source.host.faulted
@@ -533,6 +556,7 @@ class Run:
             require(all(c.get("closed", {}).get(p, 0) > 0 for p in range(2)), "missing source closure observations")
             require(all(c["closure_probes"][p] > 0 for p in range(2)), "missing active AW/AR closure probes")
             require(c.get("probes_accepted"), "missing actual probe admission before W")
+            self.host_completions.checkpoint(e)
             self.cases.append(c)
             self.case = None
 
@@ -547,6 +571,17 @@ class Run:
             self.profile_image = e["profile_image"]
         require(e["profile_image"] == self.profile_image, "unbound profile mutation")
         c = self.case
+        if e["reset_request"] and not e["confirmed"]:
+            self.confirmation_low[channel] = True
+        if self.confirmation_low[channel] and e["confirmed"]:
+            self.confirmation_high[channel] = True
+        if e["destructive"] and not (old and old["destructive"]):
+            require(
+                self.source.settled() and self.confirmation_low[channel] and self.confirmation_high[channel],
+                "channel destructive recovery lacks fresh confirmation/source settlement",
+            )
+            self.recovery_channels.add(channel)
+            self.confirmation_low[channel] = self.confirmation_high[channel] = False
         if channel == 0:
             if not e["confirmed"]:
                 self.reset_low = True
@@ -688,6 +723,10 @@ class Run:
                         self.last[0]["enabled"] and (c.get("handback") or c.get("reset")),
                         "probe admission before renewed service",
                     )
+                    require(
+                        not c["failed"] or c.get("baseline_ps", e["ps"]) < e["ps"],
+                        "probe admission before recovery baseline",
+                    )
                     counts = c.setdefault("probe_handshakes", {})
                     key = f"{e['port']}{kind}"
                     counts[key] = counts.get(key, 0) + 1
@@ -701,9 +740,15 @@ class Run:
             self.sample(e)
         elif kind == "management_edge":
             self.management[e["channel"]].consume(e)
+        elif kind == "host_edge":
+            self.host_completions.edge(e)
+        elif kind == "host_reset":
+            self.host_completions.reset(e)
         elif kind == "marker":
             self.marker(e)
         elif kind.startswith("inline_"):
+            if kind in ("inline_admit", "inline_complete"):
+                self.host_completions.seam(e)
             channel = e["channel"]
             require(self.physical[channel] is not None, "internal transfer during reset")
             last = self.last[channel]
@@ -736,6 +781,7 @@ class Run:
             source=dict(self.source.counts),
             retired_epochs=self.source.retired_epochs,
             cancelled=self.cancelled,
+            host_completions=self.host_completions.finish(),
             physical=[p.summary() for p in self.physical],
             profile_sha256=digest(self.p),
             schedule=remaining_budget(self.p),
@@ -753,7 +799,7 @@ def check(wrapper_path, source_path):
     source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
     header, p = records[0], profile_binding()
     require(
-        header["kind"] == "header" and header["version"] == 3 and header["profile_sha256"] == digest(p),
+        header["kind"] == "header" and header["version"] == 4 and header["profile_sha256"] == digest(p),
         "wrapper profile binding",
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")
@@ -767,7 +813,9 @@ def check(wrapper_path, source_path):
     # CK model samples before the later edge. All actual internal events carry
     # edge timestamps; source admission precedes owner acceptance at a tie.
     order = {
-        "sample": -3,
+        "sample": -4,
+        "host_edge": -3,
+        "host_reset": -3,
         "management_edge": -2,
         "marker": -1,
         "axi": 0,

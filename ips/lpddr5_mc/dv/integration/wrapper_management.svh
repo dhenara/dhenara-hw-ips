@@ -5,6 +5,7 @@ int wm_case=-1,wm_boot=0;
 bit wm_failed=0;
 bit [1:0] wm_probe_accepted=0;
 bit [1:0] wm_probe_pending=0;
+logic [31:0] wm_stale_baseline=0;
 
 // Hold both legal address requests after the crossing closes admission. They
 // remain asserted through handback/recovery and complete normally on return.
@@ -31,8 +32,8 @@ task automatic wm_finish_probes(input int id);
   wait_settled();
 endtask
 task automatic wm_mark(input string name);
-  $fdisplay(wm_stream,"{\"kind\":\"marker\",\"name\":\"%s\",\"ps\":%0d,\"case\":%0d,\"failed\":%0d,\"boot\":%0d}",
-    name,observer.timestamp_ps(),wm_case,wm_failed,wm_boot);
+  $fdisplay(wm_stream,"{\"kind\":\"marker\",\"name\":\"%s\",\"ps\":%0d,\"case\":%0d,\"failed\":%0d,\"boot\":%0d,\"count\":%0d}",
+    name,observer.timestamp_ps(),wm_case,wm_failed,wm_boot,dut.stale_completions);
 endtask
 task automatic wm_wait_ready(input bit response_b);
   for(int n=0;n<3000;n++) begin
@@ -56,7 +57,7 @@ task automatic wm_fresh_service(input int id);
   int prior;
   prior=b_count[0];send_aw(0,16'(id),0,4);inline_payload(0,0,8'(id));wait_b(0,16'(id),prior+1);
   send_ar(0,16'(id+1),0,4);read_result(0,16'(id+1),0,4);wait_settled();
-  check(!host_fault && dut.stale_completions==0,"fresh protected service");wm_mark("fresh_service");
+  check(!host_fault && dut.stale_completions==wm_stale_baseline,"fresh protected service");wm_mark("fresh_service");
 endtask
 task automatic wm_case_run(input int kind,input bit failed);
   int base_id,prior0,prior1,dirty_words;
@@ -128,9 +129,22 @@ task automatic wm_case_run(input int kind,input bit failed);
     reset_confirmed=0;
     repeat(4) @(negedge clk);reset_confirmed='1;
     wm_boot++;
-    for(int n=0;n<300;n++) begin @(negedge clk);if(!host_fault && status_value[0].boot_epoch==32'(wm_boot)) break;end
-    check(!host_fault && status_value[0].boot_epoch==32'(wm_boot) && !enable
-      && !dut.host_config_active && !status_value[0].config_valid && !status_value[0].train_done,"fresh epoch/config/training required");
+    for(int n=0;n<300;n++) begin
+      @(negedge clk);
+      if(!host_fault && status_value[0].boot_epoch==32'(wm_boot) && status_value[1].boot_epoch==32'(wm_boot)
+          && !dut.datapath.channels[0].channel.destructive_reset && !dut.datapath.channels[1].channel.destructive_reset) break;
+    end
+    check(!host_fault && settled && !enable && !dut.host_config_active && !reset_request && !memory_reset && (&reset_confirmed)
+      && status_value[0].boot_epoch==32'(wm_boot) && status_value[1].boot_epoch==32'(wm_boot)
+      && !status_value[0].config_valid && !status_value[1].config_valid
+      && !status_value[0].train_done && !status_value[1].train_done
+      && !dut.datapath.channels[0].channel.destructive_reset && !dut.datapath.channels[1].channel.destructive_reset,
+      "both channels require fresh epoch/config/training");
+    // Preserve the cumulative production diagnostic. Independent host seam
+    // replay must first reconcile every earlier event and numeric update,
+    // prove both destructive recoveries, and reject every later unmatched
+    // event even if the counter is saturated. Publication/probes follow this.
+    wm_stale_baseline=dut.stale_completions;wm_mark("recovery_baseline");
     for(int i=0;i<65536;i++) expected[i]=0;
     wait_status(INDEX_BOOT_EPOCH,32'hffffffff,32'(wm_boot));
     repeat(30) @(negedge pclk);publish_and_boot(wm_boot);wm_mark("retrained");
@@ -166,7 +180,7 @@ task automatic wm_case_run(input int kind,input bit failed);
     && dut.datapath.channels[1].channel.active.page_idle_ck==WM_FINAL_PAGE_IDLE_CK,"final tail page policy binding");
   for(int n=0;n<WM_FINAL_TAIL_CK;n++) begin
     @(negedge clk);
-    check(settled && !host_fault,"final tail source settlement/trust");
+    check(settled && !host_fault && dut.stale_completions==wm_stale_baseline,"final tail source settlement/trust/counter");
     if(status_value[0].drained && status_value[1].drained) break;
   end
   if(!(status_value[0].drained && status_value[1].drained)) begin

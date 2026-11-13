@@ -32,7 +32,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
   int poll_coalesce_windows=0;
   logic notification_valid,notification_error_valid,first_error_valid;
   logic notification_ready=1,memory_reset=0,check_fsp=0,mrw_pending=0;
-  int mrw_count=0,mrw_address=0,last_mrw=0,sre_count=0,srx_count=0,last_srx=0;
+  int mrw_count=0,mrw_address=0,last_mrw=0,fsp_switch_mrw2=-1,fsp_restore_mrw2=-1,fsp_des_until=0,sre_count=0,srx_count=0,last_srx=0;
   logic [127:0] mrw_seen=0;
   logic [1:0] expected_old_fsp=0,expected_target_fsp=1;
   logic [12:0] notification_events;
@@ -119,6 +119,8 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       end
     end
     if(poll_handoff_pending && zq_count>poll_handoff_zq) poll_handoff_pending=0;
+    if(check_fsp && cycles<fsp_des_until)
+      assert(ca.cs==0) else $fatal(1,"connected FSP/VRCG recovery requires DES");
     if(ca.cs!=0) begin
       if(check_poll_handoff && poll_handoff_pending)
         assert(!(ca.address[2:0] inside {3'b111,3'b011}))
@@ -132,13 +134,24 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
           assert(ca.address[5:0]==8 && cycles==last_mrw+1) else $fatal(1,"connected MRW pair");
           expected_value=fsp_snapshot.mr[mrw_address];
           if(mrw_count==0) expected_value={fsp_snapshot.mr[16][7:4],expected_old_fsp,expected_target_fsp};
-          if(mrw_count==18) expected_value={fsp_snapshot.mr[16][7:4],expected_target_fsp,expected_target_fsp};
+          if(mrw_count==18) begin
+            expected_value={fsp_snapshot.mr[16][7:4],expected_target_fsp,expected_target_fsp}|8'h40;
+            fsp_switch_mrw2=cycles;
+            fsp_des_until=cycles+int'(fsp_switch_guard(memory_profile,fsp_snapshot));
+          end
+          if(mrw_count==19) begin
+            expected_value={fsp_snapshot.mr[16][7:4],expected_target_fsp,expected_target_fsp};
+            assert(cycles-1-fsp_switch_mrw2>=int'(fsp_switch_guard(memory_profile,fsp_snapshot)))
+              else $fatal(1,"connected normal restore before switch recovery");
+            fsp_restore_mrw2=cycles;
+            fsp_des_until=cycles+int'(fsp_restore_guard(fsp_snapshot));
+          end
           assert({ca.address[6],ca.address[13:7]}==expected_value) else $fatal(1,"connected frozen MR value");
           mrw_count++;mrw_pending=0;
         end else begin
           assert(ca.address[6:0]==88 && cycles-last_mrw>=12) else $fatal(1,"connected MRW spacing/encoding");
           mrw_address=int'(ca.address[13:7]);mrw_pending=1;
-          if(mrw_count inside {0,18}) assert(mrw_address==16) else $fatal(1,"connected FSP control order");
+          if(mrw_count inside {0,18,19}) assert(mrw_address==16) else $fatal(1,"connected FSP control order");
           else begin
             assert(mrw_address inside {1,2,3,10,11,12,14,15,17,18,19,20,22,24,30,41,58} && !mrw_seen[mrw_address])
               else $fatal(1,"connected missing/duplicate MR");
@@ -423,6 +436,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       for(int c=0;c<2000;c++) begin step();if(management_out.init_start) break;end
       assert(management_out.init_start && !fsp_ready) else $fatal(1,"connected FSP request");
       check_fsp=1;mrw_count=0;mrw_seen=0;mrw_pending=0;last_mrw=cycles-100;
+      fsp_switch_mrw2=-1;fsp_restore_mrw2=-1;fsp_des_until=0;
       management_in.init_complete=0;release_edge=-1;
       // Only the prepared immutable bank may influence programming.
       cfg='0;target_fsp=2;target_frequency=1;
@@ -434,7 +448,8 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
         step();if(fsp_ready) break;
       end
       check_fsp=0;
-      assert(fsp_ready && mrw_count==19 && !mrw_pending && release_edge>last_mrw+207 && committed_epoch==1 && !request_ready)
+      assert(fsp_ready && mrw_count==20 && !mrw_pending && fsp_switch_mrw2>=0 && fsp_restore_mrw2>fsp_switch_mrw2
+          && release_edge>fsp_restore_mrw2+int'(fsp_restore_guard(fsp_snapshot))+int'(fsp_command_tail(memory_profile,fsp_snapshot)) && committed_epoch==1 && !request_ready)
         else $fatal(1,"connected FSP programming/guard/readiness");
       cfg=target_config;config_mailbox.commit=1;step();config_mailbox='0;memory_profile=cfg.profile;request_epoch=2;
       wait_quiet();assert(committed_epoch==2 && management_out.frequency==0 && management_out.fsp==1) else $fatal(1,"connected common FSP commit");
@@ -451,7 +466,7 @@ module lpddr5_mc_channel_tb #(parameter bit PER_BANK_REFRESH=0);
       assert(saw_decline && !prepared && committed_epoch==2 && management_out.frequency==0 && management_out.fsp==1)
         else $fatal(1,"connected decline changed active point");
       cfg=target_config;send_command(CH_CMD_ENABLE);step();stream(1,8);stream(0,8);
-      $display("PASS connected FSP: frozen 19 MR pairs, fresh low/high, guard, common epoch commit, retained data and normal decline");
+      $display("PASS connected FSP: frozen 20 MR pairs, OP/high-VRCG, normal restore, separate switch/restore recovery and pin tail, fresh low/high, common epoch commit, retained data and normal decline");
     end else if(kind==1) begin
       stream(1,8);send_command(CH_CMD_QUIESCE);wait_quiet();
       send_command(CH_CMD_POWER_DOWN);wait_low_power();repeat(8) step();

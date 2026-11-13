@@ -197,7 +197,7 @@ endtask
 task automatic wrapper_management_run;
   check(PORTS==2 && CHANNELS==2 && RANKS==1 && DATA_BITS==128,"wrapper management shape");
   for(int kind=0;kind<2;kind++) for(int failed=0;failed<2;failed++) wm_case_run(kind,1'(failed));
-  @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
+  wrapper_stop_observations();
   $display("CONTROLLER_WRAPPER_MANAGEMENT_PASS cases=4 boot=%0d",wm_boot);
   $display("CONTROLLER_INTEGRATION_PASS checks=%0d wrapper_management=1",checks);$finish;
 endtask

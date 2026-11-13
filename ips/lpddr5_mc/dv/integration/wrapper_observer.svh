@@ -39,16 +39,13 @@ task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepa
     else wm_observers[1].sample_pins(prepared_return);
   end
 endtask
-for(genvar p=0;p<PORTS;p++) begin : wm_sources
-  initial forever begin
-    @(posedge axi_clk[p]);
-    if(wm_stream!=0 && observe_traffic && monitor_rst_n[p] && !finish_observations) begin
+task automatic wm_capture_address(input int p);
     $fdisplay(wm_stream,"{\"kind\":\"address\",\"ps\":%0d,\"port\":%0d,\"awvalid\":%0d,\"awready\":%0d,\"arvalid\":%0d,\"arready\":%0d,\"aw_bits\":\"0x%h\",\"ar_bits\":\"0x%h\",\"aw_id\":%0d,\"ar_id\":%0d,\"aw_address\":\"0x%h\",\"ar_address\":\"0x%h\"}",
       observer.timestamp_ps(),p,awvalid[p],awready[p],arvalid[p],arready[p],aw[p],ar[p],aw[p].id,ar[p].id,aw[p].address,ar[p].address);
     if(wm_case>=0 && (management[0].phyupd_req || management[0].phymstr_req) && !enable
         && awvalid[p] && arvalid[p] && !awready[p] && !arready[p]) wm_probe_pending[p]=1;
-    end
-  end
+endtask
+for(genvar p=0;p<PORTS;p++) begin : wm_sources
   assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p] || !WRAPPER_MANAGEMENT)
     awvalid[p]&&!awready[p] |=> awvalid[p]&&$stable(aw[p]));
   assert property(@(posedge axi_clk[p]) disable iff(!monitor_rst_n[p] || !WRAPPER_MANAGEMENT)
@@ -57,7 +54,7 @@ end
 for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
   `include "wrapper_maintenance_observer.svh"
   task automatic sample_pins(input lpddr5_mc_return4_t prepared_return);
-    if(wm_stream!=0 && !finish_observations) begin
+    if(wm_accept_sample()) begin
       assert(qualified[0]==profile) else $fatal(1,"wrapper fixture profile differs from bound image");
       if(status_value[c].config_valid)
         assert(dut.datapath.channels[c].channel.active.profile==qualified[0])
@@ -90,8 +87,7 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       $display("WM_TAIL_BANK channel=%0d bank=%0d act_ready=%0d",c,bank_index,
         dut.datapath.channels[c].channel.backend.scheduler.act_ready_q[bank_index]);
   endtask
-  always @(posedge clk) if(wm_stream!=0 && wm_tick[c]>wm_edge_tick[c]) begin
-    wm_edge_tick[c]<=wm_tick[c];
+  task automatic capture_edge;
     $fdisplay(wm_stream,"{\"kind\":\"edge\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\"}",
       observer.timestamp_ps(),c,wm_tick[c]-1,ca[c].cs,ca[c].address,wck[c],writes[c],reads[c],returns[c]);
     // Live rising-edge inputs and registered outputs, read before NBA.
@@ -113,7 +109,7 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       if(dut.datapath.channels[c].channel.inline_completion_valid && dut.datapath.channels[c].channel.completion_ready_i)
         wm_result("inline_complete",c,dut.datapath.channels[c].channel.inline_completion);
     end
-  end
+  endtask
 end
 task automatic wm_granule(input string kind,input int channel,input lpddr5_mc_granule_t g,input logic [31:0] boot,epoch);
   $fdisplay(wm_stream,"{\"kind\":\"%s\",\"tick\":%0d,\"ps\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"rank\":%0d,\"row\":%0d,\"bank\":%0d,\"column\":%0d,\"write\":%0d,\"bytes\":%0d,\"mask\":\"0x%h\",\"data\":\"0x%h\"}",
@@ -126,8 +122,17 @@ task automatic wm_result(input string kind,input int channel,input lpddr5_mc_cha
     v.is_write,v.physical_done,v.integrity_done,v.failed,v.response,v.data);
 endtask
 `include "wrapper_host_observer.svh"
+// The shared capture skeleton is also executed by wrapper_capture_tb.sv.
+wire wm_core_reset_n=dut.datapath.host.core_reset_n;
+`include "wrapper_capture.svh"
+task automatic wm_close_capture;
+  assert(observer.stream==0) else $fatal(1,"source stream did not close after final CK");
+  $fdisplay(wm_stream,"{\"kind\":\"end\",\"ps\":%0d}",observer.timestamp_ps());
+  $fclose(wm_stream);wm_stream=0;
+endtask
 final begin
+  // An unexpected simulation exit must not manufacture a complete tail.
   if(wm_stream!=0) begin
-    $fdisplay(wm_stream,"{\"kind\":\"end\",\"ps\":%0d}",observer.timestamp_ps());$fclose(wm_stream);
+    $fdisplay(wm_stream,"{\"kind\":\"incomplete\",\"ps\":%0d}",observer.timestamp_ps());$fclose(wm_stream);
   end
 end

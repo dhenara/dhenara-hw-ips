@@ -17,6 +17,7 @@ from wrapper_management import (
     Source,
     final_tail_budget,
     profile_binding,
+    qualify_address_coverage,
     qualify_phases,
     remaining_budget,
 )
@@ -165,6 +166,25 @@ class PhaseTests(unittest.TestCase):
     def test_missing_edge_tail(self):
         with self.assertRaisesRegex(Violation, "phase tail"):
             qualify_phases([e for e in self.records if not (e["kind"] == "edge" and e["tick"] == 2)], self.header)
+
+    def test_every_final_witness_missing_or_duplicate_is_rejected(self):
+        for kind in ("sample", "edge", "management_edge", "window_sample", "window_edge", "host_edge"):
+            final = next(e for e in self.records if e["kind"] == kind and e["tick"] == 2)
+            for records in ([e for e in self.records if e is not final], self.records + [final]):
+                with self.subTest(kind=kind, duplicate=len(records) > len(self.records)), self.assertRaises(Violation):
+                    qualify_phases(records, self.header)
+
+    def test_exact_final_address_coverage_including_idle_source_cycles(self):
+        source = [dict(kind="axi", port=p, ps=t, flags=4) for t in (100, 200) for p in (0, 1)]
+        records = [e | dict(kind="address") for e in source]
+        self.assertEqual(qualify_address_coverage(records, source), 4)
+        for p in (0, 1):
+            final = next(e for e in records if e["port"] == p and e["ps"] == 200)
+            for mutant in ([e for e in records if e is not final], records + [final], records + [final | dict(ps=300)]):
+                with self.assertRaisesRegex(Violation, "address/source"):
+                    qualify_address_coverage(mutant, source)
+        with self.assertRaisesRegex(Violation, "address/source"):
+            qualify_address_coverage(records, source + [source[-1]])
 
     def test_each_raw_bus_is_bound(self):
         for field in BUSES:

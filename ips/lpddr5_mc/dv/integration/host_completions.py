@@ -294,6 +294,7 @@ class HostCompletions:
 
     def finish(self):
         require(self.previous is not None and self.previous["count"] == self.expected, "missing next-edge counter tail")
+        require(not self.reset_pending, "missing post-reset counter tail")
         require(not self.needs_baseline, "unfinished completion recovery accounting")
         require(
             not any(not o["done"] and o["cancelled"] is None for o in self.owners.values()), "live host completion tail"

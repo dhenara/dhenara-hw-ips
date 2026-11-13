@@ -78,7 +78,7 @@ module controller_tb #(
     .ca_o(ca),.wck_o(wck),.write_o(writes),.read_request_o(reads),.return_i(returns),.status_o(status_value),
     .enabled_o(enable),.fault_o(host_fault),.host_settled_o(settled));
   lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(BENCHMARK || WRAPPER_MANAGEMENT)) observer (
-    .clk_ck_i(clk),.rst_ni(observe_traffic),.axi_clk_i(axi_clk),.axi_rst_ni(monitor_rst_n),
+    .clk_ck_i(clk),.rst_ni(observe_traffic),.axi_clk_i(axi_clk),.axi_rst_ni(monitor_rst_n & {PORTS{!WRAPPER_MANAGEMENT || wm_axi_capture}}),
     .awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_i(awready),.arready_i(arready),.wready_i(wready),
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
     .ca_i(ca),.wck_i(wck),.write_i(writes),.read_i(reads),.return_i(returns),.finish_i(finish_observations));

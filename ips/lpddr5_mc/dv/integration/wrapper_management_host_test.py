@@ -112,6 +112,18 @@ def edge(tick, rows=(), requests=(), results=(), count=0, **changes):
     )
 
 
+class FinalResetTests(unittest.TestCase):
+    def test_reset_after_final_host_edge_requires_actual_next_edge(self):
+        host = HostCompletions()
+        host.edge(edge(0, reset_n=0))
+        host.edge(edge(1))
+        host.reset(dict(ps=1875, tick=1, count=0, reset_n=0))
+        with self.assertRaisesRegex(Violation, "post-reset counter tail"):
+            host.finish()
+        host.edge(edge(2, reset_n=0))
+        self.assertEqual(host.finish()["final_count"], 0)
+
+
 class Scenario:
     def __init__(self, failed=True, q=None, participants=None, split=False):
         self.model = HostCompletions()

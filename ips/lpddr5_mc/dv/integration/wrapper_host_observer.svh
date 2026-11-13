@@ -2,8 +2,6 @@
 // The next host_edge observes this edge's counter update; reset has its own
 // falling-edge witness. No DUT state or production diagnostic is assigned.
 `define WM_CORE dut.datapath.host.core
-bit wm_host_seen=0;
-int wm_host_edge_tick=0;
 task automatic wm_host_request(input lpddr5_mc_granule_t q,input logic [31:0] boot,epoch);
   $fwrite(wm_stream,"{\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"write\":%0d,\"channel\":%0d,\"port\":%0d,\"axi_id\":%0d,\"address\":\"0x%h\",\"bytes\":%0d,\"mask\":\"0x%h\",\"data\":\"0x%h\",\"bits\":\"0x%h\"}",q.tag,q.generation,boot,epoch,q.is_write,q.channel_index,q.port_index,q.axi_id,q.address,q.is_64_bytes ? 64 : 32,q.byte_enable,q.data,q);
 endtask
@@ -18,16 +16,14 @@ task automatic wm_host_channel(input int c,input bit inline_mode,write_link,post
   wm_host_completion(dut.datapath.host_completions[c],$signed(`WM_CORE.completion_select[c]));
   $fwrite(wm_stream,"}");
 endtask
-always @(negedge dut.datapath.host.core_reset_n) if(wm_stream!=0 && wm_host_seen && !finish_observations)
+task automatic wm_capture_reset;
   $fdisplay(wm_stream,"{\"kind\":\"host_reset\",\"ps\":%0d,\"tick\":%0d,\"reset_n\":0,\"count\":%0d}",
     observer.timestamp_ps(),wm_host_edge_tick-1,`WM_CORE.stale_completions_o);
+endtask
 // A testbench sampling coroutine reads the asynchronous reset as data; it
 // neither clocks that reset through logic nor introduces a reset synchronizer.
-initial forever begin : wm_host_edge
+task automatic wm_capture_host;
   bit separator;
-  @(posedge clk);
-  if(wm_stream!=0 && wm_tick[0]>wm_host_edge_tick && !finish_observations) begin
-  wm_host_seen=1;wm_host_edge_tick=wm_tick[0];
   $fwrite(wm_stream,"{\"kind\":\"host_edge\",\"ps\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"fatal\":%0d,\"fault\":%0d,\"recover\":%0d,\"enable\":%0d,\"settled\":%0d,\"config_valid\":%0d,\"cfg_valid\":%0d,\"cfg_ready\":%0d,\"config_boot\":%0d,\"config_epoch\":%0d,\"cfg_boot\":%0d,\"cfg_epoch\":%0d,\"count\":%0d,\"external_abort\":%0d,\"posted_early\":%0d,\"ledger\":[",
     observer.timestamp_ps(),wm_tick[0]-1,`WM_CORE.rst_ni,`WM_CORE.fatal_i,`WM_CORE.fault_o,`WM_CORE.recover_i,`WM_CORE.enable_i,`WM_CORE.host_settled_o,
     `WM_CORE.config_valid_o,`WM_CORE.cfg_valid_i,`WM_CORE.cfg_ready_o,`WM_CORE.config_q.boot_epoch,`WM_CORE.config_q.config_epoch,`WM_CORE.cfg_i.boot_epoch,`WM_CORE.cfg_i.config_epoch,
@@ -42,6 +38,5 @@ initial forever begin : wm_host_edge
   $fwrite(wm_stream,",");
   wm_host_channel(1,dut.datapath.channels[1].channel.active.inline_ecc,dut.datapath.channels[1].channel.active.profile.write_link,dut.datapath.channels[1].channel.active.posted);
   $fdisplay(wm_stream,"]}");
-  end
-end
+endtask
 `undef WM_CORE

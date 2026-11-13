@@ -831,6 +831,19 @@ class Run:
         )
 
 
+def qualify_address_coverage(records, source):
+    """Every observed AXI cycle needs its actual address-bus witness, even idle."""
+    address_edges = [(e["port"], e["ps"]) for e in records if e["kind"] == "address"]
+    source_edges = [(e["port"], e["ps"]) for e in source if e["kind"] == "axi"]
+    require(
+        len(address_edges) == len(set(address_edges))
+        and len(source_edges) == len(set(source_edges))
+        and set(address_edges) == set(source_edges),
+        "address/source edge coverage",
+    )
+    return len(address_edges)
+
+
 def check(wrapper_path, source_path):
     records = [json.loads(line) for line in Path(wrapper_path).read_text().splitlines()]
     source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
@@ -841,12 +854,7 @@ def check(wrapper_path, source_path):
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")
     phases = qualify_phases(records[1:-1], header)
-    address_edges = [(e["port"], e["ps"]) for e in records if e["kind"] == "address"]
-    source_edges = [(e["port"], e["ps"]) for e in source if e["kind"] == "axi"]
-    require(
-        len(address_edges) == len(set(address_edges)) and set(address_edges) == set(source_edges),
-        "address/source edge coverage",
-    )
+    address_samples = qualify_address_coverage(records, source)
     # CK model samples before the later edge. All actual internal events carry
     # edge timestamps; source admission precedes owner acceptance at a tie.
     order = {
@@ -877,7 +885,7 @@ def check(wrapper_path, source_path):
         run.event(e)
     return run.finish() | {
         "phase_samples": phases,
-        "address_samples": len(address_edges),
+        "address_samples": address_samples,
         "raw_sha256": hashlib.sha256(Path(wrapper_path).read_bytes()).hexdigest(),
         "source_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest(),
     }

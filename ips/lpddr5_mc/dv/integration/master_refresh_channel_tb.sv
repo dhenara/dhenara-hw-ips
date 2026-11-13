@@ -154,7 +154,11 @@ module master_refresh_channel_tb;
       assert(status_value.fault && status_value.fault_code==12 && !management_out.phymstr_ack && !status_value.memory_trusted)
         else $fatal(1,"pending RFM must fail bounded entry safely");
       repeat(180) begin tick();assert(status_value.fault && !management_out.phymstr_ack && !dut.admission && !dut.issue_enable && !status_value.memory_trusted) else $fatal(1,"RFM entry containment");end
-      assert(sent==received) else $fatal(1,"RFM fault granules did not settle sent=%0d completed=%0d",sent,received);
+      // A channel fault blocks this not-yet-issued read. The caller owns
+      // fatal host settlement; retain its obligation instead of fabricating
+      // a channel completion or claiming host settlement in this fixture.
+      assert(sent==63 && received==62 && !host_settled)
+        else $fatal(1,"RFM retained pending read accounting sent=%0d completed=%0d",sent,received);
     end else begin
       assert(management_out.phymstr_ack && host_settled && first_rfm_at>=0
         && ck-1>=first_rfm_at+int'(cfg.profile.dram_ck_trfm_ab)) else $fatal(1,"late RFM entry gate response=%0d outstanding=%0d",ck-1-entry_at,sent-received);

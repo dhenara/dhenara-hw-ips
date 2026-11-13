@@ -48,13 +48,13 @@ def replay_rfm(rows, profile, mode):
                 ack = ck
             if sample["fault"] and fault is None:
                 fault = ck
-            before = dict(raa=list(dram.maintenance.raa[0]), last_refresh=dram.maintenance.last_refresh[0])
+            before = dict(raa=[int(n) for n in dram.maintenance.raa[0]], last_refresh=dram.maintenance.last_refresh[0])
             count = len(dram.bursts)
             master.observe(edge, sample)
             if edge["pin_cs"]:
                 op = decode(edge["pin_ca"])
                 if op.kind == "RFM":
-                    decrement = dram.maintenance.imt * (1, 1.5, 2, 4)[profile["device"]["mr57"] & 3]
+                    decrement = dram.maintenance.imt * (2, 3, 4, 8)[profile["device"]["mr57"] & 3] // 2
                     require(op.all_banks and before["raa"][0] >= dram.maintenance.maximum - 1, "RFM natural ACT debt")
                     require(
                         dram.maintenance.raa[0] == [max(0, n - decrement) for n in before["raa"]]
@@ -66,7 +66,8 @@ def replay_rfm(rows, profile, mode):
                             ck=ck,
                             before=before,
                             after=dict(
-                                raa=list(dram.maintenance.raa[0]), last_refresh=dram.maintenance.last_refresh[0]
+                                raa=[int(n) for n in dram.maintenance.raa[0]],
+                                last_refresh=dram.maintenance.last_refresh[0],
                             ),
                             recovered=max(b.ready for b in dram.banks[0]),
                         )
@@ -74,7 +75,7 @@ def replay_rfm(rows, profile, mode):
                 elif op.kind == "REF":
                     refs.append(ck)
             if edge["maintenance_valid"] and edge["maintenance_ready"] and edge["maintenance_rfm"]:
-                decrement = dram.maintenance.imt * (1, 1.5, 2, 4)[profile["device"]["mr57"] & 3]
+                decrement = dram.maintenance.imt * (2, 3, 4, 8)[profile["device"]["mr57"] & 3] // 2
                 require(
                     sample["raa0"] == max(0, edge["raa0"] - decrement)
                     and sample["last_refresh0"] == edge["last_refresh0"],
@@ -125,10 +126,21 @@ def replay_rfm(rows, profile, mode):
         except ValueError as error:
             error.observation = dict(edge=edge, sample=sample)
             raise
-    require(rfm and not live and len(accepted) == len(completed), "RFM incomplete work/physical proof")
+    require(rfm, "RFM missing physical proof")
     require(dram.memory == {(0, 15, 0, 0): 0xA5}, "RFM initial memory preservation")
     require(requested is not None, "RFM missing entry request")
     if mode == 6:
+        # This interface has no fatal-cancellation return. The real host
+        # settles its own responses before confirmed destructive recovery.
+        # Keep the exact unissued read pending and settlement false here.
+        require(
+            set(live) == {3062}
+            and live[3062]["burst"] is None
+            and len(accepted) == 63
+            and len(completed) == 62
+            and not samples[-1]["settled"],
+            "RFM retained pending obligation",
+        )
         trigger = next(e for e in edges if e["ck"] == requested)
         require(trigger["maintenance_valid"] and trigger["maintenance_rfm"], "RFM pending trigger")
         require(fault == requested + profile["management_ck"]["tphymstr_resp"] + 1, "RFM first overdue fault")
@@ -145,6 +157,7 @@ def replay_rfm(rows, profile, mode):
         # No healthy completed master window is claimed for a failed entry.
         require(master.ack_at is None and not master.requests, "RFM fault ownership")
     else:
+        require(not live and len(accepted) == len(completed) == 67, "RFM incomplete healthy work")
         require(fault is None and requested == rfm[0]["recovered"] - 1, "RFM late physical trigger")
         master.finish()
         require(ack is not None and ack >= rfm[0]["recovered"], "RFM entry before recovery")
@@ -165,9 +178,14 @@ def replay_rfm(rows, profile, mode):
         periodic_ref=refs,
         accepted=accepted,
         completed=completed,
+        retained_pending=[
+            dict(tag=owner["tag"], address=owner["address"], accepted=owner["accepted"], physical_read_issued=False)
+            for owner in live.values()
+        ],
+        host_error_settlement_qualified=False,
         physical_reads=issues,
         windows=master.windows,
-        final_raa=list(dram.maintenance.raa[0]),
+        final_raa=[int(n) for n in dram.maintenance.raa[0]],
         final_last_refresh=dram.maintenance.last_refresh[0],
         final_retention_interval=dram.maintenance.interval,
         final_ck=master.last_ck,

@@ -4,7 +4,7 @@ import copy
 import unittest
 
 from system.host import Address, Violation
-from wrapper_management import Addresses, BUSES, Run, Source, profile_binding, qualify_phases, remaining_budget
+from wrapper_management import BUSES, Addresses, Run, Source, profile_binding, qualify_phases, remaining_budget
 
 
 def sample(**changes):

@@ -1,22 +1,23 @@
 """Bind complete physical reads, including padding, to admitted AXI ranges."""
 
-from physical_ownership import select
+from physical_ownership import GranuleOwnership
 from system.host import HostScoreboard, require
 
 
 class ReadOwnership:
-    def __init__(self, host: HostScoreboard):
+    def __init__(self, host: HostScoreboard, granule_bytes=64):
         self.host = host
         self.bursts = {}
         self.pending = {}
         self.seen = {}
         self.last_ps = {}
-        self.cursor = {}
+        self.source = GranuleOwnership(host, granule_bytes)
+        self.cursor = self.source.cursor
 
     def begin(self, identity, addresses):
         addresses = set(addresses)
         require(identity not in self.bursts, "duplicate physical read identity")
-        tag = select(self.host, addresses, False, self.cursor)
+        tag = self.source.begin(addresses, False)
         self.bursts[identity] = (tag, addresses, set())
         self.pending[tag] = self.pending.get(tag, 0) + len(addresses)
 

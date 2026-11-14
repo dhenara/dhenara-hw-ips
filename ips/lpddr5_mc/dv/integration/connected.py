@@ -36,6 +36,7 @@ def check(
     mr4_change_ck: int | None = None,
     id_bits: int = 16,
     address_bits: int = 40,
+    granule_bytes: int = 64,
     fault_ps: int | None = None,
     observe_axi: bool = False,
 ) -> dict:
@@ -56,8 +57,8 @@ def check(
     host = HostScoreboard(
         header["bus_bytes"], ports, 2 * ports * depth, mapped_end=mapped_end, id_bits=id_bits, address_bits=address_bits
     )
-    read_ownership = ReadOwnership(host)
-    write_ownership = WriteOwnership(host)
+    read_ownership = ReadOwnership(host, granule_bytes)
+    write_ownership = WriteOwnership(host, granule_bytes)
     phy = [DigitalPhy(profile) for _ in range(channels)]
     wck = [WckObservations(profile) for _ in range(channels)]
     thermal = [ThermalReturns(p.dram.maintenance) for p in phy]

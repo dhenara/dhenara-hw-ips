@@ -7,6 +7,21 @@ from system.host import Address, HostScoreboard, Violation
 
 
 class ReadOwnershipTests(unittest.TestCase):
+    def test_split_padding_is_owned_but_cannot_retire_before_both_halves(self):
+        host = HostScoreboard()
+        tag = host.admit(Address(0, 1, 3, size=0), False)
+        reads = ReadOwnership(host)
+        reads.begin(0, range(32))
+        reads.observe(0, range(32), 100)
+        with self.assertRaisesRegex(Violation, "including padding"):
+            reads.complete_before(tag, 200)
+        reads.begin(1, range(32, 64))
+        reads.observe(1, range(32, 63), 200)
+        self.assertFalse(reads.ready(tag, 300))
+        reads.observe(1, {63}, 300)
+        reads.complete_before(tag, 300)
+        reads.finish()
+
     def test_padding_is_not_a_second_source_but_must_complete(self):
         host = HostScoreboard()
         tag = host.admit(Address(0, 1, 3, size=2), False)  # One byte in its first beat.

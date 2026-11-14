@@ -70,6 +70,7 @@ def main():
             mapped_end=(1 << 30) * cfg["CHANNELS"] * cfg["RANKS"] if cfg["RANKS"] == 2 else 1 << 20,
             id_bits=cfg["ID_BITS"],
             address_bits=cfg["ADDRESS_BITS"],
+            granule_bytes=cfg["GRANULE_BYTES"],
         )
         result["axi_stress_observations"] = measure(trace, log, original["seed"])
         result["workload_costs"] = costs(trace)

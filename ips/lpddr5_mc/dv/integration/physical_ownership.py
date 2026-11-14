@@ -45,17 +45,57 @@ def select(host, addresses, write, cursors):
     return tag
 
 
-class WriteOwnership:
-    def __init__(self, host):
+class GranuleOwnership:
+    """Keep split physical fragments in one configured source granule.
+
+    A masked 64-byte write uses two MWR16 commands, even when all requested
+    bytes are in one half. The other, fully masked half still owns a command
+    and pin tail. Advance the source cursor only after both halves bind.
+    No DUT tag or completion signal is used to infer this relationship.
+    """
+
+    def __init__(self, host, granule_bytes=64):
+        require(granule_bytes in (32, 64), "configured physical ownership granule")
         self.host = host
+        self.granule_bytes = granule_bytes
         self.cursor = {}
+        self.fragments = {}
+
+    def begin(self, addresses, write):
+        addresses = set(addresses)
+        require(len(addresses) in (32, 64), "physical access granule size")
+        start = min(addresses)
+        require(
+            start % len(addresses) == 0 and addresses == set(range(start, start + len(addresses))),
+            "physical fragment alignment/coverage",
+        )
+        base = start // self.granule_bytes * self.granule_bytes
+        complete = set(range(base, base + self.granule_bytes))
+        require(addresses <= complete, "physical fragment exceeds configured granule")
+        next_cursor = dict(self.cursor)
+        tag = select(self.host, complete, write, next_cursor)
+        seen = self.fragments.setdefault(tag, (base, set()))
+        require(seen[0] == base, "physical access skips incomplete granule")
+        require(not seen[1] & addresses, "duplicate physical granule fragment")
+        seen[1].update(addresses)
+        if seen[1] == complete:
+            self.cursor[tag] = next_cursor[tag]
+            del self.fragments[tag]
+        return tag
+
+
+class WriteOwnership:
+    def __init__(self, host, granule_bytes=64):
+        self.host = host
+        self.source = GranuleOwnership(host, granule_bytes)
+        self.cursor = self.source.cursor
         self.bursts = {}
         self.last_ps = {}
 
     def begin(self, identity, addresses, final_ps):
         require(identity not in self.bursts, "duplicate physical write identity")
         addresses = set(addresses)
-        tag = select(self.host, addresses, True, self.cursor)
+        tag = self.source.begin(addresses, True)
         t = self.host.transactions[tag]
         require(len(t.w) == len(t.ranges), "write command before full validation")
         self.bursts[identity] = (tag, addresses)

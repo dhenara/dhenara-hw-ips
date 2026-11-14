@@ -8,6 +8,62 @@ from system.host import Address, HostScoreboard, Violation
 
 
 class PhysicalOwnershipTests(unittest.TestCase):
+    def test_masked_fixed_write_keeps_both_mwr16_halves_and_repeated_values(self):
+        host = HostScoreboard()
+        tag = host.admit(Address(0, 1, 0, length=1, size=0, burst=0), True)
+        host.w(0, 170, 1, False)
+        host.w(0, 147, 1, True)
+        writes = WriteOwnership(host)
+        for beat, value in enumerate((170, 147)):
+            writes.begin((beat, 0), range(32), 100 + beat * 100)
+            writes.pin((beat, 0), 0, value)
+            self.assertFalse(writes.ready(tag, 1000))
+            # The second MWR16 is entirely masked, but must bind and drain.
+            writes.begin((beat, 1), range(32, 64), 150 + beat * 100)
+            self.assertEqual(writes.cursor[tag], beat + 1)
+        self.assertFalse(writes.ready(tag, 249))
+        writes.complete_before(tag, 250)
+        host.physical_done(tag)
+        host.integrity_done(tag)
+        host.offer(tag, 0, 0, True)
+        host.handshake(tag)
+        host.finish()
+        self.assertEqual(host.memory, {0: 147})
+        self.assertEqual(host.transactions[tag].pin_counts, {0: 2})
+
+    def test_duplicate_split_half_or_unmasked_padding_is_rejected(self):
+        host = HostScoreboard()
+        host.admit(Address(0, 1, 0, size=0), True)
+        host.w(0, 170, 1, True)
+        writes = WriteOwnership(host)
+        writes.begin(0, range(32), 100)
+        with self.assertRaisesRegex(Violation, "duplicate physical granule fragment"):
+            writes.begin(1, range(32), 200)
+        writes.begin(2, range(32, 64), 200)
+        with self.assertRaisesRegex(Violation, "unexpected physical write byte"):
+            writes.pin(2, 32, 0)
+
+    def test_configured_g32_does_not_authorize_an_extra_masked_half(self):
+        host = HostScoreboard()
+        tag = host.admit(Address(0, 1, 0, size=0), True)
+        host.w(0, 170, 1, True)
+        writes = WriteOwnership(host, granule_bytes=32)
+        writes.begin(0, range(32), 100)
+        writes.pin(0, 0, 170)
+        writes.complete_before(tag, 100)
+        with self.assertRaisesRegex(Violation, "no admitted owner"):
+            writes.begin(1, range(32, 64), 200)
+
+    def test_split_fragments_cannot_skip_a_source_granule(self):
+        host = HostScoreboard()
+        host.admit(Address(0, 1, 0, length=7), True)
+        for beat in range(8):
+            host.w(0, 0, 65535, beat == 7)
+        writes = WriteOwnership(host)
+        writes.begin(0, range(32), 100)
+        with self.assertRaisesRegex(Violation, "misses next source beat"):
+            writes.begin(1, range(64, 96), 200)
+
     def test_write_read_write_snapshots_before_response_handshakes(self):
         host = HostScoreboard()
         first = host.admit(Address(0, 1, 0, length=3), True)

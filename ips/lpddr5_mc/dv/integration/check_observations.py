@@ -153,6 +153,7 @@ def main():
     parser.add_argument("--profile", type=int, default=0)
     parser.add_argument("--ranks", type=int, default=1)
     parser.add_argument("--depth", type=int, default=16)
+    parser.add_argument("--granule-bytes", type=int, choices=(32, 64), default=64)
     parser.add_argument("--mapped-end", type=lambda value: int(value, 0), default=1 << 20)
     parser.add_argument("--mr4-change-ck", type=int)
     args = parser.parse_args()
@@ -183,6 +184,7 @@ def main():
             profile,
             ranks=args.ranks,
             depth=args.depth,
+            granule_bytes=args.granule_bytes,
             mapped_end=args.mapped_end,
             mr4_change_ck=args.mr4_change_ck,
         )
@@ -203,6 +205,7 @@ def main():
                     profile,
                     ranks=args.ranks,
                     depth=args.depth,
+                    granule_bytes=args.granule_bytes,
                     mapped_end=args.mapped_end,
                     mr4_change_ck=args.mr4_change_ck,
                 )

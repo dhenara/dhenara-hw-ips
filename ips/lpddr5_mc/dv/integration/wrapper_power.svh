@@ -64,7 +64,9 @@ task automatic wrapper_power_run;
   wm_mark("power_sleeping");
   // SR owns retention for a hold exceeding tREFI. Ordinary PD remains short;
   // its external retention bound is never suspended by this fixture.
-  repeat(wp_policy==1 ? 40 : 3500) @(negedge clk);
+  // Keep the endpoint in the same post-edge phase as power_sleeping. Ending
+  // exactly on negedge would shorten the selected residence by one picosecond.
+  repeat(wp_policy==1 ? 40 : 3500) begin @(negedge clk);#0.001;end
   wm_mark("power_wake_offer");
   // send_ar holds the real source VALID until acceptance; the synchronized
   // source VALID wake precedes its handshake, which must follow recovery.

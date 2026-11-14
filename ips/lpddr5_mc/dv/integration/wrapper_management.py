@@ -674,6 +674,19 @@ class Run:
             self.cases.append(c)
             self.case = None
 
+    def validate_profile(self, e):
+        """Bind the default fixed-profile fixture without permitting mutation."""
+        if self.profile_image is None:
+            self.profile_image = e["profile_image"]
+        require(e["profile_image"] == self.profile_image, "unbound profile mutation")
+
+    def recovery_allowed(self):
+        return bool(self.case and self.case["failed"])
+
+    def record_recovery(self, e):
+        require(self.recovery_allowed(), "unexpected destructive recovery")
+        self.case["reset"] = True
+
     def sample(self, e):
         channel = e["channel"]
         old = self.last[channel]
@@ -681,15 +694,13 @@ class Run:
         released = self.management[channel].sample(e)
         if released and channel == 0 and self.case is not None:
             self.case["handback"] = True
-        if self.profile_image is None:
-            self.profile_image = e["profile_image"]
-        require(e["profile_image"] == self.profile_image, "unbound profile mutation")
+        self.validate_profile(e)
         c = self.case
         if c and c["id"] == 4 and channel == 0 and "request" in c and not c.get("reset"):
             require(not e["error"] and not e["master"], "RFM containment/external error")
             if e["fault"] and self.timeout.fatal is None:
                 self.timeout.failed(e, self.window_samples[0, e["tick"]])
-        transition = self.recovery.sample(e, self.source.settled(), bool(c and c["failed"]))
+        transition = self.recovery.sample(e, self.source.settled(), self.recovery_allowed())
         self.recovery_channels = self.recovery.completed
         if channel == 0:
             # While admission is open the remote empty reduction may still
@@ -725,8 +736,7 @@ class Run:
                 )
                 self.source.host.reset(destructive=True)
                 self.source.tags.clear()
-                require(c and c["failed"], "unexpected destructive recovery")
-                c["reset"] = True
+                self.record_recovery(e)
             if transition:
                 self.boot = e["boot"]
         reset = not e["reset_n"] or e["memory_reset"] or e["destructive"]

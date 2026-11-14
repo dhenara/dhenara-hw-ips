@@ -95,7 +95,7 @@ module controller_tb #(
     logic unused_counts;
     assign unused_counts=^{mr43_count,mr4_count,zq_count,refresh_count,rfm_count};
     lpddr5_mc_channel_memory #(.INITIAL_PATTERN(BENCHMARK),.CHANNELS(CHANNELS),.CHANNEL_INDEX(c)) memory_model (
-      .profile_i(qualified[0]),.ca_i(ca[c]),.write_i(writes[c]),.read_i(reads[c]),.return_o(returns[c]),
+      .profile_i(wf_case>=0 ? wf_memory_profile[c] : qualified[0]),.ca_i(ca[c]),.write_i(writes[c]),.read_i(reads[c]),.return_o(returns[c]),
       .mr43_i(8'd0),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
     initial forever begin
       @(negedge clk);
@@ -275,7 +275,13 @@ module controller_tb #(
     for(int i=0;i<65536;i++) expected[i]=0;
     expected_profile(PROFILE_NUMBER);profile.ranks=2'(RANKS);profile.mr57=3;
     check(profile_valid(profile),"nonzero paired-bank MR57 descriptor must be valid");
+    if(!$value$plusargs("wrapper_fsp_case=%d",wf_case)) wf_case=-1;
     for(int f=0;f<3;f++) qualified[f]=profile;
+    if(wf_case>=0) begin
+      check(WRAPPER_MANAGEMENT && wf_case inside {0,1,2},"FSP selection requires wrapper");
+      expected_profile(24);profile.ranks=1;profile.mr57=3;qualified[1]=profile;
+      expected_profile(PROFILE_NUMBER);profile.ranks=2'(RANKS);profile.mr57=3;
+    end
     check($value$plusargs("images=%s",path),"missing image vectors");stream=$fopen(path,"r");
     check(stream!=0 && $fscanf(stream,"%d",count)==1 && count==192,"image vector header");
     // Select all three FSP banks for the exact requested profile/geometry.
@@ -283,7 +289,11 @@ module controller_tb #(
       check($fscanf(stream,"%d %d %d",number,ranks,target)==3,"image identity");
       for(int regindex=0;regindex<REG_COUNT;regindex++) begin
         check($fscanf(stream,"%h",word_value)==1,"image word");
-        if(number==PROFILE_NUMBER && ranks==RANKS && (target==0 || REG_FSP[regindex]==target)) staging_image[regindex]=word_value;
+        if(ranks==RANKS && ((number==PROFILE_NUMBER &&
+            ((target==0 && (wf_case<0 || REG_FSP[regindex]!=1)) ||
+            (REG_FSP[regindex]==target && (wf_case<0 || target!=1)))) ||
+            (wf_case>=0 && number==24 && target==1 && REG_FSP[regindex]==1)))
+          staging_image[regindex]=word_value;
       end
     end
     $fclose(stream);staging_image[INDEX_FSP_VALID]=7;

@@ -4,10 +4,9 @@ import copy
 import unittest
 
 from contracts import commands
-from physical_stream import PhysicalStream
 from system.host import Violation
-from wrapper_management import profile_binding
-from wrapper_power import PowerWitness, qualify_power_edges
+from wrapper_management import PhysicalStream, profile_binding
+from wrapper_power import PowerRun, PowerWitness, qualify_power_edges
 
 
 def edge(tick=0, **changes):
@@ -44,6 +43,24 @@ def raw(tick, ca=0, cs=0):
 
 
 class PowerTests(unittest.TestCase):
+    def test_residence_requires_the_full_selected_ck_interval(self):
+        for policy, cycles in ((1, 40), (2, 3500)):
+            for delta in (-1, 0, 1):
+                with self.subTest(policy=policy, delta_ps=delta):
+                    run = PowerRun.__new__(PowerRun)
+                    run.policy = policy
+                    run.p = {"ck_ps": 1250}
+                    run.markers = dict.fromkeys(
+                        ("power_begin", "power_dirty", "power_deferred", "power_source_settled", "power_sleeping"),
+                        1001,
+                    )
+                    marker = {"name": "power_wake_offer", "ps": 1001 + cycles * 1250 + delta}
+                    if delta < 0:
+                        with self.assertRaisesRegex(Violation, "residence shorter"):
+                            run.marker(marker)
+                    else:
+                        run.marker(marker)
+
     def test_held_source_blocks_request_independently(self):
         w = PowerWitness(1)
         for t in range(128):

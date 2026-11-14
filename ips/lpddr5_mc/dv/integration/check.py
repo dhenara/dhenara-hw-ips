@@ -90,6 +90,12 @@ def main() -> None:
         "--wrapper-power-policy", type=int, choices=(1, 2), help="fixed-profile automatic power deferral/wake"
     )
     parser.add_argument(
+        "--wrapper-fsp-case",
+        type=int,
+        choices=(0, 1, 2),
+        help="unanimous decline, constant-CK roundtrip, stuck-return recovery",
+    )
+    parser.add_argument(
         "--wrapper-case", type=int, choices=(4, 5), help="source-prepared RFM fatal or active PHY REF case"
     )
     parser.add_argument(
@@ -136,6 +142,7 @@ def main() -> None:
         or args.inline_lifecycle
         or args.wrapper_management
         or args.wrapper_power_policy is not None
+        or args.wrapper_fsp_case is not None
         or args.prepare_wrapper_management
         or args.wrapper_case is not None
         or args.continuous_observer
@@ -165,8 +172,20 @@ def main() -> None:
         or args.benchmark_direction
     ):
         parser.error("ECC composition requires the isolated one-port/channel/rank AXI128 inline datapath/profile0")
-    if args.prepare_wrapper_management or args.wrapper_power_policy is not None:
+    if args.wrapper_fsp_case is not None and (
+        args.ports,
+        args.channels,
+        args.ranks,
+        args.data_bits,
+        args.depth,
+        args.profile_number,
+        args.service_div,
+    ) != (2, 2, 1, 128, 16, 0, 2):
+        parser.error("FSP requires P2/C2/R1 AXI128/depth16/profile0/CK2")
+    if args.prepare_wrapper_management or args.wrapper_power_policy is not None or args.wrapper_fsp_case is not None:
         args.wrapper_management = True
+    if sum(x is not None for x in (args.wrapper_power_policy, args.wrapper_case, args.wrapper_fsp_case)) > 1:
+        parser.error("power, FSP and unsolicited management are separate selections")
     if args.wrapper_power_policy is not None and args.wrapper_case is not None:
         parser.error("automatic power and unsolicited management are separate selections")
     if args.wrapper_case is not None and not args.wrapper_management:
@@ -412,6 +431,7 @@ def main() -> None:
         "wrapper_management": args.wrapper_management,
         "wrapper_case": args.wrapper_case,
         "wrapper_power_policy": args.wrapper_power_policy,
+        "wrapper_fsp_case": args.wrapper_fsp_case,
         "preparation_only": args.prepare_wrapper_management,
         "continuous_observer": args.continuous_observer,
         "cap_mode": args.cap_mode,
@@ -537,6 +557,15 @@ def main() -> None:
 
         if args.wrapper_power_policy is not None:
             commands[-1].append(f"+wrapper_power_policy={args.wrapper_power_policy}")
+        if args.wrapper_fsp_case is not None:
+            from wrapper_fsp import target_profile
+
+            commands[-1].extend(
+                [
+                    f"+wrapper_fsp_case={args.wrapper_fsp_case}",
+                    "+wrapper_fsp_target_sha256=" + digest(target_profile()),
+                ]
+            )
         result["wrapper_profile"] = profile_binding()
         result["wrapper_schedule"] = remaining_budget(result["wrapper_profile"])
         result["wrapper_maintenance_window"] = window_budget(result["wrapper_profile"])
@@ -623,7 +652,9 @@ def main() -> None:
                 "-s",
                 str(IP / "dv/integration"),
                 "-p",
-                "wrapper*_test.py" if args.wrapper_power_policy is not None else "wrapper_management*_test.py",
+                "wrapper*_test.py"
+                if args.wrapper_power_policy is not None or args.wrapper_fsp_case is not None
+                else "wrapper_management*_test.py",
                 "-v",
             ]
         log = report.with_name(report.stem + "-tooling.log")
@@ -703,7 +734,13 @@ def main() -> None:
                 if not args.benchmark_smoke:
                     require_full_performance(result["benchmark_observations"])
             elif args.wrapper_management:
-                if args.wrapper_power_policy is not None:
+                if args.wrapper_fsp_case is not None:
+                    from wrapper_fsp import check as check_wrapper_fsp
+
+                    result["wrapper_fsp_observations"] = check_wrapper_fsp(
+                        wrapper_path, trace_path, args.wrapper_fsp_case
+                    )
+                elif args.wrapper_power_policy is not None:
                     from wrapper_power import check as check_wrapper_power
 
                     result["wrapper_power_observations"] = check_wrapper_power(

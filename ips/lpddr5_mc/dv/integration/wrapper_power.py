@@ -18,6 +18,7 @@ from wrapper_management import (
     qualify_address_coverage,
     qualify_phases,
 )
+from wrapper_master import PhysicalCommands
 
 
 class PowerWitness:
@@ -137,6 +138,7 @@ def qualify_power_edges(records):
 class PowerRun(Run):
     def __init__(self, p, policy, records):
         super().__init__(p, selected_cases=[], records=records)
+        self.pins = PhysicalCommands(records, p)
         self.policy = policy
         self.power = [PowerWitness(policy), PowerWitness(policy)]
         self.markers = {}
@@ -288,6 +290,7 @@ class PowerRun(Run):
             "source": dict(self.source.counts),
             "host_completions": self.host_completions.finish(),
             "physical": [p.summary() for p in self.physical],
+            "physical_ca_samples": len(self.pins.pins),
             "markers": self.markers,
             "profile_sha256": digest(self.p),
             "limitations": [

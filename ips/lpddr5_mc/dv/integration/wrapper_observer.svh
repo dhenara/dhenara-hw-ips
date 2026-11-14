@@ -67,7 +67,7 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
         observer.timestamp_ps(),c,wm_tick[c],wm_pin_ca[c].cs,wm_pin_ca[c].address,management_out[c].phymstr_ack);
       assert(qualified[0]==profile) else $fatal(1,"wrapper fixture profile differs from bound image");
       if(status_value[c].config_valid)
-        assert(dut.datapath.channels[c].channel.active.profile==qualified[0])
+        assert(dut.datapath.channels[c].channel.active.profile==(wf_case>=0 ? wf_memory_profile[c] : qualified[0]))
           else $fatal(1,"wrapper active profile differs from bound image");
       $fdisplay(wm_stream,"{\"kind\":\"sample\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"memory_reset\":%0d,\"destructive\":%0d,\"confirmed\":%0d,\"reset_request\":%0d,\"settled\":%0d,\"enabled\":%0d,\"host_fault\":%0d,\"fault\":%0d,\"trusted\":%0d,\"owner\":%0d,\"boot\":%0d,\"config\":%0d,\"config_valid\":%0d,\"trained\":%0d,\"training_epoch\":%0d,\"state\":%0d,\"drained\":%0d,\"pin_drained\":%0d,\"ecc_drained\":%0d,\"data_committed\":%0d,\"admission\":%0d,\"phy_update\":%0d,\"master\":%0d,\"rank_valid\":%0d,\"rank_sr\":%0d,\"refresh_request\":%0d,\"refresh_done\":%0d,\"phyupd_req\":%0d,\"phymstr_req\":%0d,\"phyupd_type\":%0d,\"phymstr_type\":%0d,\"phymstr_cs_state\":%0d,\"phymstr_state_sel\":%0d,\"error\":%0d,\"mr4\":%0d,\"mr43\":%0d,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\",\"profile_image\":\"0x%h\",\"prepared_valid\":%0d,\"train_request\":%0d,\"issue\":%0d,\"reset_authorized\":%0d,\"recover_command\":%0d}",
         observer.timestamp_ps(),c,wm_tick[c],rst_n,memory_reset,dut.datapath.channels[c].channel.destructive_reset,reset_confirmed[c],
@@ -76,7 +76,7 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
         status_value[c].pin_drained,status_value[c].ecc_drained,dut.datapath.channels[c].channel.inline_ecc.data_committed_q,dut.datapath.channels[c].channel.admission,management_out[c].phyupd_ack,management_out[c].phymstr_ack,report_valid[c],
         report_sr[c],management_out[c].refresh_request,phy_refresh_done[c],management[c].phyupd_req,management[c].phymstr_req,management[c].phyupd_type,management[c].phymstr_type,
         management[c].phymstr_cs_state,management[c].phymstr_state_sel,management[c].error,mr4_value[c],8'd0,ca[c].cs,ca[c].address,
-        wck[c],writes[c],reads[c],prepared_return,qualified[0],
+        wck[c],writes[c],reads[c],prepared_return,(wf_case>=0 ? wf_memory_profile[c] : qualified[0]),
       dut.datapath.channels[c].channel.prepared_valid_o,status_value[c].train_request,dut.datapath.channels[c].channel.issue_enable,dut.datapath.channels[c].channel.reset_confirmed_i,(dut.datapath.channels[c].channel.command_valid_i && dut.datapath.channels[c].channel.command_i==CH_CMD_RECOVER));
       observe_commands();
       snapshot("window_sample",wm_tick[c]);
@@ -111,6 +111,7 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
       management_out[c].refresh_request,phy_refresh_done[c],status_value[c].boot_epoch,status_value[c].config_epoch,
       dut.datapath.channels[c].channel.prepared_valid_o,status_value[c].train_request,dut.datapath.channels[c].channel.issue_enable,dut.datapath.channels[c].channel.reset_confirmed_i,(dut.datapath.channels[c].channel.command_valid_i && dut.datapath.channels[c].channel.command_i==CH_CMD_RECOVER),status_value[c].config_valid,status_value[c].train_done,status_value[c].memory_trusted,enable,dut.datapath.channels[c].channel.admission,reset_confirmed[c],reset_request,management[c].training_epoch);
     snapshot("window_edge",wm_tick[c]-1);
+    if(wf_case>=0) wf_observers[c].capture_fsp();
     if(rst_n && !dut.datapath.channels[c].channel.destructive_reset && dut.datapath.channels[c].channel.active.inline_ecc) begin
       if(dut.datapath.channels[c].channel.inline_ecc.request_valid_i && dut.datapath.channels[c].channel.inline_ready)
         wm_granule("inline_admit",c,dut.datapath.channels[c].channel.request_i,dut.datapath.request_boot[c],dut.datapath.request_epoch[c]);
@@ -148,3 +149,5 @@ final begin
     $fdisplay(wm_stream,"{\"kind\":\"incomplete\",\"ps\":%0d}",observer.timestamp_ps());$fclose(wm_stream);
   end
 end
+
+`include "wrapper_fsp_observer.svh"

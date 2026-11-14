@@ -101,6 +101,66 @@ class PowerWitness:
         }
 
 
+class DeclineWitness(PowerWitness):
+    """A complete no-response request pulse, counted at consumed rising edges.
+
+    The launch edge records request low before NBA. DRAIN then asserts it and
+    resets elapsed to zero. LP_ACCEPT consumes response_ck high edges, the
+    last of which withdraws the request after NBA; the next edge records low.
+    This is a sample count, not response_ck+1 inclusive endpoint timestamps.
+    """
+
+    def __init__(self, response_ck, idle_ck=64):
+        super().__init__(1, idle_ck)
+        require(response_ck > 0, "invalid low-power response interval")
+        self.response_ck = response_ck
+        self.request_edges = self.declines = 0
+        self.epochs = None
+
+    def status(self, e):
+        require(
+            e["reset_n"]
+            and e["trusted"]
+            and e["config_valid"]
+            and e["trained"]
+            and not any(e[k] for k in ("fault", "host_fault", "destructive", "memory_reset")),
+            "normal decline lost trust or reset/faulted",
+        )
+        epochs = e["boot"], e["config"], e["training_epoch"]
+        if self.epochs is None:
+            self.epochs = epochs
+        require(epochs == self.epochs, "normal decline changed epochs")
+
+    def consume(self, e, **owners):
+        was_requested = self.requested
+        super().consume(e, **owners)
+        require(not e["ctrl_ack"] and not e["data_ack"], "decline received ACK")
+        if self.requested:
+            self.request_edges = self.request_edges + 1 if was_requested else 1
+            require(self.request_edges <= self.response_ck, "decline request exceeded response deadline")
+        elif was_requested:
+            require(self.request_edges == self.response_ck, "decline request withdrew before response deadline")
+            self.request_edges = 0
+            self.declines += 1
+
+    def physical(self, *, sleeping, **_owners):
+        require(not sleeping, "declined opportunity entered physical sleep")
+
+    def finish(self):
+        require(self.declines >= 1 and not self.requested, "missing complete power decline tail")
+        require(self.deferred >= 128, "missing held-source power deferral interval")
+        require(self.epochs is not None, "missing decline trust/epoch witness")
+        return {
+            "policy": self.policy,
+            "declines": self.declines,
+            "response_ck": self.response_ck,
+            "entries": 0,
+            "exits": 0,
+            "deferred_edges": self.deferred,
+            "epochs": self.epochs,
+        }
+
+
 def qualify_power_edges(records):
     reference = {(e["channel"], e["tick"]): e for e in records if e["kind"] == "management_edge"}
     witnesses = [e for e in records if e["kind"] == "power_edge"]
@@ -136,11 +196,17 @@ def qualify_power_edges(records):
 
 
 class PowerRun(Run):
-    def __init__(self, p, policy, records):
+    def __init__(self, p, policy, records, case="entry_wake"):
         super().__init__(p, selected_cases=[], records=records)
         self.pins = PhysicalCommands(records, p)
-        self.policy = policy
-        self.power = [PowerWitness(policy), PowerWitness(policy)]
+        require(case == "entry_wake" or case == "decline" and policy == 1, "unsupported power case")
+        self.policy, self.power_case = policy, case
+        self.power = (
+            [DeclineWitness(p["management_ck"]["tlp_resp"]) for _ in range(2)]
+            if case == "decline"
+            else [PowerWitness(policy), PowerWitness(policy)]
+        )
+        self.decline_held_ps = []
         self.markers = {}
         self.active = False
         self.finished = False
@@ -157,6 +223,8 @@ class PowerRun(Run):
                 not any(e[k] for k in ("fault", "host_fault", "destructive", "memory_reset")),
                 "unexpected power fault/reset",
             )
+            if self.power_case == "decline":
+                self.power[c].status(e)
             state = physical.phy.dram.power[0]
             require(
                 state is None or state[0] == ("PDE" if self.policy == 1 else "SRE"),
@@ -179,6 +247,22 @@ class PowerRun(Run):
                 )
 
     def event(self, e):
+        if self.power_case == "decline" and self.active:
+            require(e["kind"] != "host_reset", "normal decline reset the host")
+            if e["kind"] == "address" and "power_decline_offer" in self.markers:
+                if (
+                    e["port"] == 0
+                    and e["arvalid"]
+                    and not e["arready"]
+                    and e["ar_id"] == 204
+                    and any(w.requested for w in self.power)
+                ):
+                    self.decline_held_ps.append(e["ps"])
+            if e["kind"] in ("aw", "ar") and "power_decline_offer" in self.markers:
+                require(
+                    all(w.declines >= 1 and not w.requested for w in self.power),
+                    "source acceptance before complete normal decline",
+                )
         if e["kind"] == "power_edge":
             c = e["channel"]
             if self.active:
@@ -215,7 +299,11 @@ class PowerRun(Run):
             "power_preserved",
             "power_end",
         ]
-        require(name == expected[len(self.markers)], "missing/reordered power marker")
+        if getattr(self, "power_case", "entry_wake") == "decline":
+            expected[4:6] = ["power_decline_offer"]
+        require(
+            len(self.markers) < len(expected) and name == expected[len(self.markers)], "missing/reordered power marker"
+        )
         self.markers[name] = e["ps"]
         if name == "power_begin":
             self.active = True
@@ -239,6 +327,8 @@ class PowerRun(Run):
             )
         elif name == "power_source_settled":
             require(self.source.settled(), "power marker before real W/R/B settlement")
+        elif name == "power_decline_offer":
+            require(any(w.requested for w in self.power), "decline offer without live opportunity")
         elif name == "power_sleeping":
             require(
                 all(w.sleeping for w in self.power),
@@ -264,10 +354,16 @@ class PowerRun(Run):
                     ),
                     "missing preserved source read",
                 )
-            require(
-                all(w.exited >= 1 for w in self.power),
-                "preserved source service before power exit",
-            )
+            if self.power_case == "decline":
+                require(
+                    self.decline_held_ps and all(w.declines >= 1 for w in self.power),
+                    "missing held source across normal decline",
+                )
+            else:
+                require(
+                    all(w.exited >= 1 for w in self.power),
+                    "preserved source service before power exit",
+                )
         elif name == "power_end":
             require(
                 self.source.settled()
@@ -287,6 +383,8 @@ class PowerRun(Run):
         )
         return {
             "power": [w.finish() for w in self.power],
+            "power_case": self.power_case,
+            "decline_held_source_samples": len(self.decline_held_ps),
             "source": dict(self.source.counts),
             "host_completions": self.host_completions.finish(),
             "physical": [p.summary() for p in self.physical],
@@ -295,15 +393,18 @@ class PowerRun(Run):
             "profile_sha256": digest(self.p),
             "limitations": [
                 "Fixed profile0, P2/C2/R1, AXI128, depth16, inline ECC and CK2 selection only.",
-                "No FSP/ratio transitions, power decline/fault, two-rank or forwarding/merging qualification.",
+                (
+                    "Selected normal no-ACK decline only; no accepted sleep/wake or power-fault qualification."
+                    if self.power_case == "decline"
+                    else "No power decline/fault qualification."
+                ),
+                "No FSP/ratio transitions, two-rank or forwarding/merging qualification.",
             ],
         }
 
 
-def check(wrapper_path, source_path, policy):
-    records = [json.loads(line) for line in Path(wrapper_path).read_text().splitlines()]
-    source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
-    header, p = records[0], profile_binding()
+def qualify_power_binding(header, p, policy, case):
+    """Bind the independent profile, consumed-control phase and selected case."""
     require(
         header["kind"] == "header" and header["profile_sha256"] == digest(p),
         "power profile binding",
@@ -312,6 +413,15 @@ def check(wrapper_path, source_path, policy):
         header.get("power_policy") == policy and header.get("power_phase") == "posedge_before_NBA",
         "unbound power producer",
     )
+    require(header.get("power_case", "entry_wake") == case, "unbound power case")
+    require(case == "entry_wake" or case == "decline" and policy == 1, "unsupported power case")
+
+
+def check(wrapper_path, source_path, policy, case="entry_wake"):
+    records = [json.loads(line) for line in Path(wrapper_path).read_text().splitlines()]
+    source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
+    header, p = records[0], profile_binding()
+    qualify_power_binding(header, p, policy, case)
     require(
         records[-1]["kind"] == source[-1]["kind"] == "end",
         "missing power/source terminal tail",
@@ -349,7 +459,7 @@ def check(wrapper_path, source_path, policy):
             e.get("port", e.get("channel", 0)),
         )
     )
-    run = PowerRun(p, policy, records)
+    run = PowerRun(p, policy, records, case)
     for e in events:
         run.event(e)
     return run.finish() | {

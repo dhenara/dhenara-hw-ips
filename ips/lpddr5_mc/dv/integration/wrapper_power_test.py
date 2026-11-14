@@ -1,12 +1,18 @@
 """Source-only automatic-power witness and persistent-profile sensitivity."""
 
+import contextlib
 import copy
+import io
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from contracts import commands
 from system.host import Violation
-from wrapper_management import PhysicalStream, profile_binding
-from wrapper_power import PowerRun, PowerWitness, qualify_power_edges
+from wrapper_management import PhysicalStream, digest, profile_binding
+from wrapper_power import DeclineWitness, PowerRun, PowerWitness, qualify_power_binding, qualify_power_edges
 
 
 def edge(tick=0, **changes):
@@ -194,6 +200,206 @@ class PowerTests(unittest.TestCase):
         self.assertIsNone(p.phy.dram.power[0])
         with self.assertRaisesRegex(Violation, "rank recovery"):
             p.sample(raw(3512, commands.activate(0, 0)[0], 1))
+
+
+class DeclineTests(unittest.TestCase):
+    @staticmethod
+    def status(**changes):
+        return (
+            dict(
+                reset_n=1,
+                trusted=1,
+                config_valid=1,
+                trained=1,
+                fault=0,
+                host_fault=0,
+                destructive=0,
+                memory_reset=0,
+                boot=0,
+                config=1,
+                training_epoch=0,
+            )
+            | changes
+        )
+
+    def witness(self):
+        w = DeclineWitness(4)
+        w.status(self.status())
+        for tick in range(128):
+            consume(w, edge(tick), source=False)
+        return w
+
+    def test_complete_no_ack_opportunity_is_a_normal_decline(self):
+        w = self.witness()
+        for tick in range(128, 132):
+            consume(w, edge(tick, ctrl_req=1, data_req=1))
+        consume(w, edge(132))
+        result = w.finish()
+        self.assertEqual((result["declines"], result["entries"], result["exits"]), (1, 0, 0))
+
+    def test_missing_truncated_short_and_long_opportunities_fail(self):
+        with self.assertRaisesRegex(Violation, "complete power decline"):
+            self.witness().finish()
+        w = self.witness()
+        consume(w, edge(128, ctrl_req=1, data_req=1))
+        with self.assertRaisesRegex(Violation, "complete power decline"):
+            w.finish()
+        with self.assertRaisesRegex(Violation, "withdrew before"):
+            consume(w, edge(129))
+        w = self.witness()
+        for tick in range(128, 132):
+            consume(w, edge(tick, ctrl_req=1, data_req=1))
+        with self.assertRaisesRegex(Violation, "exceeded response deadline"):
+            consume(w, edge(132, ctrl_req=1, data_req=1))
+
+    def test_partial_or_complete_ack_is_not_a_decline(self):
+        for ctrl, data in ((1, 0), (0, 1), (1, 1)):
+            with self.subTest(ctrl=ctrl, data=data):
+                with self.assertRaisesRegex(Violation, "decline received ACK"):
+                    consume(self.witness(), edge(128, ctrl_req=1, data_req=1, ctrl_ack=ctrl, data_ack=data))
+
+    def test_decline_cannot_enter_physical_sleep(self):
+        with self.assertRaisesRegex(Violation, "entered physical sleep"):
+            self.witness().physical(sleeping=True)
+
+    def test_decline_retains_trust_and_exact_epochs(self):
+        for field in (
+            "trusted",
+            "config_valid",
+            "trained",
+            "reset_n",
+            "fault",
+            "host_fault",
+            "destructive",
+            "memory_reset",
+            "boot",
+            "config",
+            "training_epoch",
+        ):
+            w = self.witness()
+            altered = self.status()
+            altered[field] ^= 1
+            with self.subTest(field=field), self.assertRaises(Violation):
+                w.status(altered)
+
+    def test_source_acceptance_requires_both_completed_declines(self):
+        run = PowerRun.__new__(PowerRun)
+        run.power_case, run.active = "decline", True
+        run.markers = {"power_decline_offer": 1}
+        run.power = [self.witness(), self.witness()]
+        for tick in range(128, 132):
+            consume(run.power[0], edge(tick, ctrl_req=1, data_req=1))
+        consume(run.power[0], edge(132))
+        with self.assertRaisesRegex(Violation, "before complete normal decline"):
+            run.event({"kind": "ar"})
+
+    def test_request_count_uses_consumed_edges_and_not_inclusive_time_endpoints(self):
+        for response_ck in (1, 2, 4, 8):
+            with self.subTest(response_ck=response_ck):
+                w = DeclineWitness(response_ck)
+                w.status(self.status())
+                for tick in range(128):
+                    consume(w, edge(tick), source=False)
+                # Launch was low before NBA; the first high consuming edge
+                # starts at age zero. The low observation has age=response_ck.
+                for age in range(response_ck):
+                    consume(w, edge(128 + age, ctrl_req=1, data_req=1))
+                consume(w, edge(128 + response_ck))
+                self.assertEqual(w.finish()["declines"], 1)
+
+    def test_power_selection_keeps_unsolicited_management_case_state_separate(self):
+        run = PowerRun(profile_binding(), 1, [], case="decline")
+        # An ordinary host settlement is valid outside an unsolicited case.
+        # Reusing Run.case for a selector would misinterpret this event.
+        run.event({"kind": "host_settlement", "tick": 0, "ps": 1250, "fatal": 0})
+
+    def test_missing_terminal_marker_and_stalled_address_tail_reject(self):
+        run = PowerRun(profile_binding(), 1, [], case="decline")
+        with self.assertRaisesRegex(Violation, "missing power terminal marker"):
+            run.finish()
+        run.finished = True
+        run.addresses.held[0, "ar"] = (0, 204, 0)
+        with self.assertRaisesRegex(Violation, "unconsumed source address tail"):
+            run.finish()
+
+    def test_missing_last_consumed_power_or_management_edge_rejects(self):
+        records = []
+        for tick in range(2):
+            for channel in range(2):
+                records.extend(
+                    (
+                        edge(tick, channel=channel, kind="management_edge"),
+                        edge(tick, channel=channel, kind="power_edge"),
+                    )
+                )
+        self.assertEqual(qualify_power_edges(records), 4)
+        for missing_kind in ("management_edge", "power_edge"):
+            altered = [e for e in records if not (e["channel"] == 1 and e["tick"] == 1 and e["kind"] == missing_kind)]
+            with self.subTest(missing_kind=missing_kind), self.assertRaisesRegex(Violation, "power witness"):
+                qualify_power_edges(altered)
+
+
+class PowerBindingTests(unittest.TestCase):
+    def test_profile_policy_phase_and_case_are_independently_bound(self):
+        p = profile_binding()
+        header = dict(
+            kind="header",
+            profile_sha256=digest(p),
+            power_policy=1,
+            power_phase="posedge_before_NBA",
+            power_case="decline",
+        )
+        qualify_power_binding(header, p, 1, "decline")
+        for field, altered in (
+            ("profile_sha256", "wrong"),
+            ("power_policy", 2),
+            ("power_phase", "negedge"),
+            ("power_case", "entry_wake"),
+        ):
+            with self.subTest(field=field), self.assertRaises(Violation):
+                qualify_power_binding(header | {field: altered}, p, 1, "decline")
+        missing = dict(header)
+        del missing["power_case"]
+        with self.assertRaisesRegex(Violation, "power case"):
+            qualify_power_binding(missing, p, 1, "decline")
+        # Old entry/wake traces retain their default; they cannot stand in for
+        # a newly selected decline trace.
+        qualify_power_binding(missing, p, 1, "entry_wake")
+
+    def test_runner_rejects_unbound_decline_before_preparation(self):
+        from importlib.util import module_from_spec, spec_from_file_location
+
+        # Other wrapper tests also load dv/channel/check.py. Bind this runner
+        # by its own path rather than whichever module last occupied "check".
+        spec = spec_from_file_location("power_integration_runner", Path(__file__).with_name("check.py"))
+        self.assertIsNotNone(spec)
+        runner = module_from_spec(spec)
+        spec.loader.exec_module(runner)
+
+        cases = (
+            (["--wrapper-power-case", "decline"], "matching wrapper power policy"),
+            (["--wrapper-power-policy", "2", "--wrapper-power-case", "decline"], "matching wrapper power policy"),
+            (
+                ["--wrapper-power-policy", "1", "--wrapper-power-case", "decline", "--wrapper-fsp-case", "0"],
+                "separate selections",
+            ),
+        )
+        with tempfile.TemporaryDirectory(dir=os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"]) as temporary:
+            for args, reason in cases:
+                stderr = io.StringIO()
+                with (
+                    self.subTest(args=args),
+                    patch(
+                        "sys.argv",
+                        ["check.py", "--family", "controller", "--report", str(Path(temporary) / "unused.json"), *args],
+                    ),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    with self.assertRaises(SystemExit) as error:
+                        runner.main()
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertIn(reason, stderr.getvalue())
+            self.assertFalse((Path(temporary) / "unused.json").exists())
 
 
 if __name__ == "__main__":

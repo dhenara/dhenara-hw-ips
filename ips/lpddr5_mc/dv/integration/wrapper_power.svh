@@ -1,6 +1,7 @@
 // Reachable automatic-power stimulus on the real wrapper. Only APB, AXI and
 // external PHY inputs are driven; no readiness, counter or settlement is forced.
 int wp_policy=0;
+string wp_case="entry_wake";
 logic [CHANNELS-1:0] wp_entered=0;
 localparam int WP_IDLE_CK=64,WP_HOLD_CK=128;
 // A legal PHY returns each low-power acknowledgement after observing the
@@ -8,8 +9,8 @@ localparam int WP_IDLE_CK=64,WP_HOLD_CK=128;
 initial forever begin
   @(negedge clk);#0.001;
   if(WRAPPER_MANAGEMENT && wp_policy!=0 && rst_n) for(int c=0;c<CHANNELS;c++) begin
-    management[c].lp_ctrl_ack=management_out[c].lp_ctrl_req;
-    management[c].lp_data_ack=management_out[c].lp_data_req;
+    management[c].lp_ctrl_ack=wp_case=="decline" ? 1'b0 : management_out[c].lp_ctrl_req;
+    management[c].lp_data_ack=wp_case=="decline" ? 1'b0 : management_out[c].lp_data_req;
     if(ca[c].cs!=0 && ca[c].address[6:0]==(wp_policy==1 ? 7'd64 : 7'd104)) wp_entered[c]=1;
   end
 end
@@ -21,6 +22,25 @@ for(genvar c=0;c<CHANNELS;c++) begin : wp_observers
       dut.datapath.channels[c].channel.active.power_policy,
       wp_policy==1 ? dut.datapath.channels[c].channel.active.power_down_idle_ck : dut.datapath.channels[c].channel.active.self_refresh_idle_ck);
 end
+// The source VALID is held through the normal decline and coordinator re-enable.
+// Neither ACK is offered; no internal lifecycle or readiness state is assigned.
+task automatic wp_decline_service;
+  bit requested;
+  requested=0;
+  for(int n=0;n<8000;n++) begin
+    @(negedge clk);#0.001;
+    check(!host_fault,"normal power decline faulted");
+    for(int c=0;c<CHANNELS;c++)
+      requested |= management_out[c].lp_ctrl_req && management_out[c].lp_data_req;
+    if(requested) break;
+  end
+  check(requested,"normal power decline lacked real request");
+  wm_mark("power_decline_offer");
+  send_ar(0,204,0,4);read_result(0,204,0,4);
+  send_ar(1,205,64,4);read_result(1,205,64,4);wait_settled();
+  check(enable && !host_fault && wp_entered==0,"declined opportunity did not restore source service");
+endtask
+
 task automatic wrapper_power_run;
   int dirty_words;
   bit seen_check;
@@ -53,26 +73,29 @@ task automatic wrapper_power_run;
   end
   wm_mark("power_deferred");
   wm_held_read(201,0);drive_bready(1);wait_settled();wm_mark("power_source_settled");
-  for(int n=0;n<8000;n++) begin
-    @(negedge clk);#0.001;
-    check(!host_fault,"automatic power entry fault");
-    if(status_value[0].state==(wp_policy==1 ? 3 : 4) && status_value[1].state==(wp_policy==1 ? 3 : 4)
-        && (&wp_entered) && management_out[0].lp_ctrl_req && management_out[1].lp_ctrl_req) break;
+  if(wp_case=="decline") wp_decline_service();
+  else begin
+    for(int n=0;n<8000;n++) begin
+      @(negedge clk);#0.001;
+      check(!host_fault,"automatic power entry fault");
+      if(status_value[0].state==(wp_policy==1 ? 3 : 4) && status_value[1].state==(wp_policy==1 ? 3 : 4)
+          && (&wp_entered) && management_out[0].lp_ctrl_req && management_out[1].lp_ctrl_req) break;
+    end
+    check(status_value[0].state==(wp_policy==1 ? 3 : 4) && status_value[1].state==(wp_policy==1 ? 3 : 4)
+      && (&wp_entered) && !enable && settled,"both real channels must enter selected power state");
+    wm_mark("power_sleeping");
+    // SR owns retention for a hold exceeding tREFI. Ordinary PD remains short;
+    // its external retention bound is never suspended by this fixture.
+    // Keep the endpoint in the same post-edge phase as power_sleeping. Ending
+    // exactly on negedge would shorten the selected residence by one picosecond.
+    repeat(wp_policy==1 ? 40 : 3500) begin @(negedge clk);#0.001;end
+    wm_mark("power_wake_offer");
+    // send_ar holds the real source VALID until acceptance; the synchronized
+    // source VALID wake precedes its handshake, which must follow recovery.
+    send_ar(0,204,0,4);read_result(0,204,0,4);
+    send_ar(1,205,64,4);read_result(1,205,64,4);wait_settled();
+    check(enable && !host_fault,"automatic power wake fresh source service");
   end
-  check(status_value[0].state==(wp_policy==1 ? 3 : 4) && status_value[1].state==(wp_policy==1 ? 3 : 4)
-    && (&wp_entered) && !enable && settled,"both real channels must enter selected power state");
-  wm_mark("power_sleeping");
-  // SR owns retention for a hold exceeding tREFI. Ordinary PD remains short;
-  // its external retention bound is never suspended by this fixture.
-  // Keep the endpoint in the same post-edge phase as power_sleeping. Ending
-  // exactly on negedge would shorten the selected residence by one picosecond.
-  repeat(wp_policy==1 ? 40 : 3500) begin @(negedge clk);#0.001;end
-  wm_mark("power_wake_offer");
-  // send_ar holds the real source VALID until acceptance; the synchronized
-  // source VALID wake precedes its handshake, which must follow recovery.
-  send_ar(0,204,0,4);read_result(0,204,0,4);
-  send_ar(1,205,64,4);read_result(1,205,64,4);wait_settled();
-  check(enable && !host_fault,"automatic power wake fresh source service");
   wm_mark("power_preserved");
   // End disabled, preventing a new automatic sleep from truncating the tail.
   write_csr(INDEX_CONTROL,2);
@@ -84,6 +107,6 @@ task automatic wrapper_power_run;
   check(dut.quiesced && settled && status_value[0].drained && status_value[1].drained,
     "power final source/pin/ECC/WCK drain");
   wm_mark("power_end");wrapper_stop_observations();
-  $display("CONTROLLER_WRAPPER_POWER_PASS policy=%0d",wp_policy);
+  $display("CONTROLLER_WRAPPER_POWER_PASS policy=%0d case=%s",wp_policy,wp_case);
   $display("CONTROLLER_INTEGRATION_PASS checks=%0d wrapper_power=1",checks);$finish;
 endtask

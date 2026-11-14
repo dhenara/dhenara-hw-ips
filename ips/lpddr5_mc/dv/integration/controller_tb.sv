@@ -274,6 +274,9 @@ module controller_tb #(
     management='0;aw='0;ar='0;wd='0;phy_refresh_done=0;
     if($value$plusargs("wrapper_power_policy=%d",wp_policy))
       check(WRAPPER_MANAGEMENT && wp_policy inside {1,2},"wrapper power policy selector");
+    if($value$plusargs("wrapper_power_case=%s",wp_case))
+      check(WRAPPER_MANAGEMENT && wp_policy!=0 &&
+        (wp_case=="entry_wake" || (wp_case=="decline" && wp_policy==1)),"wrapper power case selector");
     for(int c=0;c<CHANNELS;c++) mr4_value[c]=9;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
     for(int i=0;i<65536;i++) expected[i]=0;

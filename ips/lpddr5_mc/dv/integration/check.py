@@ -104,6 +104,11 @@ def main() -> None:
         "--wrapper-power-policy", type=int, choices=(1, 2), help="fixed-profile automatic power deferral/wake"
     )
     parser.add_argument(
+        "--wrapper-power-case",
+        choices=("entry_wake", "decline"),
+        help="decline suppresses both PHY ACKs; requires --wrapper-power-policy 1",
+    )
+    parser.add_argument(
         "--wrapper-fsp-case",
         type=int,
         choices=(0, 1, 2),
@@ -229,6 +234,10 @@ def main() -> None:
         args.service_div,
     ) != (2, 2, 1, 128, 16, 0, 2):
         parser.error("FSP requires P2/C2/R1 AXI128/depth16/profile0/CK2")
+    if args.wrapper_power_case is not None and (
+        args.wrapper_power_policy is None or args.wrapper_power_case == "decline" and args.wrapper_power_policy != 1
+    ):
+        parser.error("power case requires a matching wrapper power policy; decline requires policy1")
     if args.prepare_wrapper_management or args.wrapper_power_policy is not None or args.wrapper_fsp_case is not None:
         args.wrapper_management = True
     if sum(x is not None for x in (args.wrapper_power_policy, args.wrapper_case, args.wrapper_fsp_case)) > 1:
@@ -481,6 +490,7 @@ def main() -> None:
         "wrapper_management": args.wrapper_management,
         "wrapper_case": args.wrapper_case,
         "wrapper_power_policy": args.wrapper_power_policy,
+        "wrapper_power_case": args.wrapper_power_case or "entry_wake",
         "wrapper_fsp_case": args.wrapper_fsp_case,
         "preparation_only": args.prepare_wrapper_management,
         "continuous_observer": args.continuous_observer,
@@ -619,6 +629,7 @@ def main() -> None:
 
         if args.wrapper_power_policy is not None:
             commands[-1].append(f"+wrapper_power_policy={args.wrapper_power_policy}")
+            commands[-1].append(f"+wrapper_power_case={args.wrapper_power_case or 'entry_wake'}")
         if args.wrapper_fsp_case is not None:
             from wrapper_fsp import target_profile
 
@@ -810,7 +821,7 @@ def main() -> None:
                     from wrapper_power import check as check_wrapper_power
 
                     result["wrapper_power_observations"] = check_wrapper_power(
-                        wrapper_path, trace_path, args.wrapper_power_policy
+                        wrapper_path, trace_path, args.wrapper_power_policy, args.wrapper_power_case or "entry_wake"
                     )
                 else:
                     from wrapper_management import check as check_wrapper_management

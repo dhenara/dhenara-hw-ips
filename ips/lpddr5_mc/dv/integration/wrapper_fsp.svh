@@ -54,8 +54,8 @@ task automatic wf_resume;
   check(enable && !host_fault,"FSP fresh host admission");
 endtask
 task automatic wf_publish(input int target);
-  logic [31:0] old_epoch;
-  old_epoch=dut.apb_epoch;wf_drive=1;
+  logic [31:0] old_epoch,offered_epoch;
+  old_epoch=dut.apb_epoch;offered_epoch=dut.apb.sequence_q+1;wf_drive=1;
   wm_mark("fsp_publish_offer");write_csr(INDEX_DVFS,32'(target)|32'h100);
   if(wf_case==2) begin
     for(int n=0;n<8000;n++) begin @(negedge clk);#0.001;
@@ -68,9 +68,11 @@ task automatic wf_publish(input int target);
     @(negedge clk);#0.001;check(!host_fault,"FSP normal publication fault");
     if(!dut.apb_busy && dut.apb_valid && (wf_case==0 || dut.apb_epoch>old_epoch)) break;
   end
-  check(!dut.apb_busy && dut.apb_valid && dut.apb_epoch==(wf_case==0 ? old_epoch : dut.config_epoch),
+  check(!dut.apb_busy && dut.apb_valid && dut.apb_epoch==(wf_case==0 ? old_epoch : offered_epoch),
     "FSP common final APB publication");
   if(wf_case==1) begin
+    // The new APB epoch precedes its asynchronous host installation.
+    // Compare the coordinator and both channels only after that crossing.
     for(int n=0;n<500;n++) begin
       @(negedge clk);#0.001;
       if(dut.host_config_active && dut.config_epoch==dut.apb_epoch) break;

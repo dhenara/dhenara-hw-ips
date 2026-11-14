@@ -166,7 +166,7 @@ class PhysicalStream:
         self.completion = CompletionOracle([], 16, p["dfi_wck"]["tphy_rdlat"])
         self.bus = ReadBusOracle(p["ratio"], self.completion)
 
-    def sample(self, e):
+    def sample(self, e, *, command=None):
         ck, p, model = self.ck, self.p, self.phy
         r, d = p["ratio"], p["dfi_wck"]
         m = model.dram.maintenance
@@ -180,7 +180,11 @@ class PhysicalStream:
         m.suspended = suspended
         self.was_trusted = bool(e["trusted"])
         self.wck.sample(ck - self.wck_origin, e["cs"], e["ca"], number(e["wck"]))
-        b = model.command(ck, e["cs"], e["ca"])
+        # A wrapper may bind an independently captured physical CA mux to
+        # this command's delayed DRAM CK. Only CA changes: DFI data/return,
+        # WCK, memory, maintenance and pending obligations keep this owner.
+        cs, ca = (e["cs"], e["ca"]) if command is None else command
+        b = model.command(ck, cs, ca)
         op = decode(e["ca"]) if e["cs"] else None
         self.commands += bool(e["cs"])
         if b is not None:

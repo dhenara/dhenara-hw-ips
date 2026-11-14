@@ -24,6 +24,9 @@ endtask
 // neither clocks that reset through logic nor introduces a reset synchronizer.
 task automatic wm_capture_host;
   bit separator;
+  $fdisplay(wm_stream,"{\"kind\":\"host_settlement\",\"ps\":%0d,\"tick\":%0d,\"wrapper\":%0d,\"core\":%0d,\"bridge\":%0d,\"abort\":%0d,\"admission_busy\":%0d,\"fatal\":%0d}",
+    observer.timestamp_ps(),wm_tick[0]-1,settled,dut.datapath.host.core_settled,dut.datapath.host.bridge_settled,
+    dut.datapath.host.abort_settled,dut.datapath.host.admission_busy,dut.datapath.host.fatal_i);
   $fwrite(wm_stream,"{\"kind\":\"host_edge\",\"ps\":%0d,\"tick\":%0d,\"reset_n\":%0d,\"fatal\":%0d,\"fault\":%0d,\"recover\":%0d,\"enable\":%0d,\"settled\":%0d,\"config_valid\":%0d,\"cfg_valid\":%0d,\"cfg_ready\":%0d,\"config_boot\":%0d,\"config_epoch\":%0d,\"cfg_boot\":%0d,\"cfg_epoch\":%0d,\"count\":%0d,\"external_abort\":%0d,\"posted_early\":%0d,\"ledger\":[",
     observer.timestamp_ps(),wm_tick[0]-1,`WM_CORE.rst_ni,`WM_CORE.fatal_i,`WM_CORE.fault_o,`WM_CORE.recover_i,`WM_CORE.enable_i,`WM_CORE.host_settled_o,
     `WM_CORE.config_valid_o,`WM_CORE.cfg_valid_i,`WM_CORE.cfg_ready_o,`WM_CORE.config_q.boot_epoch,`WM_CORE.config_q.config_epoch,`WM_CORE.cfg_i.boot_epoch,`WM_CORE.cfg_i.config_epoch,

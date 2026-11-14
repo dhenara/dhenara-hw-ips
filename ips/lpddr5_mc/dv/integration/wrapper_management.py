@@ -18,6 +18,7 @@ from host_completions import HOST_FIELDS, HostCompletions
 from maintenance_window import WINDOW_FIELDS, MaintenanceWindow, window_budget
 from system.host import Address, HostScoreboard, require
 from system.trace import number
+from wrapper_master import PhysicalCommands, RfmTimeout, active_refresh, settled_abort
 from wrapper_recovery import RECOVERY_FIELDS, RECOVERY_PHASE, RECOVERY_REGISTERED, RecoveryConsumption
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "channel"))
@@ -286,7 +287,7 @@ def qualify_phases(records, header):
         and header.get("return_source") == "memory_output_after_prepare"
         and header.get("handshake_phase") == "posedge_before_NBA"
         and header.get("management_phase") == "posedge_before_NBA"
-        and header.get("version") == 6
+        and header.get("version") in (6, 7)
         and header.get("recovery_phase") == RECOVERY_PHASE
         and header.get("maintenance_phase") == "falling_and_rising_before_NBA"
         and header.get("host_phase") == "posedge_before_NBA_next_edge_counter"
@@ -393,6 +394,8 @@ class Source:
                 h.handshake(tag)
                 self.held.pop(key, None)
                 self.counts[kind] += 1
+                if h.transactions[tag].done:
+                    self.tags.pop((e["port"], e["id"], kind == "b"))
             else:
                 self.held[key] = tag
 
@@ -478,7 +481,7 @@ class Addresses:
 
 
 class Run:
-    def __init__(self, p):
+    def __init__(self, p, selected_cases=None, records=None):
         self.p = p
         self.addresses = Addresses()
         self.source = Source()
@@ -498,6 +501,16 @@ class Run:
         self.recovery_channels = set()
         self.recovery = RecoveryConsumption(ck_ps=p["ck_ps"])
         self.window = MaintenanceWindow(p)
+        self.selected_cases = list(range(4)) if selected_cases is None else list(selected_cases)
+        self.records = [] if records is None else records
+        self.pins = (
+            PhysicalCommands(self.records, p) if self.records and any(c >= 4 for c in self.selected_cases) else None
+        )
+        self.timeout = RfmTimeout(p["management_ck"]["tphymstr_resp"])
+        self.window_edges = {(e["channel"], e["tick"]): e for e in self.records if e["kind"] == "window_edge"}
+        self.window_samples = {(e["channel"], e["tick"]): e for e in self.records if e["kind"] == "window_sample"}
+        self.host_settlement = None
+        self.fatal_propagation = None
 
     def marker(self, e):
         name = e["name"]
@@ -514,6 +527,53 @@ class Run:
             self.recovery.require_complete()
             self.host_completions.baseline(e, self.last, self.source.settled(), self.recovery_channels)
             self.case["baseline_ps"] = e["ps"]
+        elif name == "extension_setup":
+            require(self.case and self.case["id"] in (4, 5), "unexpected extended setup")
+            # Keep every original reserved-window assertion through the dirty
+            # setup, then end that reservation before natural ACT/REF work.
+            self.window.request(e["ps"], self.physical)
+        elif name in ("rfm_request", "active_request"):
+            c = self.case
+            require(c is not None and "request" not in c, "duplicate/outside-case master request")
+            require(c["id"] == (4 if name == "rfm_request" else 5), "wrong extended master case")
+            if c["id"] == 4:
+                require(self.physical[0].phy.dram.maintenance.raa[0][0] >= 63, "RFM request without decoded ACT debt")
+                w = self.window_samples[0, self.last[0]["tick"]]
+                require(w["maintenance_valid"] and w["maintenance_rfm"], "RFM request outside actual pending entry")
+                require(
+                    any(
+                        not t.done and not t.physical and not t.write and t.address.port == 0
+                        for t in self.source.host.transactions.values()
+                    ),
+                    "RFM request without pending AXI read",
+                )
+                require(
+                    (1, "b") in self.source.held and (1, "r") in self.source.held,
+                    "RFM timeout lacks exposed B/R backpressure",
+                )
+                require(
+                    any(t.write and len(t.w) < len(t.ranges) for t in self.source.host.transactions.values()),
+                    "RFM timeout lacks real trailing W",
+                )
+                c["outstanding_at_request"] = [
+                    dict(
+                        tag=tag,
+                        port=t.address.port,
+                        id=t.address.id,
+                        write=t.write,
+                        accepted_w=len(t.w),
+                        consumed_r=t.response_index,
+                    )
+                    for tag, t in self.source.host.transactions.items()
+                    if not t.done
+                ]
+            else:
+                require(
+                    self.source.settled() and all(p.drained() for p in self.physical),
+                    "active REF entry before real source/physical settlement",
+                )
+            c.update(request=e["ps"], closure_probes={0: 0, 1: 0})
+            self.closure_edges.clear()
         elif name == "request":
             c, h = self.case, self.source.host
             require(
@@ -534,9 +594,17 @@ class Run:
             c["closure_probes"] = {0: 0, 1: 0}
             self.closure_edges.clear()
         elif name == "error":
-            require(self.case["failed"] and self.inline[0].dirty, "error outside dirty failure")
+            require(
+                self.case["failed"] and (self.inline[0].dirty or self.case["id"] == 4), "error outside selected failure"
+            )
+            if self.case["id"] == 4:
+                require(self.timeout.fatal is not None, "RFM marker without actual channel timeout")
             self.case["error"] = e["ps"]
-            self.source.host.fail()
+            # The natural channel timeout reaches the coordinator/host on
+            # its observed registered path. Preserve responses exposed in
+            # that intervening interval; the host witness applies fatal.
+            if self.case["id"] != 4:
+                self.source.host.fail()
         elif name == "stale_confirmation_rejected":
             require(
                 self.source.settled() and all(s and s["reset_request"] and s["boot"] == self.boot for s in self.last),
@@ -553,6 +621,23 @@ class Run:
             )
             self.case["fresh"] = True
             self.case["fresh_ps"] = e["ps"]
+        elif name == "preserved_service":
+            require(self.case and self.case["id"] == 5 and self.case.get("handback"), "preservation before PHY return")
+            # Both original images must have passed physical/inline and AXI
+            # replay since return; a newly written replacement is insufficient.
+            for port, address in ((0, 0), (1, 64)):
+                require(
+                    any(
+                        t.done
+                        and not t.write
+                        and t.address.port == port
+                        and t.address.address == address
+                        and t.address.id == 20 + 20 * 5 + (9 if port == 0 else 8)
+                        for t in self.source.host.transactions.values()
+                    ),
+                    "missing preserved AXI image",
+                )
+            self.case["preserved"] = True
         elif name == "probes_accepted":
             require(
                 all(
@@ -580,6 +665,7 @@ class Run:
             require(not c["failed"] or c["reset"] and c.get("stale_rejected"), "missing confirmed recovery")
             require(not c["failed"] or self.recovery_channels == {0, 1}, "missing both-channel recovery tail")
             require(c["failed"] or "ack_ps" in c and c.get("handback"), "missing ACK/withdrawal/handback")
+            require(c["id"] != 5 or c.get("preserved"), "missing physical-memory preservation after PHY REF")
             require(all(c.get("closed", {}).get(p, 0) > 0 for p in range(2)), "missing source closure observations")
             require(all(c["closure_probes"][p] > 0 for p in range(2)), "missing active AW/AR closure probes")
             require(c.get("probes_accepted"), "missing actual probe admission before W")
@@ -598,6 +684,10 @@ class Run:
             self.profile_image = e["profile_image"]
         require(e["profile_image"] == self.profile_image, "unbound profile mutation")
         c = self.case
+        if c and c["id"] == 4 and channel == 0 and "request" in c and not c.get("reset"):
+            require(not e["error"] and not e["master"], "RFM containment/external error")
+            if e["fault"] and self.timeout.fatal is None:
+                self.timeout.failed(e, self.window_samples[0, e["tick"]])
         transition = self.recovery.sample(e, self.source.settled(), bool(c and c["failed"]))
         self.recovery_channels = self.recovery.completed
         if channel == 0:
@@ -609,6 +699,10 @@ class Run:
                 require(self.source.settled(), "internal settlement before actual W/R/B ledger")
             if e["reset_request"]:
                 require(self.source.settled(), "destructive recovery before source settlement")
+                if c and c["id"] == 4:
+                    require(self.host_settlement is not None, "missing host/bridge settlement witness")
+                    require(self.host_settlement["tick"] == e["tick"] - 1, "stale host/bridge settlement witness")
+                    settled_abort(self.host_settlement, self.source.settled())
             if transition:
                 self.source.retired_epochs.append(
                     [
@@ -654,7 +748,12 @@ class Run:
         if self.physical[channel] is None:
             self.physical[channel] = PhysicalStream(copy.deepcopy(self.p))
         physical = self.physical[channel]
-        physical.sample(e | {"time_ps": e["ps"]})
+        was_drained = physical.drained()
+        command, pin = self.pins.command(e) if self.pins else (None, None)
+        before_raa = list(physical.phy.dram.maintenance.raa[0])
+        physical.sample(e | {"time_ps": e["ps"]}, command=command)
+        if pin:
+            self.pins.applied_ref(pin, physical, before_raa)
         self.window.observe(e, physical)
         if channel != 0 or c is None or "request" not in c or c.get("reset"):
             return
@@ -668,7 +767,8 @@ class Run:
         if active and not e["fault"] and not was_active:
             require(not c["failed"] and self.source.settled() and e["settled"], "ownership before source settlement")
             require(
-                physical.drained() and self.inline[0].live is None, "ownership before independent physical/row/WCK tail"
+                (was_drained if c["id"] == 5 else physical.drained()) and self.inline[0].live is None,
+                "ownership before independent physical/row/WCK tail",
             )
             require(
                 e["ps"] - c["request"]
@@ -676,7 +776,13 @@ class Run:
                 "management response deadline",
             )
             require(
-                e["ps"] - c["request"] <= c.get("schedule", remaining_budget(self.p))["total_ck"] * self.p["ck_ps"],
+                e["ps"] - c["request"]
+                <= (
+                    self.p["management_ck"]["tphymstr_resp"]
+                    if c["id"] == 5
+                    else c.get("schedule", remaining_budget(self.p))["total_ck"]
+                )
+                * self.p["ck_ps"],
                 "selected event schedule exceeded",
             )
             c["entry_elapsed_ck"] = (e["ps"] - c["request"]) / self.p["ck_ps"]
@@ -743,6 +849,14 @@ class Run:
         elif kind == "sample":
             self.sample(e)
         elif kind == "management_edge":
+            if (
+                self.case
+                and self.case["id"] == 4
+                and e["channel"] == 0
+                and "request" in self.case
+                and self.timeout.decision is None
+            ):
+                self.timeout.edge(e, self.window_edges[0, e["tick"]])
             self.recovery.consume(e, self.source.settled())
             self.management[e["channel"]].consume(e)
         elif kind == "window_edge":
@@ -753,6 +867,18 @@ class Run:
             self.host_completions.edge(e)
         elif kind == "host_reset":
             self.host_completions.reset(e)
+        elif kind == "host_settlement":
+            self.host_settlement = e
+            if (
+                self.case
+                and self.case["id"] == 4
+                and self.timeout.fatal is not None
+                and e["fatal"]
+                and self.fatal_propagation is None
+            ):
+                require(e["tick"] == self.timeout.fatal + 1, "channel-to-coordinator-to-host fatal propagation")
+                self.fatal_propagation = e["tick"]
+                self.source.host.fail()
         elif kind == "marker":
             self.marker(e)
         elif kind.startswith("inline_"):
@@ -782,10 +908,14 @@ class Run:
             self.inline[channel].event(e)
 
     def finish(self):
-        require(self.case is None and [c["id"] for c in self.cases] == list(range(4)), "missing four-case wrapper tail")
+        require(
+            self.case is None and [c["id"] for c in self.cases] == self.selected_cases, "missing selected wrapper tail"
+        )
         self.source.host.finish()
         require(not self.addresses.held and not self.addresses.offers, "unconsumed pending address tail")
         require(all(c["entries"] == (not c["failed"]) for c in self.cases), "missing management entries")
+        if 4 in self.selected_cases:
+            require(self.fatal_propagation is not None, "missing actual host fatal propagation")
         return dict(
             recovery_consumptions=self.recovery.finish(),
             cases=self.cases,
@@ -798,10 +928,19 @@ class Run:
             schedule=remaining_budget(self.p),
             maintenance_window_budget=window_budget(self.p),
             final_tail_budget=final_tail_budget(self.p),
+            rfm_timeout=self.timeout.finish() if 4 in self.selected_cases else None,
+            fatal_propagation=self.fatal_propagation,
+            active_refresh=active_refresh(self.records, self.p, self.pins.applied)
+            if 5 in self.selected_cases
+            else None,
             limitations=[
-                "No trailing-W-at-request success or deadline-exhaustion hardware claim.",
-                "Short master window has no refresh request due; active PHY refresh service remains separate evidence.",
-                "No wrapper FSP/power or forwarding/merging qualification.",
+                "No trailing-W-at-request successful ownership-entry qualification.",
+                *(
+                    ["Historical short master window has no active PHY refresh service."]
+                    if self.selected_cases == list(range(4))
+                    else []
+                ),
+                "Selected configuration only; no two-rank/FSP/power or forwarding/merging qualification.",
             ],
         )
 
@@ -824,7 +963,7 @@ def check(wrapper_path, source_path):
     source = [json.loads(line) for line in Path(source_path).read_text().splitlines()]
     header, p = records[0], profile_binding()
     require(
-        header["kind"] == "header" and header["version"] == 6 and header["profile_sha256"] == digest(p),
+        header["kind"] == "header" and header["version"] in (6, 7) and header["profile_sha256"] == digest(p),
         "wrapper profile binding",
     )
     require(records[-1]["kind"] == "end" and source[-1]["kind"] == "end", "missing wrapper/source terminal tail")
@@ -855,7 +994,9 @@ def check(wrapper_path, source_path):
     events = [e for e in records[1:-1] if e["kind"] != "edge"]
     events.extend(e for e in source[1:-1] if e["kind"] != "phy")
     events.sort(key=lambda e: (e["ps"], order.get(e["kind"], -1), e.get("port", e.get("channel", 0))))
-    run = Run(p)
+    selected = header.get("selected_case", -1)
+    require(selected in (-1, 4, 5), "unqualified wrapper case selection")
+    run = Run(p, selected_cases=None if selected == -1 else [selected], records=records)
     for e in events:
         run.event(e)
     return run.finish() | {

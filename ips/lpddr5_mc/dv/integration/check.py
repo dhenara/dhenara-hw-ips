@@ -81,6 +81,9 @@ def main() -> None:
     parser.add_argument("--inline-lifecycle", action="store_true")
     parser.add_argument("--wrapper-management", action="store_true")
     parser.add_argument(
+        "--wrapper-case", type=int, choices=(4, 5), help="source-prepared RFM fatal or active PHY REF case"
+    )
+    parser.add_argument(
         "--prepare-wrapper-management",
         action="store_true",
         help="owning units and warning-fatal TB lint; no hardware simulation",
@@ -102,6 +105,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.prepare_wrapper_management:
         args.wrapper_management = True
+    if args.wrapper_case is not None and not args.wrapper_management:
+        parser.error("--wrapper-case requires wrapper management/preparation")
     if args.wrapper_management and (
         args.family != "controller"
         or args.inline_lifecycle
@@ -334,6 +339,7 @@ def main() -> None:
         "runtime_reset_case": args.runtime_reset_case,
         "inline_lifecycle": args.inline_lifecycle,
         "wrapper_management": args.wrapper_management,
+        "wrapper_case": args.wrapper_case,
         "preparation_only": args.prepare_wrapper_management,
         "continuous_observer": args.continuous_observer,
         "cap_mode": args.cap_mode,
@@ -450,6 +456,9 @@ def main() -> None:
     if args.wrapper_management:
         from maintenance_window import window_budget
         from wrapper_management import digest, profile_binding, remaining_budget
+
+        if args.wrapper_case is not None:
+            commands[-1].append(f"+wrapper_case={args.wrapper_case}")
 
         result["wrapper_profile"] = profile_binding()
         result["wrapper_schedule"] = remaining_budget(result["wrapper_profile"])

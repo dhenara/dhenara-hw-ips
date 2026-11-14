@@ -59,6 +59,24 @@ module lpddr5_mc_channel_memory #(
     for(int r=0;r<2;r++) begin first_write_ck[r]=0;last_mr43_ck[r]=-1000;end
     for(int r=0;r<2;r++) for(int b=0;b<16;b++) rows[r][b]=0;
   endtask
+  // A PHY-owned physical REF bypasses the controller command pipeline.
+  // Consume the actual CA stimulus; this neither drives controller done nor
+  // changes its maintenance/settlement state. Memory and open rows survive.
+  task automatic sample_phy_refresh(input lpddr5_mc_ca_t physical);
+    int rank_index,decrement;
+    assert(physical.cs inside {1,2} && physical.address==14'h2038)
+      else $fatal(1,"external physical REF encoding");
+    rank_index=physical.cs==1 ? 0 : 1;
+    assert(rank_index<int'(profile_i.ranks) && !act_pending)
+      else $fatal(1,"external physical REF rank/pair");
+    decrement=int'(profile_i.mr27[5:1])*8;
+    for(int p=0;p<8;p++) begin
+      assert(!open_banks[rank_index*16+p] && !open_banks[rank_index*16+p+8])
+        else $fatal(1,"external physical REF with open banks");
+      raa[rank_index][p]=raa[rank_index][p]>decrement ? raa[rank_index][p]-decrement : 0;
+    end
+    refresh_count_o++;
+  endtask
   // A word is available only after its second DRAM beat reaches the DFI
   // deserializer. Times here are half-WCK, then rounded up to sampled CK.
   function automatic int read_ready_ck(input int command_ck, input logic split32, input int word_index);

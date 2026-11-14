@@ -1,4 +1,4 @@
-// Four unsolicited real-wrapper cases. No internal state is assigned. The
+// Four historical and two selected real-wrapper cases. No internal state is assigned. The
 // observed owner and actual output buses select the dirty injection window.
 `include "wrapper_tail.svh"
 int wm_case=-1,wm_boot=0;
@@ -6,6 +6,56 @@ bit wm_failed=0;
 bit [1:0] wm_probe_accepted=0;
 bit [1:0] wm_probe_pending=0;
 logic [31:0] wm_stale_baseline=0;
+int wm_selected_case=-1;
+bit wm_churn_done=0,wm_rfm_requested=0;
+lpddr5_mc_ca_t [CHANNELS-1:0] wm_phy_ca='0;
+
+// AXI addresses preserve the canonical channel-bit6 mapping. Successive
+// rows alternate the two banks sharing paired RAA0. The request is selected
+// from the actual maintenance output, never from a predicted ACT count.
+task automatic wm_rfm_churn;
+  int at;
+  bit failed_response;
+  for(int n=0;n<512 && !wm_rfm_requested;n++) begin
+    at=((n+1)<<16) | ((n%2)<<15);
+    send_ar(0,16'(160+n%80),at,4);
+    source_negative(0);rready[0]=1;
+    for(int beat=0;beat<4;beat++) begin
+      do source_positive(0);while(!rvalid[0]);
+      failed_response=wm_rfm_requested && host_fault;
+      check(r[0].id==16'(160+n%80) && r[0].last==(beat==3),"RFM AXI read identity/last");
+      check(r[0].response==(failed_response ? 2 : 0) && r[0].data==0,"RFM AXI zero-image/error response");
+      source_negative(0);
+    end
+    rready[0]=0;
+  end
+  wm_churn_done=1;
+endtask
+
+task automatic wm_active_refresh;
+  int physical_tick;
+  // This selected shape has one active rank. The external PHY drives its
+  // physical REF directly, without the controller's two-CK command delay.
+  // A subsequent sampled done reports that observed execution only.
+  for(int n=0;n<256;n++) begin
+    @(negedge clk);#0.001;
+    check(!host_fault && management_out[0].phymstr_ack,"active master ownership lost");
+    if(management_out[0].refresh_request==1) break;
+  end
+  check(management_out[0].refresh_request==1,"active master refresh request absent");
+  wm_phy_ca[0]='{cs:2'b01,address:14'h2038};
+  @(negedge clk);#0.001;physical_tick=wm_tick[0]-1;wm_phy_ca[0]='0;phy_refresh_done[0]=1;
+  @(negedge clk);#0.001;phy_refresh_done[0]=0;
+  // Full physical tRFC is deliberately conservative; ACT-2 endpoint
+  // qualification remains separate. No maintenance-done input is forced.
+  while(wm_tick[0]-1<physical_tick+int'(profile.dram_ck_trfc_ab)+2) begin
+    @(negedge clk);#0.001;check(!host_fault,"active REF recovery fault");
+  end
+  check(management_out[0].refresh_request==0,"active refresh not consumed");
+  report_valid[0]=0;repeat(2) @(negedge clk);
+  report_sr[0]=0;report_valid[0]=1;repeat(2) @(negedge clk);
+  wm_mark("active_refresh_recovered");
+endtask
 
 // Hold both legal address requests after the crossing closes admission. They
 // remain asserted through handback/recovery and complete normally on return.
@@ -62,8 +112,9 @@ endtask
 task automatic wm_case_run(input int kind,input bit failed);
   int base_id,prior0,prior1,dirty_words;
   bit seen_check;
-  check(kind inside {0,1},"wrapper management kind");
-  wm_case=2*kind+int'(failed);wm_failed=failed;base_id=20+wm_case*20;
+  check(kind inside {0,1,2,3},"wrapper management kind");
+  wm_case=kind==2 ? 4 : kind==3 ? 5 : 2*kind+int'(failed);
+  wm_failed=failed;base_id=20+wm_case*20;
   wm_mark("begin");
   // Wait without traffic for a complete natural REF/MR4/ZQ renewal on
   // BOTH channels. Raw command origins are earlier than timer renewal, so
@@ -82,7 +133,7 @@ task automatic wm_case_run(input int kind,input bit failed);
   send_aw(0,16'(base_id+3),0,4);inline_payload(0,0,8'(base_id+3));
   if(failed) begin
     send_aw(0,16'(base_id+4),256,4);send_w(0,256,4,0,1);
-    send_ar(0,16'(base_id+5),256,4);
+    if(kind!=2) send_ar(0,16'(base_id+5),256,4);
   end
   // Count actual second-segment write enables while data has committed but
   // the check operation is still live. Twelve words place the request in
@@ -100,7 +151,34 @@ task automatic wm_case_run(input int kind,input bit failed);
   check(wm_ready_window(WM_WINDOW_REQUEST_CK,0),"dirty request maintenance reserve/phase");
   check(observer.timestamp_ps()-wm_setup_ps<=64'(WM_WINDOW_SETUP_CK)*1250,"all priming/setup exceeded budget");
   wm_setup_live=0;
-  wm_mark("request");
+  if(kind inside {2,3}) wm_mark("extension_setup");
+  if(kind==2) begin
+    // Retire the data/check write normally, keeping the exposed port1 B/R
+    // and port0 trailing-W obligation live. Ordinary REF/MR4/ZQ stay enabled.
+    wm_churn_done=0;wm_rfm_requested=0;
+    fork begin wm_rfm_churn();end join_none
+    for(int n=0;n<120000;n++) begin
+      @(negedge clk);#0.001;
+      if(dut.datapath.channels[0].channel.maintenance_valid && dut.datapath.channels[0].channel.maintenance_rfm) break;
+      check(!wm_churn_done && !host_fault,"natural AXI ACT-debt stimulus exhausted/faulted");
+    end
+    check(dut.datapath.channels[0].channel.maintenance_valid && dut.datapath.channels[0].channel.maintenance_rfm
+      && dut.datapath.channels[0].channel.maintenance.raa_q[0][0]>=63,"mandatory RFM naturally pending");
+    wm_rfm_requested=1;wm_mark("rfm_request");
+  end else if(kind==3) begin
+    // Release actual source responses before choosing the risky physical
+    // retention window. This is an empty-host entry with real AXI history.
+    wm_held_read(base_id+2,0);drive_bready(1);wait_settled();
+    for(int n=0;n<8000;n++) begin
+      @(negedge clk);#0.001;
+      if(dut.datapath.channels[0].channel.refresh_budget inside {[300:400]}
+          && status_value[0].drained && status_value[1].drained
+          && !dut.datapath.channels[0].channel.maintenance_urgent) break;
+    end
+    check(dut.datapath.channels[0].channel.refresh_budget inside {[300:400]}
+      && status_value[0].drained && status_value[1].drained,"natural risky active-master window absent");
+    wm_mark("active_request");
+  end else wm_mark("request");
   if(kind==0) begin management[0].phyupd_type=0;management[0].phyupd_req=1;end
   else begin management[0].phymstr_type=0;management[0].phymstr_cs_state=1;management[0].phymstr_state_sel=0;management[0].phymstr_req=1;end
   wm_probe_accepted=0;wm_probe_pending=0;
@@ -109,7 +187,15 @@ task automatic wm_case_run(input int kind,input bit failed);
     begin wm_probe(1,base_id+14);end
   join_none
   if(failed) begin
-    repeat(2) @(negedge clk);management[0].error=1;wm_mark("error");
+    if(kind==2) begin
+      for(int n=0;n<int'(profile.management_ck_tphymstr_resp)+4;n++) begin
+        @(negedge clk);#0.001;
+        check(!management_out[0].phymstr_ack && !management[0].error,"RFM entry early ACK/external error");
+        if(status_value[0].fault) break;
+      end
+      check(status_value[0].fault && status_value[0].fault_code==12,"natural first-overdue master timeout");
+      wm_mark("error");
+    end else begin repeat(2) @(negedge clk);management[0].error=1;wm_mark("error");end
     for(int n=0;n<100;n++) begin @(negedge clk);if(host_fault && !enable) break;end
     check(host_fault && !enable && !settled,"external error with surviving obligations");
     write_csr(INDEX_CONTROL,8);wm_mark("recover_requested");
@@ -117,7 +203,10 @@ task automatic wm_case_run(input int kind,input bit failed);
     // W consumes the rest of the original accepted descriptor under fatal.
     send_w(0,256,4,1);
     wm_held_read(base_id+2,1);
-    read_result(0,16'(base_id+5),256,4,2);
+    if(kind==2) begin
+      for(int n=0;n<1000;n++) begin @(negedge clk);if(wm_churn_done) break;end
+      check(wm_churn_done,"fatal RFM read AXI settlement");
+    end else read_result(0,16'(base_id+5),256,4,2);
     drive_bready(1);
     for(int n=0;n<1000;n++) begin @(negedge clk);if(b_count[0]==prior0+2 && b_count[1]==prior1+1 && settled) break;end
     check(b_count[0]==prior0+2 && b_count[1]==prior1+1 && settled,"all W/R/B settled after fatal");
@@ -153,8 +242,10 @@ task automatic wm_case_run(input int kind,input bit failed);
     wait_status(INDEX_BOOT_EPOCH,32'hffffffff,32'(wm_boot));
     repeat(30) @(negedge pclk);publish_and_boot(wm_boot);wm_mark("retrained");
   end else begin
-    repeat(8) begin @(negedge clk);check(!management_out[0].phyupd_ack && !management_out[0].phymstr_ack && !settled,"held source prevents ownership");end
-    wm_mark("release_responses");wm_held_read(base_id+2,0);drive_bready(1);
+    if(kind!=3) begin
+      repeat(8) begin @(negedge clk);check(!management_out[0].phyupd_ack && !management_out[0].phymstr_ack && !settled,"held source prevents ownership");end
+      wm_mark("release_responses");wm_held_read(base_id+2,0);drive_bready(1);
+    end
     for(int n=0;n<96;n++) begin
       @(negedge clk);check(!host_fault,"bounded unsolicited drain fault");
       if(kind==0 ? management_out[0].phyupd_ack : management_out[0].phymstr_ack) break;
@@ -164,6 +255,7 @@ task automatic wm_case_run(input int kind,input bit failed);
     check(&wm_probe_pending,"both source probes pending before handback");
     wm_mark("ack");
     if(kind==0) begin repeat(4) @(negedge clk);management[0].phyupd_req=0;end
+    else if(kind==3) begin wm_active_refresh();management[0].phymstr_req=0;end
     else begin
       report_valid[0]=0;repeat(3) @(negedge clk);
       report_sr[0]=0;report_valid[0]=1;repeat(3) @(negedge clk);
@@ -173,6 +265,11 @@ task automatic wm_case_run(input int kind,input bit failed);
     for(int n=0;n<100;n++) begin @(negedge clk);if(status_value[0].state==1 && !management_out[0].phyupd_ack && !management_out[0].phymstr_ack) break;end
     check(status_value[0].state==1 && status_value[0].memory_trusted,"legal management handback");
     write_csr(INDEX_CONTROL,1);wait(enable);wm_mark("returned");
+    if(kind==3) begin
+      send_ar(1,16'(base_id+8),64,4);read_result(1,16'(base_id+8),64,4);
+      send_ar(0,16'(base_id+9),0,4);read_result(0,16'(base_id+9),0,4);
+      wm_mark("preserved_service");
+    end
   end
   wm_finish_probes(base_id+12);
   wm_fresh_service(base_id+10);
@@ -196,8 +293,11 @@ task automatic wm_case_run(input int kind,input bit failed);
 endtask
 task automatic wrapper_management_run;
   check(PORTS==2 && CHANNELS==2 && RANKS==1 && DATA_BITS==128,"wrapper management shape");
-  for(int kind=0;kind<2;kind++) for(int failed=0;failed<2;failed++) wm_case_run(kind,1'(failed));
+  if($value$plusargs("wrapper_case=%d",wm_selected_case)) begin
+    check(wm_selected_case inside {4,5},"source-prepared wrapper case selection");
+    wm_case_run(wm_selected_case==4 ? 2 : 3,wm_selected_case==4);
+  end else for(int kind=0;kind<2;kind++) for(int failed=0;failed<2;failed++) wm_case_run(kind,1'(failed));
   wrapper_stop_observations();
-  $display("CONTROLLER_WRAPPER_MANAGEMENT_PASS cases=4 boot=%0d",wm_boot);
+  $display("CONTROLLER_WRAPPER_MANAGEMENT_PASS cases=%0d selected=%0d boot=%0d",wm_selected_case==-1 ? 4 : 1,wm_selected_case,wm_boot);
   $display("CONTROLLER_INTEGRATION_PASS checks=%0d wrapper_management=1",checks);$finish;
 endtask

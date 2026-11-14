@@ -32,8 +32,9 @@ initial begin
   if(WRAPPER_MANAGEMENT) begin
     check($value$plusargs("wrapper_observations=%s",wm_path),"missing wrapper stream");
     check($value$plusargs("wrapper_profile_sha256=%s",wm_profile_sha),"missing wrapper profile digest");
+    if(!$value$plusargs("wrapper_case=%d",wm_selected_case)) wm_selected_case=-1;
     wm_stream=$fopen(wm_path,"w");check(wm_stream!=0,"wrapper stream open");
-    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":6,\"recovery_phase\":\"registered_reset_next_rising_then_falling_v1\",\"maintenance_phase\":\"falling_and_rising_before_NBA\",\"host_phase\":\"posedge_before_NBA_next_edge_counter\",\"host_reset_phase\":\"negedge_core_reset_before_NBA\",\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_profile_sha);
+    $fdisplay(wm_stream,"{\"kind\":\"header\",\"version\":7,\"selected_case\":%0d,\"recovery_phase\":\"registered_reset_next_rising_then_falling_v1\",\"maintenance_phase\":\"falling_and_rising_before_NBA\",\"host_phase\":\"posedge_before_NBA_next_edge_counter\",\"host_reset_phase\":\"negedge_core_reset_before_NBA\",\"sample_phase\":\"negedge_after_prepare_before_sample\",\"return_source\":\"memory_output_after_prepare\",\"handshake_phase\":\"posedge_before_NBA\",\"management_phase\":\"posedge_before_NBA\",\"ck_ps\":1250,\"channels\":2,\"ranks\":1,\"profile_sha256\":\"%s\"}",wm_selected_case,wm_profile_sha);
   end
 end
 task automatic wrapper_memory_sample(input int c,input lpddr5_mc_return4_t prepared_return);
@@ -60,6 +61,8 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
   `include "wrapper_maintenance_observer.svh"
   task automatic sample_pins(input lpddr5_mc_return4_t prepared_return);
     if(wm_accept_sample()) begin
+      $fdisplay(wm_stream,"{\"kind\":\"physical_ca\",\"ps\":%0d,\"channel\":%0d,\"tick\":%0d,\"cs\":%0d,\"ca\":%0d,\"phy\":%0d}",
+        observer.timestamp_ps(),c,wm_tick[c],wm_pin_ca[c].cs,wm_pin_ca[c].address,management_out[c].phymstr_ack);
       assert(qualified[0]==profile) else $fatal(1,"wrapper fixture profile differs from bound image");
       if(status_value[c].config_valid)
         assert(dut.datapath.channels[c].channel.active.profile==qualified[0])

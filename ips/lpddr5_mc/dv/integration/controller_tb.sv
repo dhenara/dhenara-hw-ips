@@ -40,6 +40,7 @@ module controller_tb #(
   lpddr5_mc_management_out_t [CHANNELS-1:0] management_out;
   logic [CHANNELS-1:0][1:0] report_valid,report_sr,phy_refresh_done;
   lpddr5_mc_ca_t [CHANNELS-1:0] ca;
+  lpddr5_mc_ca_t [CHANNELS-1:0] wm_pin_ca;
   lpddr5_mc_wck4_t [CHANNELS-1:0] wck;
   lpddr5_mc_write_bus4_t [CHANNELS-1:0] writes;
   lpddr5_mc_read_request4_t [CHANNELS-1:0] reads;
@@ -88,6 +89,8 @@ module controller_tb #(
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
     .ca_i(ca),.wck_i(wck),.write_i(writes),.read_i(reads),.return_i(returns),.finish_i(finish_recovery));
   for(genvar c=0;c<CHANNELS;c++) begin : memories
+    lpddr5_mc_ca_t wm_controller_delay[2];
+    lpddr5_mc_ca_t wm_phy_sample;
     int mr43_count,mr4_count,zq_count,refresh_count,rfm_count;
     logic unused_counts;
     assign unused_counts=^{mr43_count,mr4_count,zq_count,refresh_count,rfm_count};
@@ -97,9 +100,21 @@ module controller_tb #(
     initial forever begin
       @(negedge clk);
       if(memory_reset || (WRAPPER_MANAGEMENT && dut.datapath.channels[c].channel.destructive_reset)) begin
+        wm_controller_delay[0]='0;wm_controller_delay[1]='0;wm_pin_ca[c]='0;
         memories[c].memory_model.reset();report_valid[c]=2'b11>>(2-RANKS);report_sr[c]=0;
         wrapper_memory_sample(c,memories[c].memory_model.return_o);
       end else begin
+        if(WRAPPER_MANAGEMENT) begin
+          check(profile.management_ck_tctrl_delay==2,"physical wrapper CA delay binding");
+          wm_pin_ca[c]=management_out[c].phymstr_ack ? wm_phy_ca[c] : wm_controller_delay[1];
+          check(!management_out[c].phymstr_ack || wm_controller_delay[1].cs==0,"controller CA tail under PHY owner");
+          wm_controller_delay[1]=wm_controller_delay[0];wm_controller_delay[0]=ca[c];
+          if(wm_phy_ca[c].cs!=0) begin
+            check(management_out[c].phymstr_ack && ca[c].cs==0,"physical PHY REF without exclusive ownership");
+            wm_phy_sample=wm_pin_ca[c];
+            memories[c].memory_model.sample_phy_refresh(wm_phy_sample);
+          end
+        end
         memories[c].memory_model.prepare();wrapper_memory_sample(c,memories[c].memory_model.return_o);memories[c].memory_model.sample();
       end
     end

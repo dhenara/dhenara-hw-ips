@@ -1,6 +1,7 @@
 // Four historical and two selected real-wrapper cases. No internal state is assigned. The
 // observed owner and actual output buses select the dirty injection window.
 `include "wrapper_tail.svh"
+`include "wrapper_power.svh"
 int wm_case=-1,wm_boot=0;
 bit wm_failed=0;
 bit [1:0] wm_probe_accepted=0;
@@ -309,6 +310,7 @@ task automatic wm_case_run(input int kind,input bit failed);
   wm_mark("end_case");
 endtask
 task automatic wrapper_management_run;
+  if(wp_policy!=0) wrapper_power_run();
   check(PORTS==2 && CHANNELS==2 && RANKS==1 && DATA_BITS==128,"wrapper management shape");
   if($value$plusargs("wrapper_case=%d",wm_selected_case)) begin
     check(wm_selected_case inside {4,5},"source-prepared wrapper case selection");

@@ -609,3 +609,26 @@ Standalone full benchmark replay now calls `require_full_performance` before rep
 #### Continuous C1 physical capture
 
 For `--inline-lifecycle --continuous-observer`, version2 records the exact numeric profile digest, each memory `prepare()` output before `sample()`, and its following pre-NBA receiving edge. Physical buses must match at625ps separation. One continuous independent physical model per channel owns decoded CA, memory, maintenance, WCK and returned slices through faults; unconfirmed reset requests retain it. The actual fixture byte2 XOR128 has a separate external-mutation witness. Live fixture memory resets only at the consumed destructive pulse, with settlement/confirmation, incremented boot epoch and next-edge invalidation required. `continuous_close()` retains the last preparation/receiving pair. FSP and external PHY ownership are outside this bounded binding. The fresh clean `1d1d220` C1 run passes simulation and independent replay with32485 paired samples per channel,185/21 decoded commands, the actual byte2 XOR128, fault withdrawal, witnessed destructive reset/invalidation and fresh service. Exact source, generated inputs, executable and stream hashes are retained in `evidence/qualification-103/c1/`; `qualification-104/c1-completed-binding.json` verifies all175 source hashes against that Git revision and the retained raw/input/executable hashes. This establishes scheduling/propagation and continuous physical custody only within the selected C1 binding. Version1 remains structural evidence.
+
+### Prepared automatic-power deferral and source wake
+
+`--wrapper-power-policy 1|2` selects the real-wrapper normal power-down/self-refresh fixture in `wrapper_power.svh`, using profile0, two AXI128 ports, two rank1 channels, depth16, inline ECC and CK2 selection. This is a prepared source family; no hardware outcome is recorded here. The ordinary `--power-policy` fixture and unsolicited wrapper cases remain separate selections.
+
+The fixture publishes the actual automatic policy with a 64-CK idle threshold. It holds exposed port1 B/R, starts a protected port0 write and selects its real final-check interval. Both source responses remain held for 128CK; no low-power request may appear while the actual source ledger is unsettled. It then completes R/B handshakes, observes actual low-power pin entry on both channels and wakes through a held source AR. The self-refresh hold is 3500CK, longer than normal tREFI; power-down holds 40CK and retains ordinary retention limits. Reads of both pre-sleep images must complete before final APB quiesce and source/pin/ECC/WCK drain. No internal counter, readiness, command or settlement is forced.
+
+`wrapper_power.py` retains the existing wrapper source, host-completion, inline and `PhysicalStream` owners. Additional `power_edge` records read actual low-power request/acknowledgement, controller-update and wake inputs at rising CK before NBA. They must cover every existing management edge with matching timestamps. Entry requires independent source/physical/inline drain and sampled PHY acceptance. Return requires consumed ACK withdrawal, actual controller update before each SRX, independent physical recovery and the original source IDs/data. Missing/reordered controls, premature entry/service and incomplete terminal tails fail. The fixed profile0 memory binding does not qualify FSP or ratio transitions.
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family controller \
+  --prepare-wrapper-management --wrapper-power-policy 1 \
+  --build-name wrapper-power-pd-preparation \
+  --report ips/lpddr5_mc/evidence/wrapper-power-pd-preparation/report.json
+
+# Execute only after preparation passes, on clean committed source.
+python3 ips/lpddr5_mc/dv/integration/check.py --family controller \
+  --wrapper-power-policy 1 --build-name wrapper-power-pd \
+  --report ips/lpddr5_mc/evidence/wrapper-power-pd/report.json
+# Select 2 with fresh build/evidence names for self-refresh.
+```
+
+This family omits low-power decline/failure, two-rank coverage and multi-profile FSP. It supplies no forwarding/merging or full-Definition claim. Runtime phase qualification, actual model/controller composition and selected outcomes remain pending until their retained runs complete.

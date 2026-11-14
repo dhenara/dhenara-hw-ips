@@ -268,6 +268,8 @@ module controller_tb #(
     int stream,count,number,ranks,target;
     logic [31:0] word_value;
     management='0;aw='0;ar='0;wd='0;phy_refresh_done=0;
+    if($value$plusargs("wrapper_power_policy=%d",wp_policy))
+      check(WRAPPER_MANAGEMENT && wp_policy inside {1,2},"wrapper power policy selector");
     for(int c=0;c<CHANNELS;c++) mr4_value[c]=9;
     for(int p=0;p<PORTS;p++) begin b_count[p]=0;r_count[p]=0;end
     for(int i=0;i<65536;i++) expected[i]=0;
@@ -309,6 +311,10 @@ module controller_tb #(
     if($value$plusargs("power_policy=%d",power_policy)) begin
       check(power_policy inside {1,2},"power policy scenario");
       staging_image[INDEX_PM_REQUEST]=32'(power_policy);staging_image[INDEX_PD_IDLE]=256;staging_image[INDEX_SR_IDLE]=256;
+    end
+    if(wp_policy!=0) begin
+      staging_image[INDEX_PM_REQUEST]=32'(wp_policy);
+      staging_image[INDEX_PD_IDLE]=WP_IDLE_CK;staging_image[INDEX_SR_IDLE]=WP_IDLE_CK;
     end
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;
     wait(dut.p_started_q && dut.c_started_q && settled);

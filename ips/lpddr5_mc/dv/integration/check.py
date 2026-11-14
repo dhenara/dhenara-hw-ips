@@ -86,6 +86,9 @@ def main() -> None:
     parser.add_argument("--inline-lifecycle", action="store_true")
     parser.add_argument("--wrapper-management", action="store_true")
     parser.add_argument(
+        "--wrapper-power-policy", type=int, choices=(1, 2), help="fixed-profile automatic power deferral/wake"
+    )
+    parser.add_argument(
         "--wrapper-case", type=int, choices=(4, 5), help="source-prepared RFM fatal or active PHY REF case"
     )
     parser.add_argument(
@@ -127,8 +130,10 @@ def main() -> None:
         or args.benchmark_direction
     ):
         parser.error("ECC composition requires the isolated one-port/channel/rank AXI128 inline datapath/profile0")
-    if args.prepare_wrapper_management:
+    if args.prepare_wrapper_management or args.wrapper_power_policy is not None:
         args.wrapper_management = True
+    if args.wrapper_power_policy is not None and args.wrapper_case is not None:
+        parser.error("automatic power and unsolicited management are separate selections")
     if args.wrapper_case is not None and not args.wrapper_management:
         parser.error("--wrapper-case requires wrapper management/preparation")
     if args.wrapper_management and (
@@ -368,6 +373,7 @@ def main() -> None:
         "ecc_composition": args.ecc_composition,
         "wrapper_management": args.wrapper_management,
         "wrapper_case": args.wrapper_case,
+        "wrapper_power_policy": args.wrapper_power_policy,
         "preparation_only": args.prepare_wrapper_management,
         "continuous_observer": args.continuous_observer,
         "cap_mode": args.cap_mode,
@@ -490,6 +496,8 @@ def main() -> None:
         if args.wrapper_case is not None:
             commands[-1].append(f"+wrapper_case={args.wrapper_case}")
 
+        if args.wrapper_power_policy is not None:
+            commands[-1].append(f"+wrapper_power_policy={args.wrapper_power_policy}")
         result["wrapper_profile"] = profile_binding()
         result["wrapper_schedule"] = remaining_budget(result["wrapper_profile"])
         result["wrapper_maintenance_window"] = window_budget(result["wrapper_profile"])
@@ -574,7 +582,7 @@ def main() -> None:
                 "-s",
                 str(IP / "dv/integration"),
                 "-p",
-                "wrapper_management*_test.py",
+                "wrapper*_test.py" if args.wrapper_power_policy is not None else "wrapper_management*_test.py",
                 "-v",
             ]
         log = report.with_name(report.stem + "-tooling.log")
@@ -654,9 +662,16 @@ def main() -> None:
                 if not args.benchmark_smoke:
                     require_full_performance(result["benchmark_observations"])
             elif args.wrapper_management:
-                from wrapper_management import check as check_wrapper_management
+                if args.wrapper_power_policy is not None:
+                    from wrapper_power import check as check_wrapper_power
 
-                result["wrapper_management_observations"] = check_wrapper_management(wrapper_path, trace_path)
+                    result["wrapper_power_observations"] = check_wrapper_power(
+                        wrapper_path, trace_path, args.wrapper_power_policy
+                    )
+                else:
+                    from wrapper_management import check as check_wrapper_management
+
+                    result["wrapper_management_observations"] = check_wrapper_management(wrapper_path, trace_path)
             elif args.inline_lifecycle:
                 from inline_lifecycle import check as check_inline_lifecycle
 

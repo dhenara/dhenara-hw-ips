@@ -85,6 +85,15 @@ task automatic wf_publish(input int target);
   wf_drive=0;wm_mark(wf_case==0 ? "fsp_declined" : "fsp_published");
 endtask
 task automatic wf_recover;
+  // The channel fault precedes the crossed negative PREPARE ACK and ABORT.
+  // APB rejects CONTROL writes until that publication has really settled.
+  for(int n=0;n<500;n++) begin
+    @(negedge pclk);
+    check(host_fault && !enable,"FSP fault fence while waiting for ABORT");
+    if(!dut.apb_busy && !dut.apb_valid) break;
+  end
+  check(!dut.apb_busy && !dut.apb_valid && dut.apb_fault,
+    "FSP failed publication ABORT must settle idle and invalid before RECOVER");
   write_csr(INDEX_CONTROL,8);wm_mark("fsp_recover_requested");wait_settled();
   for(int n=0;n<300;n++) begin @(negedge clk);if(reset_request) break;end
   check(reset_request,"FSP settled fatal must request destructive reset");
@@ -144,7 +153,7 @@ task automatic wrapper_fsp_run;
   if(wf_case==2) wf_recover();else wf_resume();
   for(int n=0;n<500;n++) begin @(negedge clk);if(wf_probe_done) break;end
   check(wf_probe_done,"FSP held actual AR was never admitted after return");
-  read_result(0,190,0,4);wf_read_preserved(191);wm_mark("fsp_preserved");
+  read_result(0,190,0,4);wf_read_preserved(191);wm_mark(wf_case==2 ? "fsp_recovered" : "fsp_preserved");
   if(wf_case==1) begin
     // New writes and checks must use ratio2. Then switch back to slot2,
     // whose immutable descriptor is profile0, preserving the same memory.

@@ -3,7 +3,9 @@
 import copy
 import unittest
 import zlib
+from types import SimpleNamespace
 
+from contracts import commands
 from system.host import Violation
 from wrapper_fsp import (
     FSP_FIELDS,
@@ -19,7 +21,8 @@ from wrapper_fsp import (
     target_profile,
     target_slot,
 )
-from wrapper_management import Run
+from wrapper_fsp_profiles import ProfilePublication, expected_program
+from wrapper_management import PhysicalStream, Run
 
 
 def apb(**changes):
@@ -54,7 +57,11 @@ def frozen(c, **changes):
 def transfer(c, phase=0, **changes):
     e = frozen(c)
     return (
-        e | dict(prepare=int(phase == 0), commit=int(phase == 1), abort=0, dest=3, crc=image_crc(e["image"])) | changes
+        e
+        | dict(
+            prepare=int(phase == 0), commit=int(phase == 1), abort=int(phase == 2), dest=3, crc=image_crc(e["image"])
+        )
+        | changes
     )
 
 
@@ -62,8 +69,8 @@ def ack(c, phase=0, **changes):
     return dict(channel=c, sequence=11, boot=0, phase=phase, accepted=int(phase != 3)) | changes
 
 
-def started():
-    w = PublicationWitness(5)
+def started(*, failed_case=False):
+    w = PublicationWitness(5, failed_case=failed_case)
     w.observe_apb(apb(), True)
     for c in (0, 1):
         w.freeze(frozen(c))
@@ -81,6 +88,39 @@ def prepared():
 
 def committed(c, **changes):
     return dict(channel=c, boot=0, mb_epoch=11, mb_dest=1 << c, mb_crc=19, config_crc=19) | changes
+
+
+def timeout(c, **changes):
+    return dict(channel=c, boot=0, prepared_epoch=11, prepared=1, fault=1, ready=0) | changes
+
+
+def failed_events():
+    events = []
+    for c in (0, 1):
+        events.extend((("timeout", timeout(c)), ("ack", ack(c, accepted=0)), ("apb_ack", ack(c, accepted=0))))
+    for c in (0, 1):
+        events.extend(
+            (("transfer", transfer(c, 2)), ("abort", committed(c)), ("ack", ack(c, 2)), ("apb_ack", ack(c, 2)))
+        )
+    events.append(("apb", apb(psel=0, valid=0, busy=0, sequence=11)))
+    return events
+
+
+def consume_failure(w, events):
+    for kind, e in events:
+        if kind == "timeout":
+            w.timed_out(e)
+        elif kind == "apb_ack":
+            w.ack(e, apb=True)
+        elif kind == "apb":
+            w.observe_apb(e, True)
+        else:
+            getattr(w, kind)(e)
+    return w
+
+
+def failed_publication():
+    return consume_failure(started(failed_case=True), failed_events())
 
 
 class PublicationTest(unittest.TestCase):
@@ -184,6 +224,290 @@ class PublicationTest(unittest.TestCase):
             w.ack(ack(c, phase), apb=True)
         with self.assertRaises(Violation):
             w.observe_apb(apb(psel=0), True)
+
+
+class FailedPublicationTest(unittest.TestCase):
+    def test_exact_negative_prepare_abort_roundtrip_settles_without_publication(self):
+        w = failed_publication()
+        w.require_failed()
+        self.assertEqual(w.epoch, 5)
+        self.assertIsNone(w.active)
+        self.assertEqual([t["outcome"] for t in w.history], ["failed"])
+        self.assertEqual(w.failure["aborts"], {0, 1})
+        self.assertFalse(w.recover_requested)
+
+    def test_negative_prepare_needs_its_own_selected_sampled_timeout(self):
+        for w in (started(), started(failed_case=True)):
+            with self.assertRaisesRegex(Violation, "sampled selected timeout"):
+                w.ack(ack(0, accepted=0))
+        w = started(failed_case=True)
+        w.timed_out(timeout(0))
+        with self.assertRaises(Violation):
+            w.ack(ack(1, accepted=0))
+
+    def test_timeout_must_bind_its_frozen_identity_and_fault_state(self):
+        for change in ({"boot": 1}, {"prepared_epoch": 12}, {"fault": 0}, {"prepared": 0}, {"ready": 1}):
+            w = started(failed_case=True)
+            with self.subTest(change=change), self.assertRaises(Violation):
+                w.timed_out(timeout(0, **change))
+        w = started(failed_case=True)
+        w.timed_out(timeout(0))
+        with self.assertRaises(Violation):
+            w.timed_out(timeout(0))
+        with self.assertRaises(Violation):
+            started().timed_out(timeout(0))
+
+    def test_abort_needs_actual_crossed_negative_prepare(self):
+        w = started(failed_case=True)
+        w.timed_out(timeout(0))
+        w.ack(ack(0, accepted=0))
+        with self.assertRaisesRegex(Violation, "crossed selected negative"):
+            w.transfer(transfer(0, 2))
+        with self.assertRaises(Violation):
+            started().transfer(transfer(0, 2))
+
+    def test_selected_failure_rejects_commit_decline_and_final_publication(self):
+        for phase in (0, 1, 3):
+            with self.subTest(phase=phase), self.assertRaises(Violation):
+                started(failed_case=True).ack(ack(0, phase))
+        with self.assertRaises(Violation):
+            started(failed_case=True).transfer(transfer(0, 1))
+        with self.assertRaises(Violation):
+            started(failed_case=True).commit(committed(0))
+        for change in ({"valid": 1}, {"epoch": 11}, {"sequence": 12}):
+            w = consume_failure(started(failed_case=True), failed_events()[:-1])
+            with self.subTest(change=change), self.assertRaises(Violation):
+                w.observe_apb(apb(psel=0, valid=0, sequence=11) | change, True)
+
+    def test_every_fault_transfer_consumption_and_ack_is_required(self):
+        events = failed_events()
+        for missing in range(len(events)):
+            with self.subTest(missing=events[missing]), self.assertRaises(Violation):
+                w = consume_failure(started(failed_case=True), events[:missing] + events[missing + 1 :])
+                w.require_failed()
+
+    def test_abort_frozen_payload_and_mailbox_identity_cannot_change(self):
+        prefix = failed_events()[:6]
+        for change in ({"sequence": 12}, {"boot": 1}, {"crc": 1}, {"image": 0}, {"dest": 1}):
+            w = consume_failure(started(failed_case=True), prefix)
+            with self.subTest(change=change), self.assertRaises(Violation):
+                w.transfer(transfer(0, 2, **change))
+        for change in ({"mb_epoch": 12}, {"boot": 1}, {"mb_crc": 20}, {"mb_dest": 3}):
+            w = consume_failure(started(failed_case=True), prefix)
+            w.transfer(transfer(0, 2))
+            with self.subTest(change=change), self.assertRaises(Violation):
+                w.abort(committed(0, **change))
+
+    def test_abort_acks_need_consumption_and_matching_clock_crossing(self):
+        w = consume_failure(started(failed_case=True), failed_events()[:7])
+        with self.assertRaises(Violation):
+            w.ack(ack(0, 2))
+        w.abort(committed(0))
+        with self.assertRaises(Violation):
+            w.ack(ack(0, 2), apb=True)
+        w.ack(ack(0, 2))
+        for change in ({"accepted": 0}, {"sequence": 12}, {"boot": 1}, {"phase": 1}):
+            with self.subTest(change=change), self.assertRaises(Violation):
+                w.ack(ack(0, 2) | change, apb=True)
+        w.ack(ack(0, 2), apb=True)
+        with self.assertRaises(Violation):
+            w.ack(ack(0, 2), apb=True)
+        with self.assertRaises(Violation):
+            w.abort(committed(0))
+
+    def test_late_second_negative_ack_can_follow_first_abort_offer(self):
+        w = consume_failure(started(failed_case=True), failed_events()[:3])
+        w.transfer(transfer(0, 2))
+        consume_failure(w, failed_events()[3:6])
+        w.abort(committed(0))
+        w.ack(ack(0, 2))
+        w.ack(ack(0, 2), apb=True)
+        consume_failure(w, failed_events()[10:])
+        w.require_failed()
+
+    def test_recover_requires_idle_invalid_and_complete_both_channel_abort(self):
+        recover = apb(address=OFFSETS["CONTROL"], data=8, valid=0, sequence=11)
+        with self.assertRaises(Violation):
+            started(failed_case=True).observe_apb(recover, True)
+        for change, settled in (({"busy": 1}, True), ({"valid": 1}, True), ({"error": 1}, True), ({}, False)):
+            w = failed_publication()
+            with self.subTest(change=change, settled=settled), self.assertRaises(Violation):
+                w.observe_apb(recover | change, settled)
+        w = failed_publication()
+        w.observe_apb(recover, True)
+        self.assertTrue(w.recover_requested)
+        with self.assertRaises(Violation):
+            w.observe_apb(recover, True)
+
+    def test_failed_publication_cannot_be_reused_or_revalidated(self):
+        for e in (apb(), apb(psel=0, valid=1), apb(psel=0, valid=0, epoch=11)):
+            with self.subTest(e=e), self.assertRaises(Violation):
+                failed_publication().observe_apb(e, True)
+
+    def run_fixture(self):
+        p, q = profile_binding(), target_profile()
+        physical = [PhysicalStream(copy.deepcopy(p)), PhysicalStream(copy.deepcopy(p))]
+        for owner in physical:
+            owner.sample(dict(tick=0, trusted=0, cs=0, ca=0, wck=0, write=0, read=0, **{"return": 0}))
+        owner = ProfilePublication([p, p], physical, boot=0, epoch=5)
+        owner.prepare(sequence=11, boot=0, target_fsp=1, targets=[q, q], source_settled=True)
+        run = FspRun.__new__(FspRun)
+        run.active, run.baseline, run.selection, run.failure_seen = True, False, 2, True
+        run.source = SimpleNamespace(settled=lambda: True)
+        run.publication = started(failed_case=True)
+        run.owner, run.physical = owner, physical
+        run.fsp_edges = [dict(prepared=1, fault=1, ready=0), dict(prepared=1, fault=1, ready=0)]
+        run.last = [dict(config_valid=1), dict(config_valid=1)]
+        run.committed, run.origins = [0, 0], [0, 0]
+        return run
+
+    def test_dispatch_keeps_physical_memory_mr_and_maintenance_until_observed_reset(self):
+        run = self.run_fixture()
+        owner, physical = run.owner, run.physical
+        physical[0].phy.dram.memory[0, 2, 3, 4] = 0xAD  # Seeded model input, not hardware retention evidence.
+        physical[0].phy.dram.maintenance.raa[0][2] = 7
+        physical[0].phy.dram.maintenance.extra[0] = True
+        physical[0].phy.dram.mr[0][16] = 5
+        physical[0].requests.append({"pending": "retained synthetic obligation"})
+        before = copy.deepcopy([o.__dict__ for o in physical])
+        identities = [
+            (o, o.phy, o.phy.dram, o.phy.dram.memory, o.phy.dram.mr, o.phy.dram.maintenance) for o in physical
+        ]
+        for kind, e in failed_events():
+            if kind == "timeout":
+                run.publication.timed_out(e)
+            elif kind == "abort":
+                run.publication.abort(e)
+                run.fsp_edges[e["channel"]]["prepared"] = 0
+                run.last[e["channel"]]["config_valid"] = 0
+            else:
+                run.event(e | {"kind": "fsp_" + kind})
+        self.assertIs(run.owner, owner)
+        self.assertIs(run.physical, physical)
+        for c, o in enumerate(physical):
+            self.assertTrue(
+                all(
+                    a is b
+                    for a, b in zip(
+                        identities[c],
+                        (o, o.phy, o.phy.dram, o.phy.dram.memory, o.phy.dram.mr, o.phy.dram.maintenance),
+                        strict=True,
+                    )
+                )
+            )
+        # Compare the actual seeded state and pending obligation without relying
+        # on model object equality or allowing ABORT to replace the owners.
+        self.assertEqual(physical[0].phy.dram.memory, before[0]["phy"].dram.memory)
+        self.assertEqual(physical[0].phy.dram.mr, before[0]["phy"].dram.mr)
+        self.assertEqual(physical[0].phy.dram.maintenance.raa, before[0]["phy"].dram.maintenance.raa)
+        self.assertEqual(physical[0].phy.dram.maintenance.extra, before[0]["phy"].dram.maintenance.extra)
+        self.assertEqual(physical[0].requests, before[0]["requests"])
+        self.assertIsNotNone(owner.transaction)
+        self.assertFalse(run.recovery_allowed())
+        with self.assertRaises(Violation):
+            run.record_recovery({})
+        run.event(apb(address=OFFSETS["CONTROL"], data=8, valid=0, sequence=11) | {"kind": "fsp_apb"})
+        self.assertTrue(run.recovery_allowed())
+        run.record_recovery({})  # Run invokes this only on RecoveryConsumption's witnessed transition.
+        self.assertIsNone(run.owner)
+        self.assertIs(run.physical, physical)  # Physical cancellation remains owned by Run.sample.
+
+    def test_dispatch_abort_ack_requires_actual_config_invalidation(self):
+        for prepared, valid in ((1, 0), (0, 1)):
+            run = self.run_fixture()
+            consume_failure(run.publication, failed_events()[:8])
+            run.fsp_edges[0]["prepared"] = prepared
+            run.last[0]["config_valid"] = valid
+            with self.subTest(prepared=prepared, valid=valid), self.assertRaises(Violation):
+                run.event(ack(0, 2) | {"kind": "fsp_ack"})
+
+    def timeout_fixture(self, *, displacement=0, returned=False, wrong_target=False, missing_program=False):
+        run = self.run_fixture()
+        p, q = profile_binding(), target_profile()
+        program, at = {}, 4
+        for index, (address, value) in enumerate(expected_program(p, q, 0, 1)):
+            first, second = commands.mode_write(address, value)
+            program[at], program[at + 1] = first, second
+            at += 202 if index == 18 else 14
+        if missing_program:
+            program.pop(4)
+            program.pop(5)
+        release = max(program) + 84
+        fault = release + p["management_ck"]["tinit_complete"] + 1 + displacement
+        edges = [
+            dict(
+                channel=0,
+                tick=t,
+                start=int(t < release),
+                complete=int(t == 0 or returned and t > release),
+                ratio=1,
+                frequency=0,
+                fsp=2 if wrong_target else 1,
+                clock_done=int(t >= release - 1),
+                wck_disabled=1,
+                prepared=1,
+                prepared_epoch=11,
+                boot=0,
+                ready=0,
+                fault=int(t == fault),
+                mb_prepare=0,
+                mb_commit=0,
+                mb_abort=0,
+            )
+            for t in range(fault + 1)
+        ]
+        run.controls, run.origins, run.faults = [edges[:-1], []], [0, 0], set()
+        run.pin_samples = {(0, t): dict(tick=t, cs=int(t in program), ca=program.get(t, 0)) for t in range(fault + 1)}
+        return run, edges[-1]
+
+    def test_timeout_dispatch_binds_first_overdue_edge_target_and_full_program(self):
+        run, edge = self.timeout_fixture()
+        run.edge(edge)
+        self.assertEqual(run.faults, {0})
+        self.assertEqual(run.publication.active["faults"], {0})
+        for change in (
+            {"displacement": -1},
+            {"displacement": 1},
+            {"returned": True},
+            {"wrong_target": True},
+            {"missing_program": True},
+        ):
+            run, edge = self.timeout_fixture(**change)
+            with self.subTest(change=change), self.assertRaises(Violation):
+                run.edge(edge)
+            self.assertEqual(run.publication.active["faults"], set())
+        for change in ({"complete": 1}, {"start": 1}, {"clock_done": 0}, {"wck_disabled": 0}, {"fsp": 2}):
+            run, edge = self.timeout_fixture()
+            with self.subTest(change=change), self.assertRaises(Violation):
+                run.edge(edge | change)
+            self.assertEqual(run.publication.active["faults"], set())
+
+    def test_case2_fresh_reads_use_recovered_marker(self):
+        before = [
+            "fsp_begin",
+            "fsp_initial_preserved",
+            "fsp_dirty",
+            "fsp_dirty_rejected",
+            "fsp_quiesced",
+            "fsp_publish_offer",
+            "fsp_failed",
+            "fsp_recover_requested",
+            "fsp_stale_confirmation_rejected",
+            "fsp_recovery_baseline",
+            "fsp_retrained",
+        ]
+        run = self.run_fixture()
+        run.markers = list(before)
+        run.source.host = SimpleNamespace(
+            transactions={
+                i: SimpleNamespace(done=True, write=False, address=SimpleNamespace(id=i)) for i in (190, 191, 192)
+            }
+        )
+        run.marker(dict(name="fsp_recovered"))
+        self.assertEqual(run.markers[-1], "fsp_recovered")
+        run.markers = list(before)
+        with self.assertRaises(Violation):
+            run.marker(dict(name="fsp_preserved"))
 
 
 class ProfileAndSchemaTest(unittest.TestCase):

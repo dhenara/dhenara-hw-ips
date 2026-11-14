@@ -7,6 +7,13 @@ from pathlib import Path
 IP = Path(__file__).resolve().parents[2]
 
 
+def write_fixture(path: Path, text: str) -> None:
+    # Verilator records input timestamps. Rewriting identical includes forces
+    # a new translation and compilation when selecting another runtime case.
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)
+
+
 def generate(destination: Path) -> None:
     sys.path.insert(0, str(IP / "dv"))
     from contracts.configuration import example_configuration, register_image
@@ -67,14 +74,15 @@ def generate(destination: Path) -> None:
     tail = final_tail_budget(profile_binding())
     window = window_budget(profile_binding())
     include += ['    default: $fatal(1,"unknown profile");', "  endcase", "endtask"]
-    (destination / "wrapper_tail.svh").write_text(
+    write_fixture(
+        destination / "wrapper_tail.svh",
         f"localparam int WM_FINAL_TAIL_CK={tail['total_ck']};\n"
         f"localparam int WM_FINAL_PAGE_IDLE_CK={tail['page_idle_ck']};\n"
         + "".join(
             f"localparam int WM_WINDOW_{k.upper()}={v};\n"
             for k, v in window.items()
             if k in ("setup_ck", "request_ck", "total_ck", "refresh_lead_ck", "poll_lead_ck")
-        )
+        ),
     )
-    (destination / "expected_profiles.svh").write_text("\n".join(include) + "\n")
-    (destination / "images.txt").write_text("\n".join(rows) + "\n")
+    write_fixture(destination / "expected_profiles.svh", "\n".join(include) + "\n")
+    write_fixture(destination / "images.txt", "\n".join(rows) + "\n")

@@ -125,11 +125,17 @@ for(genvar c=0;c<CHANNELS;c++) begin : wm_observers
   endtask
 end
 task automatic wm_granule(input string kind,input int channel,input lpddr5_mc_granule_t g,input logic [31:0] boot,epoch);
+  // This evidence projection intentionally omits the remaining packed fields.
+  logic unused_g;
+  unused_g=^g;
   $fdisplay(wm_stream,"{\"kind\":\"%s\",\"tick\":%0d,\"ps\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"rank\":%0d,\"row\":%0d,\"bank\":%0d,\"column\":%0d,\"write\":%0d,\"bytes\":%0d,\"mask\":\"0x%h\",\"data\":\"0x%h\"}",
     kind,wm_tick[channel]-1,observer.timestamp_ps(),channel,g.tag,g.generation,boot,epoch,
     g.rank_index,g.row,{g.bank_group,g.bank},g.column,g.is_write,g.is_64_bytes ? 64 : 32,g.byte_enable,g.data);
 endtask
 task automatic wm_result(input string kind,input int channel,input lpddr5_mc_channel_completion_t v);
+  // This evidence projection intentionally omits the remaining packed fields.
+  logic unused_v;
+  unused_v=^v;
   $fdisplay(wm_stream,"{\"kind\":\"%s\",\"tick\":%0d,\"ps\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"write\":%0d,\"physical\":%0d,\"integrity\":%0d,\"failed\":%0d,\"response\":%0d,\"data\":\"0x%h\"}",
     kind,wm_tick[channel]-1,observer.timestamp_ps(),channel,v.identity.tag,v.identity.generation,v.identity.boot_epoch,v.identity.config_epoch,
     v.is_write,v.physical_done,v.integrity_done,v.failed,v.response,v.data);

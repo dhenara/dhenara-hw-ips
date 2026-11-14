@@ -4,6 +4,8 @@ int wf_case=-1;
 bit wf_drive=0,wf_probe_done=0;
 lpddr5_mc_profile_t [CHANNELS-1:0] wf_memory_profile;
 string wf_target_sha;
+// Non-wrapper configurations must not elaborate a permanently disabled PHY driver.
+if(WRAPPER_MANAGEMENT) begin : wf_enabled
 for(genvar c=0;c<CHANNELS;c++) begin : wf_phy
   initial forever begin
     wait(wf_drive && management_out[c].init_start);
@@ -21,6 +23,10 @@ for(genvar c=0;c<CHANNELS;c++) begin : wf_phy
     wait(!management_out[c].init_start || !wf_drive);
     wait(!wf_drive);
   end
+end
+end else begin : wf_disabled
+  logic unused_fsp_drive;
+  assign unused_fsp_drive=^wf_drive;
 end
 task automatic wf_read_preserved(input int first_id);
   send_ar(0,16'(first_id),0,4);read_result(0,16'(first_id),0,4);

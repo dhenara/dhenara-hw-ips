@@ -22,4 +22,8 @@ def generate_read_encoder(destination: Path) -> None:
     ]
     lines.extend(f"  if(payload[{bit}]) result ^= 9'h{value:03x};" for bit, value in enumerate(basis))
     lines.extend(["  return result;", "endfunction"])
-    (destination / "read_link_encoder.svh").write_text("\n".join(lines) + "\n")
+    path = destination / "read_link_encoder.svh"
+    text = "\n".join(lines) + "\n"
+    # Keep an unchanged compiler input's timestamp when reusing a build.
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)

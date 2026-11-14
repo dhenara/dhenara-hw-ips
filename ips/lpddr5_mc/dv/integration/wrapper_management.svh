@@ -94,6 +94,9 @@ task automatic wm_wait_ready(input bit response_b);
   $fatal(1,"wrapper held response did not arrive");
 endtask
 task automatic wm_held_read(input int id,input bit failed);
+  // The held-response identity compares the canonical low sixteen ID bits.
+  logic unused_id;
+  unused_id=^id;
   source_negative(1);rready[1]=1;
   for(int n=0;n<4;n++) begin
     do source_positive(1);while(!rvalid[1]);

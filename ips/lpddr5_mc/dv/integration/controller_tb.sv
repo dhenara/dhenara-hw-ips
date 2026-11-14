@@ -1,8 +1,9 @@
 module controller_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
   parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,
-  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0,INLINE_LIFECYCLE=0,WRAPPER_MANAGEMENT=0
+  parameter bit BENCHMARK=0,RUNTIME_RESET=0,RESET_MATRIX=0,INLINE_LIFECYCLE=0,WRAPPER_MANAGEMENT=0,ECC_BOUNDARY=0
 );
+  timeunit 1ns; timeprecision 1fs;
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
   import lpddr5_mc_apb_metadata_pkg::*;
@@ -49,6 +50,7 @@ module controller_tb #(
   lpddr5_mc_profile_t profile;
   logic memory_reset=1,finish_observations=0;
   logic [CHANNELS-1:0][4:0] mr4_value;
+  logic [CHANNELS-1:0][7:0] eb_mr43='0;
   byte unsigned expected[65536];
   int b_count[PORTS],r_count[PORTS],checks=0,stage=0;
   int power_policy=0;
@@ -78,7 +80,7 @@ module controller_tb #(
     .management_i(management),.rank_report_valid_i(report_valid),.rank_self_refresh_i(report_sr),.phy_refresh_done_i(phy_refresh_done),.management_o(management_out),
     .ca_o(ca),.wck_o(wck),.write_o(writes),.read_request_o(reads),.return_i(returns),.status_o(status_value),
     .enabled_o(enable),.fault_o(host_fault),.host_settled_o(settled));
-  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(BENCHMARK || WRAPPER_MANAGEMENT)) observer (
+  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(BENCHMARK || WRAPPER_MANAGEMENT || ECC_BOUNDARY)) observer (
     .clk_ck_i(clk),.rst_ni(observe_traffic),.axi_clk_i(axi_clk),.axi_rst_ni(monitor_rst_n & {PORTS{!WRAPPER_MANAGEMENT || wm_axi_capture}}),
     .awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_i(awready),.arready_i(arready),.wready_i(wready),
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
@@ -96,7 +98,7 @@ module controller_tb #(
     assign unused_counts=^{mr43_count,mr4_count,zq_count,refresh_count,rfm_count};
     lpddr5_mc_channel_memory #(.INITIAL_PATTERN(BENCHMARK),.CHANNELS(CHANNELS),.CHANNEL_INDEX(c)) memory_model (
       .profile_i(wf_case>=0 ? wf_memory_profile[c] : qualified[0]),.ca_i(ca[c]),.write_i(writes[c]),.read_i(reads[c]),.return_o(returns[c]),
-      .mr43_i(8'd0),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
+      .mr43_i(eb_mr43[c]),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
     initial forever begin
       @(negedge clk);
       // C1 keeps the physical fixture alive during unconfirmed reset requests.
@@ -261,12 +263,14 @@ module controller_tb #(
   `include "benchmark.svh"
   `include "runtime_reset.svh"
   `include "inline_lifecycle.svh"
+  `include "ecc_boundary.svh"
   `include "wrapper_management.svh"
   initial begin
     int before_b;
     string path;
     int stream,count,number,ranks,target;
     logic [31:0] word_value;
+    if(ECC_BOUNDARY) eb_select();
     management='0;aw='0;ar='0;wd='0;phy_refresh_done=0;
     if($value$plusargs("wrapper_power_policy=%d",wp_policy))
       check(WRAPPER_MANAGEMENT && wp_policy inside {1,2},"wrapper power policy selector");
@@ -298,6 +302,7 @@ module controller_tb #(
     end
     $fclose(stream);staging_image[INDEX_FSP_VALID]=7;
     staging_image[INDEX_MODE][10:8]=3'(SERVICE_DIV);
+    if(ECC_BOUNDARY) staging_image[INDEX_MODE][4]=1'(eb_posted);
     if(INLINE_LIFECYCLE || WRAPPER_MANAGEMENT) begin
       staging_image[INDEX_MODE][1]=1;
       // Publication requires every enabled region to agree with MODE's ECC
@@ -345,6 +350,7 @@ module controller_tb #(
     publish_and_boot(0);stage=1;observe_traffic=1;
     if(BENCHMARK) benchmark_run();
     if(RUNTIME_RESET) runtime_reset_run();
+    if(ECC_BOUNDARY) ecc_boundary_run();
     if(INLINE_LIFECYCLE) inline_lifecycle_run();
     if(WRAPPER_MANAGEMENT) wrapper_management_run();
     before_b=b_count[0];send_aw(0,1,4096,128);send_w(0,4096,128);wait_b(0,1,before_b+1);

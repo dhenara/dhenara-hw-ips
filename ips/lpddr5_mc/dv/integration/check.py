@@ -19,7 +19,13 @@ IP = REPO / "ips/lpddr5_mc"
 
 
 def reserve_observations(
-    report: Path, family: str, benchmark: bool, caps: bool, fairness: bool = False, composition: bool = False
+    report: Path,
+    family: str,
+    benchmark: bool,
+    caps: bool,
+    fairness: bool = False,
+    composition: bool = False,
+    ecc_boundary: bool = False,
 ) -> list[Path]:
     """Reserve shared trace names before compilation or another writer can start.
 
@@ -38,6 +44,8 @@ def reserve_observations(
         paths.append(report.with_name("fairness-observations.jsonl"))
     if composition:
         paths.append(report.with_name("composition-observations.jsonl"))
+    if ecc_boundary:
+        paths.append(report.with_name("boundary-observations.jsonl"))
     for path in paths:
         if path.exists():
             raise FileExistsError(f"Refusing to overwrite retained observations: {path}; use a fresh report directory")
@@ -84,6 +92,12 @@ def main() -> None:
     parser.add_argument("--axi-overlap", action="store_true")
     parser.add_argument("--axi-extended", action="store_true")
     parser.add_argument("--ecc-composition", action="store_true")
+    parser.add_argument(
+        "--ecc-boundary-case",
+        type=int,
+        choices=range(12),
+        help="pin/MR43 boundary, before/at/after, strict/posted (case = kind*6 + (delta+1)*2 + posted)",
+    )
     parser.add_argument("--inline-lifecycle", action="store_true")
     parser.add_argument("--wrapper-management", action="store_true")
     parser.add_argument(
@@ -118,6 +132,39 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.ecc_boundary_case is not None:
+        if (
+            args.family != "controller"
+            or (
+                args.ports,
+                args.channels,
+                args.ranks,
+                args.data_bits,
+                args.depth,
+                args.profile_number,
+                args.service_div,
+            )
+            != (2, 2, 1, 128, 16, 8, 2)
+            or args.wrapper_management
+            or args.prepare_wrapper_management
+            or args.wrapper_case is not None
+            or args.wrapper_power_policy is not None
+            or args.wrapper_fsp_case is not None
+            or args.runtime_reset
+            or args.runtime_reset_matrix
+            or args.runtime_reset_case is not None
+            or args.power_policy is not None
+            or args.benchmark_direction is not None
+            or args.axi_stress_seed is not None
+            or args.axi_overlap
+            or args.axi_extended
+            or args.ecc_composition
+            or args.cap_mode is not None
+            or args.fairness_mode is not None
+            or args.integrity_mode
+        ):
+            parser.error("ECC boundary requires the isolated controller P2/C2/R1 AXI128/depth16/profile8/CK2")
+        args.inline_lifecycle = args.continuous_observer = True
     if args.axi_extended and (
         args.family != "datapath"
         or (
@@ -326,6 +373,7 @@ def main() -> None:
     if (
         args.family not in ("datapath", "lint")
         and not args.benchmark_direction
+        and args.ecc_boundary_case is None
         and list(configuration.values())
         != [
             2,
@@ -370,6 +418,7 @@ def main() -> None:
         args.cap_mode is not None,
         args.fairness_mode is not None,
         args.ecc_composition,
+        args.ecc_boundary_case is not None,
     )
     if args.wrapper_management:
         wrapper_path = report.with_name("wrapper-management.jsonl")
@@ -428,6 +477,7 @@ def main() -> None:
         "inline_lifecycle": args.inline_lifecycle,
         "axi_extended": args.axi_extended,
         "ecc_composition": args.ecc_composition,
+        "ecc_boundary_case": args.ecc_boundary_case,
         "wrapper_management": args.wrapper_management,
         "wrapper_case": args.wrapper_case,
         "wrapper_power_policy": args.wrapper_power_policy,
@@ -448,7 +498,7 @@ def main() -> None:
         "reserved_observations": [str(path) for path in reserved],
         "limitations": ["Boundary regression only; complete controller and final qualification remain pending."],
     }
-    if args.wrapper_management:
+    if args.wrapper_management or args.ecc_boundary_case is not None:
         generated = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(build.iterdir()) if p.is_file()}
         result["generated_inputs"] = generated
         retained = report.parent / "generated-inputs"
@@ -480,7 +530,7 @@ def main() -> None:
             "--lint-only" if args.family == "lint" or args.prepare_wrapper_management else "--binary",
             "--timing",
             "--timescale-override",
-            "1ns/1ps",
+            "1ns/1fs" if args.ecc_boundary_case is not None else "1ns/1ps",
             "--assert",
             *([] if args.benchmark_direction else ["--public-flat-rw"]),
             "-Wall",
@@ -527,6 +577,7 @@ def main() -> None:
             *(["-GRUNTIME_RESET=1'b1"] if args.runtime_reset else []),
             *(["-GRESET_MATRIX=1'b1"] if args.runtime_reset_matrix else []),
             *(["-GINLINE_LIFECYCLE=1'b1"] if args.inline_lifecycle else []),
+            *(["-GECC_BOUNDARY=1'b1", "-GPROFILE_NUMBER=8"] if args.ecc_boundary_case is not None else []),
             *(["-GWRAPPER_MANAGEMENT=1'b1"] if args.wrapper_management else []),
             *map(str, sources),
             "-j",
@@ -548,6 +599,17 @@ def main() -> None:
         commands[-1].append("+composition_observations=" + str(report.with_name("composition-observations.jsonl")))
     if args.axi_stress_seed is not None:
         commands[-1].append(f"+axi_stress_seed={args.axi_stress_seed}")
+    if args.ecc_boundary_case is not None:
+        kind, remainder = divmod(args.ecc_boundary_case, 6)
+        delta, posted = divmod(remainder, 2)
+        commands[-1].extend(
+            [
+                f"+ecc_boundary_kind={kind}",
+                f"+ecc_boundary_delta={delta - 1}",
+                f"+ecc_boundary_posted={posted}",
+                "+ecc_boundary_observations=" + str(report.with_name("boundary-observations.jsonl")),
+            ]
+        )
     if args.wrapper_management:
         from maintenance_window import window_budget
         from wrapper_management import digest, profile_binding, remaining_budget
@@ -628,7 +690,11 @@ def main() -> None:
     result["planned_commands"] = commands
     report.write_text(json.dumps(result, indent=2) + "\n")
     try:
-        if args.wrapper_management and not args.prepare_wrapper_management and result["dirty"]:
+        if (
+            (args.wrapper_management or args.ecc_boundary_case is not None)
+            and not args.prepare_wrapper_management
+            and result["dirty"]
+        ):
             raise RuntimeError("Wrapper hardware requires a clean committed source")
         if args.axi_extended and result["dirty"]:
             raise RuntimeError("Extended AXI hardware requires a clean committed source")
@@ -750,6 +816,15 @@ def main() -> None:
                     from wrapper_management import check as check_wrapper_management
 
                     result["wrapper_management_observations"] = check_wrapper_management(wrapper_path, trace_path)
+            elif args.ecc_boundary_case is not None:
+                from ecc_boundary import check as check_ecc_boundary
+
+                result["ecc_boundary_observations"] = check_ecc_boundary(
+                    continuous_path,
+                    trace_path,
+                    report.with_name("boundary-observations.jsonl"),
+                    continuous_profile,
+                )
             elif args.inline_lifecycle:
                 from inline_lifecycle import check as check_inline_lifecycle
 
@@ -851,7 +926,7 @@ def main() -> None:
                     build / "fairness-mutant.jsonl",
                     result["external_observations"],
                 )
-            if not args.benchmark_direction and not args.wrapper_management:
+            if not args.benchmark_direction and not args.wrapper_management and args.ecc_boundary_case is None:
                 from workload_costs import measure
 
                 if args.axi_stress_seed is not None:
@@ -901,7 +976,7 @@ def main() -> None:
                             raise RuntimeError("Hot segment incomplete payload")
                 if "recovered_external_observations" in result:
                     result["recovered_workload_costs"] = measure(report.with_name("recovery-observations.jsonl"))
-        if args.continuous_observer:
+        if args.continuous_observer and args.ecc_boundary_case is None:
             if args.inline_lifecycle:
                 from continuous_physical import check as check_continuous
             else:
@@ -928,7 +1003,7 @@ def main() -> None:
         result["error"] = str(error)
         raise
     finally:
-        if args.wrapper_management:
+        if args.wrapper_management or args.ecc_boundary_case is not None:
             result["generated_inputs_after"] = {
                 name: hashlib.sha256((build / name).read_bytes()).hexdigest() for name in generated
             }

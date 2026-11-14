@@ -6,7 +6,9 @@ all physical write beats or returned read slices, and the declared path tail.
 Faults leave these obligations live. Only the stream owner may cancel on reset.
 """
 
+import json
 from collections import deque
+from pathlib import Path
 
 from continuous import identity, offset
 from contracts.lifecycle import Maintenance
@@ -45,10 +47,15 @@ class PhysicalStream:
     def __init__(self, profile):
         self.p = profile
         require(
-            not profile["read_link"] and not profile["write_link"] and not profile["read_dbi"],
-            "C2 physical binding excludes link/read DBI",
+            not profile["read_link"] and not profile["read_dbi"],
+            "physical binding excludes read link/read DBI",
         )
-        self.phy = DigitalPhy(profile)
+        rows = None
+        if profile["write_link"]:
+            rows = json.loads(
+                (Path(__file__).resolve().parents[2] / "config/reference/link_ecc_matrix.json").read_text()
+            )
+        self.phy = DigitalPhy(profile, rows)
         self.phy.dram.maintenance = Retention(
             ranks=profile["ranks"],
             mr27=profile["device"]["mr27"],
@@ -65,6 +72,7 @@ class PhysicalStream:
         self.serial = self.ck = self.words = self.slices = self.commands = 0
         self.wck_origin = 0
         self.prior_wck = []
+        self.mr43 = None
         self.was_trusted = False
         self.retention_suspensions = []
 
@@ -79,6 +87,22 @@ class PhysicalStream:
             identity(t["q"]) == identity(e) and t["q"]["write"] == e["write"],
             "physical result identity",
         )
+        if self.p["write_link"] and t["q"]["write"] and not e["failed"]:
+            mr = self.mr43
+            require(
+                mr is not None and mr["request"] is t and mr["value"] == 0,
+                "write-link result lacks its clean MR43 epoch",
+            )
+            require(
+                len(self.completion.received.get(mr["serial"], {})) == 16
+                and self.wck.epoch is None
+                and self.ck
+                > mr["origin"]
+                + self.p["management_ck"]["tctrl_delay"]
+                + self.p["dram_ck"]["tmrr"]
+                + self.p["dram_ck"]["tmrw"],
+                "write-link result before raw MR43 return/recovery/WCK tail",
+            )
         # A failed internal result is accounted separately and cannot erase pins.
         if not e["failed"]:
             require(
@@ -208,6 +232,10 @@ class PhysicalStream:
                 mr=e["mr43"] if op.operand == 43 else e["mr4"],
                 cs=e["cs"],
             )
+            if op.operand == 43:
+                self.mr43 = dict(
+                    serial=self.serial, origin=ck, value=e["mr43"], request=self.requests[0] if self.requests else None
+                )
             self.thermal.begin(self.serial, ck, e["cs"], op.operand)
         raw_write, raw_read, raw_return = (number(e[k]) for k in ("write", "read", "return"))
         self.timing.sample(ck, e["cs"], e["ca"], raw_return >> 32 & 255)
@@ -235,7 +263,12 @@ class PhysicalStream:
                     if write and at == enable + d["tphy_wrdata"]:
                         value = raw_write >> (48 + lane * 32) & 0xFFFFFFFF
                         mask = raw_write >> (32 + lane * 4) & 15
-                        model.write_word(burst, w, 2 * at, value, mask)
+                        parity = raw_write >> (lane * 4) & 15
+                        model.write_word(burst, w, 2 * at, value, mask, parity)
+                        if burst.index in model.write_status:
+                            require(
+                                all(s == "clean" for s in model.write_status[burst.index]), "outgoing write-link parity"
+                            )
                         t = a["request"]
                         for byte in range(4):
                             raw = value >> (byte * 8) & 255
@@ -259,7 +292,8 @@ class PhysicalStream:
         )
         require(raw_read >> 16 == expected_read, "physical read enable mismatch")
         require(raw_read & 65535 == expected_rcs, "physical continuous read CS mismatch")
-        require(raw_write & 65535 == 0, "unexpected write link parity")
+        if not p["write_link"]:
+            require(raw_write & 65535 == 0, "unexpected write link parity")
         decoded = returned_snapshot(
             r,
             data=raw_return >> 40,

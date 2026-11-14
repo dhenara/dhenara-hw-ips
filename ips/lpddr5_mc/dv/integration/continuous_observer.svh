@@ -11,7 +11,7 @@ initial begin
     if(INLINE_LIFECYCLE) begin
       assert($value$plusargs("continuous_profile_sha256=%s",continuous_profile_sha256))
         else $fatal(1,"missing continuous physical profile binding");
-      $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":2,\"scope\":\"inline_lifecycle\",\"phase\":\"negedge_memory_after_prepare_before_sample\",\"receiving_phase\":\"posedge_before_nba\",\"channels\":%0d,\"ranks\":%0d,\"profile_number\":%0d,\"profile_sha256\":\"%s\",\"external_flips\":1}",CHANNELS,RANKS,PROFILE_NUMBER,continuous_profile_sha256);
+      $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":2,\"scope\":\"%s\",\"phase\":\"negedge_memory_after_prepare_before_sample\",\"receiving_phase\":\"posedge_before_nba\",\"channels\":%0d,\"ranks\":%0d,\"profile_number\":%0d,\"profile_sha256\":\"%s\",\"external_flips\":%0d}",ECC_BOUNDARY ? "ecc_boundary" : "inline_lifecycle",CHANNELS,RANKS,PROFILE_NUMBER,continuous_profile_sha256,ECC_BOUNDARY ? 0 : 1);
     end else
       $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":1,\"channels\":%0d,\"ranks\":%0d}",CHANNELS,RANKS);
   end
@@ -55,9 +55,9 @@ endtask
 // returns[channel] at the same negedge can observe stale port propagation.
 task automatic continuous_memory_sample(input int channel,input lpddr5_mc_return4_t value,input logic reset_applied,input logic destructive);
   if(continuous_stream!=0 && INLINE_LIFECYCLE && (continuous_stop_ck<0 || continuous_ck<continuous_stop_ck))
-    $fdisplay(continuous_stream,"{\"kind\":\"prepared\",\"ck\":%0d,\"ps\":%0d,\"channel\":%0d,\"reset_applied\":%0d,\"reset_n\":%0d,\"destructive\":%0d,\"mr4\":%0d,\"mr43\":0,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\"}",
+    $fdisplay(continuous_stream,"{\"kind\":\"prepared\",\"ck\":%0d,\"ps\":%0d,\"channel\":%0d,\"reset_applied\":%0d,\"reset_n\":%0d,\"destructive\":%0d,\"mr4\":%0d,\"mr43\":%0d,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\"}",
       continuous_ck,observer.timestamp_ps(),channel,reset_applied,rst_n,
-      destructive,mr4_value[channel],ca[channel].cs,ca[channel].address,wck[channel],writes[channel],reads[channel],value);
+      destructive,mr4_value[channel],eb_mr43[channel],ca[channel].cs,ca[channel].address,wck[channel],writes[channel],reads[channel],value);
 endtask
 task automatic continuous_memory_flip(input int channel,input longint unsigned address,input byte unsigned mask);
   if(continuous_stream!=0 && INLINE_LIFECYCLE && (continuous_stop_ck<0 || continuous_ck<continuous_stop_ck))

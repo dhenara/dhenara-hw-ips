@@ -672,3 +672,19 @@ Case0 requires unanimous PHY decline, retained old epoch and discarded prepared 
 These source-prepared cases require fresh emitted-stream execution before qualification. Focused Python profile-state tests seed checker memory and maintenance state; they establish checker-state preservation, not hardware data retention. FSP freshness here refers to init_complete low/high. PHY-master rank-report freshness is a separate contract. Variable CK and two-rank FSP behavior remain outside this selected family.
 
 The combined FSP/power preparation passes 138 owning Python methods, Ruff and warning-fatal controller lint, generated consistency, preserved-document/link checks and `git diff --check`. Preparation exposed and corrected import-order dependence, two APB observer references and the simulator’s wide-format image limit; full register images now serialize in bounded 32-bit words. Original failed preparations remain retained under `evidence/qualification-104/fsp-power-prepare*/`. Preparation does not establish an executed FSP or corrected power transition.
+
+### Connected ECC failure boundaries
+
+`check.py --family controller --profile-number 8 --ecc-boundary-case 0..11` selects the prepared P2/C2/R1 AXI128/depth16/CK2 inline and write-link fixture. It enables continuous physical observation and reserves independent source, physical and boundary streams. Each run requires a clean committed source and a fresh report/build directory. For example, select case0 with:
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family controller --profile-number 8 \
+  --ecc-boundary-case 0 --build-name ecc-boundary-0 \
+  --report "$PWD/ips/lpddr5_mc/evidence/ecc-boundary-0/report.json"
+```
+
+The selector is `kind*6 + (delta+1)*2 + posted`: kind0 injects a management error around the exclusive final pin-beat endpoint of an actual target WR32; kind1 injects an external fault around a failed MR43 epoch-result edge. Delta is one CK before, at or one CK after; posted selects MODE bit4. The runner uses 1ns/1fs precision. For MR43, the error input changes one femtosecond before the consuming edge. The independent checker must reproduce the pin endpoint or match the actual MR43 result with complete raw return, recovery and WCK evidence.
+
+Actual AXI traffic creates one offered successful B held under backpressure, an unoffered protected write and another accepted AW with trailing W beats. The fixture requires complete fatal settlement, preserves the exposed B, checks late-error reporting, rejects destructive reset until settlement, consumes fresh reset confirmation, republishes/trains and checks a fresh protected write/read. Final quiesce must close rows, returns and WCK. The physical owner now validates outgoing write-link parity with the independent matrix and requires each successful write-link result's own clean MR43 return and recovery.
+
+This family is source preparation until timed HDL execution and independent replay pass. Production uses conservative final-integrity posting (`POSTED_EARLY=0`, epoch `posted_i=0`); setting MODE.posted does not expose early success before MR43. MR43 status itself can fail before a later external injection, so those cases do not isolate one fault cause. Read-link/DBI, management-entry commands, FSP and two ranks remain separate checks. Synthetic sensitivity, warning-fatal lint and runner planning do not establish connected behavior.

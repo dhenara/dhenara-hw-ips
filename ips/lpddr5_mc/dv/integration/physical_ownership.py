@@ -72,14 +72,26 @@ class GranuleOwnership:
         base = start // self.granule_bytes * self.granule_bytes
         complete = set(range(base, base + self.granule_bytes))
         require(addresses <= complete, "physical fragment exceeds configured granule")
-        next_cursor = dict(self.cursor)
-        tag = select(self.host, complete, write, next_cursor)
-        seen = self.fragments.setdefault(tag, (base, set()))
+        # Once a fragment binds, a younger disjoint admission into its padding
+        # cannot revoke that owner. Initial ambiguity still fails in select().
+        pending = [tag for tag, group in self.fragments.items() if group[0] == base]
+        require(len(pending) <= 1, "ambiguous pending physical granule")
+        if pending:
+            tag = pending[0]
+            t = self.host.transactions[tag]
+            require(not (t.done or t.physical or t.error) and t.write == write, "inactive physical fragment owner")
+            self.host._older_overlap(tag)
+        else:
+            next_cursor = dict(self.cursor)
+            tag = select(self.host, complete, write, next_cursor)
+            if tag not in self.fragments:
+                self.fragments[tag] = (base, set(), next_cursor[tag])
+        seen = self.fragments[tag]
         require(seen[0] == base, "physical access skips incomplete granule")
         require(not seen[1] & addresses, "duplicate physical granule fragment")
         seen[1].update(addresses)
         if seen[1] == complete:
-            self.cursor[tag] = next_cursor[tag]
+            self.cursor[tag] = seen[2]
             del self.fragments[tag]
         return tag
 

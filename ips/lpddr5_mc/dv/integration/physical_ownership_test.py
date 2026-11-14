@@ -8,6 +8,31 @@ from system.host import Address, HostScoreboard, Violation
 
 
 class PhysicalOwnershipTests(unittest.TestCase):
+    def test_later_disjoint_admission_cannot_revoke_a_bound_split_tail(self):
+        for write in (False, True):
+            with self.subTest(write=write):
+                host = HostScoreboard()
+                tag = host.admit(Address(0, 1, 0, size=0), write)
+                if write:
+                    host.w(0, 170, 1, True)
+                owner = WriteOwnership(host) if write else ReadOwnership(host)
+                if write:
+                    owner.begin(0, range(32), 100)
+                    owner.pin(0, 0, 170)
+                else:
+                    owner.begin(0, range(32))
+                    owner.observe(0, range(32), 100)
+                host.admit(Address(1, 2, 32, size=0), write)
+                if write:
+                    host.w(1, 187, 1, True)
+                    owner.begin(1, range(32, 64), 200)
+                else:
+                    owner.begin(1, range(32, 64))
+                    owner.observe(1, range(32, 64), 200)
+                owner.complete_before(tag, 200)
+                self.assertEqual(owner.cursor[tag], 1)
+                self.assertFalse(host.transactions[1].physical)
+
     def test_masked_fixed_write_keeps_both_mwr16_halves_and_repeated_values(self):
         host = HostScoreboard()
         tag = host.admit(Address(0, 1, 0, length=1, size=0, burst=0), True)

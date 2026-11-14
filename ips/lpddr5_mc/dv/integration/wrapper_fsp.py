@@ -23,6 +23,7 @@ from wrapper_master import PhysicalCommands
 REGISTERS = json.loads((IP / "config/contracts/registers.json").read_text())["registers"]
 INDEX = {r["name"]: i for i, r in enumerate(REGISTERS)}
 OFFSETS = {r["name"]: r["offset"] for r in REGISTERS}
+PCLK_PS = 7000
 FSP_FIELDS = (
     "start complete ratio frequency fsp clock_done wck_disabled ready declined fault prepared prepared_epoch "
     "epoch boot active_image prepared_image memory_image mb_prepare mb_commit mb_abort mb_epoch mb_crc "
@@ -104,7 +105,7 @@ def qualify_fsp(records, binding):
         )
     apb = [e for e in records if e["kind"] == "fsp_apb"]
     require(
-        apb and all(b["ps"] - a["ps"] == 7000 for a, b in zip(apb, apb[1:], strict=False)),
+        apb and all(b["ps"] - a["ps"] == PCLK_PS for a, b in zip(apb, apb[1:], strict=False)),
         "missing/duplicate PCLK witness",
     )
     for e in records:
@@ -368,6 +369,8 @@ class FspRun(Run):
         self.faults = set()
         self.failure_seen = False
         self.failure_pending = None
+        self.decline_pending = None
+        self.decline_ack_ps = {}
         self.baseline = False
         self.finished = False
         self.host_edge = None
@@ -503,8 +506,83 @@ class FspRun(Run):
             self.faults.add(c)
             self.publication.timed_out(e)
 
+    def retained_decline(self, boot, epoch):
+        """Keep the real channel/source fences intact while APB settles."""
+        require(
+            self.source.settled()
+            and all(
+                s is not None
+                and s["config"] == epoch
+                and s["boot"] == boot
+                and s["config_valid"]
+                and s["trusted"]
+                and not any(s[k] for k in ("prepared_valid", "fault", "host_fault"))
+                for s in self.last
+            )
+            and all(
+                s is not None
+                and s["epoch"] == epoch
+                and s["boot"] == boot
+                and not any(s[k] for k in ("prepared", "fault", "mb_commit", "mb_abort"))
+                for s in self.fsp_edges
+            ),
+            "FSP decline lacks retained valid channels/source settlement",
+        )
+
+    def decline_marker(self, e):
+        w, owner = self.publication, self.owner
+        if w.active is None and owner.transaction is None:
+            return
+        t, physical = w.active, owner.transaction
+        require(
+            self.selection == 0
+            and t is not None
+            and physical is not None
+            and t["ck_acks"] == t["apb_acks"] == {(0, 3): 0, (1, 3): 0}
+            and t["transfers"] == {(0, 0), (1, 0)}
+            and set(t["frozen"]) == {0, 1}
+            and not any(t[k] for k in ("commits", "faults", "aborts"))
+            and physical["sequence"] == t["sequence"]
+            and physical["ready"] == {0: "declined", 1: "declined"}
+            and not physical["committed"]
+            and e["boot"] == t["boot"] == owner.boot
+            and w.epoch == owner.epoch,
+            "early FSP decline marker lacks complete unanimous retained publication",
+        )
+        a = w.apb
+        require(
+            a is not None
+            and (a["sequence"], a["boot"], a["epoch"]) == (t["sequence"], t["boot"], w.epoch)
+            and a["busy"]
+            and not a["valid"]
+            and a["settled"]
+            and (not a["enabled"] or a["quiesced"])
+            and self.decline_ack_ps == {0: a["ps"], 1: a["ps"]}
+            and a["ps"] <= e["ps"] < a["ps"] + PCLK_PS,
+            "early FSP decline marker outside final-ACK PCLK interval",
+        )
+        self.retained_decline(t["boot"], w.epoch)
+        # The marker polls after NBA; the APB observer samples before NBA.
+        # Keep both owners live until the next real PCLK sample attests the
+        # final idle/valid state. Neither ACKs nor the marker finalize them.
+        self.decline_pending = dict(ps=a["ps"] + PCLK_PS, sequence=t["sequence"], boot=t["boot"], epoch=w.epoch)
+
     def event(self, e):
         kind = e["kind"]
+        pending = getattr(self, "decline_pending", None)
+        if pending is not None:
+            require(e["ps"] <= pending["ps"], "missing next-PCLK FSP decline publication witness")
+            require(kind not in ("aw", "ar"), "source service before final FSP decline publication witness")
+            if kind == "fsp_apb":
+                require(
+                    all(e[k] == pending[k] for k in ("ps", "sequence", "boot", "epoch"))
+                    and e["valid"]
+                    and not e["busy"]
+                    and e["settled"]
+                    and (not e["enabled"] or e["quiesced"]),
+                    "FSP decline not finalized on the next qualified PCLK edge",
+                )
+                self.retained_decline(pending["boot"], pending["epoch"])
         if self.failure_pending is not None:
             require(e["ps"] <= self.failure_pending[1], "missing next-edge FSP host fatal witness")
             if kind == "host_settlement":
@@ -533,6 +611,15 @@ class FspRun(Run):
                             channel_epochs=[s["config"] for s in self.last],
                             prepared_valid=[s["prepared_valid"] for s in self.last],
                         )
+                if pending is not None:
+                    require(
+                        len(w.history) == old + 1
+                        and w.history[-1]["outcome"] == "declined"
+                        and w.active is None
+                        and self.owner.transaction is None,
+                        "next-PCLK FSP decline did not close both actual owners",
+                    )
+                    self.decline_pending = None
             elif kind == "fsp_freeze":
                 w.freeze(e)
             elif kind == "fsp_transfer":
@@ -541,6 +628,7 @@ class FspRun(Run):
                     t = w.active
                     slot = t["target"]
                     self.controls = [[], []]
+                    self.decline_ack_ps = {}
                     self.owner.prepare(
                         sequence=t["sequence"],
                         boot=t["boot"],
@@ -559,6 +647,8 @@ class FspRun(Run):
                 w.ack(e)
             else:
                 w.ack(e, apb=True)
+                if e["phase"] == 3:
+                    self.decline_ack_ps[e["channel"]] = e["ps"]
             return
         if kind == "host_edge":
             self.host_edge = e
@@ -611,6 +701,7 @@ class FspRun(Run):
 
     def marker(self, e):
         name = e["name"]
+        require(getattr(self, "decline_pending", None) is None, "FSP marker before pending final decline PCLK witness")
         require(name.startswith("fsp_"), "unexpected FSP marker")
         expected = [
             "fsp_begin",
@@ -658,7 +749,9 @@ class FspRun(Run):
                     ),
                     "missing both initial protected image reads",
                 )
-        elif name in ("fsp_published", "fsp_declined"):
+        elif name == "fsp_declined":
+            self.decline_marker(e)
+        elif name == "fsp_published":
             require(
                 self.publication.active is None and self.owner.transaction is None,
                 "FSP outcome before actual final publication/host installation",
@@ -733,6 +826,7 @@ class FspRun(Run):
             )
 
     def finish(self):
+        require(getattr(self, "decline_pending", None) is None, "unfinished next-PCLK FSP decline publication witness")
         require(self.finished and self.markers.count("fsp_end") == 1, "missing FSP terminal tail")
         self.source.host.finish()
         require(not self.addresses.held and not self.addresses.offers, "FSP pending source address tail")

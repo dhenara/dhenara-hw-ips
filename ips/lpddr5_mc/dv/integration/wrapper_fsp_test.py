@@ -12,6 +12,7 @@ from wrapper_fsp import (
     FSP_FIELDS,
     INDEX,
     OFFSETS,
+    PCLK_PS,
     REGISTERS,
     FspRun,
     PublicationWitness,
@@ -510,6 +511,259 @@ class FailedPublicationTest(unittest.TestCase):
         run.markers = list(before)
         with self.assertRaises(Violation):
             run.marker(dict(name="fsp_preserved"))
+
+
+class DeclinedMarkerPhaseTest(unittest.TestCase):
+    """Synthetic unanimous decline; neither HDL nor saved streams execute."""
+
+    def marker_fixture(self, channels=(0, 1)):
+        p, q = profile_binding(), target_profile()
+        physical, controls, samples = [], [], {}
+        for c in (0, 1):
+            owner, edges = PhysicalStream(copy.deepcopy(p)), []
+            for tick in range(6):
+                pin = dict(tick=tick, trusted=1, cs=0, ca=0, wck=0, write=0, read=0, **{"return": 0})
+                owner.sample(pin)
+                samples[c, tick] = pin
+                edges.append(
+                    dict(
+                        tick=tick,
+                        start=int(tick < 4),
+                        complete=1,
+                        frequency=0,
+                        ratio=1,
+                        fsp=1,
+                        clock_done=0,
+                        wck_disabled=1,
+                        declined=int(tick == 4),
+                    )
+                )
+            physical.append(owner)
+            controls.append(edges)
+        owner = ProfilePublication([p, p], physical, boot=0, epoch=5)
+        owner.prepare(sequence=11, boot=0, target_fsp=1, targets=[q, q], source_settled=True)
+        run = FspRun.__new__(FspRun)
+        run.active, run.baseline, run.selection = True, False, 0
+        run.failure_pending, run.decline_pending, run.decline_ack_ps = None, None, {}
+        run.owner, run.physical, run.publication = owner, physical, started()
+        run.source = SimpleNamespace(settled=lambda: True)
+        run.controls, run.pin_samples, run.origins = controls, samples, [0, 0]
+        run.last = [
+            dict(config=5, boot=0, config_valid=1, trusted=1, prepared_valid=0, fault=0, host_fault=0) for _ in (0, 1)
+        ]
+        run.fsp_edges = [dict(epoch=5, boot=0, prepared=0, fault=0, mb_commit=0, mb_abort=0) for _ in (0, 1)]
+        run.markers = [
+            "fsp_begin",
+            "fsp_initial_preserved",
+            "fsp_dirty",
+            "fsp_dirty_rejected",
+            "fsp_quiesced",
+            "fsp_publish_offer",
+        ]
+        for c in (0, 1):
+            # Exercise real sampled DFI/pin/physical return and CK ACK gates.
+            run.event(ack(c, 3, kind="fsp_ack", ps=13000))
+        # No selected APB transfer: the old error payload is irrelevant.
+        run.event(apb(kind="fsp_apb", ps=14000, psel=0, error=1, busy=1, valid=0, sequence=11))
+        for c in channels:
+            run.event(ack(c, 3, kind="fsp_apb_ack", ps=14000))
+        return run, dict(name="fsp_declined", ps=14751, boot=0)
+
+    def final_apb(self, **changes):
+        # CONTROL setup is allowed; it is not a completed new publication.
+        return (
+            apb(
+                kind="fsp_apb",
+                ps=14000 + PCLK_PS,
+                psel=1,
+                penable=0,
+                pready=0,
+                address=OFFSETS["CONTROL"],
+                data=1,
+                sequence=11,
+            )
+            | changes
+        )
+
+    def test_early_marker_preserves_both_owners_until_real_next_pclk(self):
+        run, marker = self.marker_fixture()
+        owner, physical, transaction = run.owner, tuple(run.physical), run.owner.transaction
+        run.marker(marker)
+        self.assertIsNotNone(run.publication.active)
+        self.assertIs(run.owner.transaction, transaction)
+        self.assertEqual(run.publication.history, [])
+        self.assertEqual(run.decline_pending, dict(ps=21000, sequence=11, boot=0, epoch=5))
+        with self.assertRaisesRegex(Violation, "current common publication"):
+            owner.service(host_epoch=5, channel_epochs=[5, 5])
+        with patch.object(Run, "event"):
+            run.event(dict(kind="host_settlement", ps=15000, fatal=0))
+        run.event(self.final_apb())
+        self.assertIsNone(run.decline_pending)
+        self.assertIsNone(run.publication.active)
+        self.assertIsNone(owner.transaction)
+        self.assertIs(run.owner, owner)
+        self.assertTrue(all(a is b for a, b in zip(physical, run.physical, strict=True)))
+        self.assertEqual(run.publication.epoch, 5)
+        self.assertEqual([t["outcome"] for t in run.publication.history], ["declined"])
+        owner.service(host_epoch=5, channel_epochs=[5, 5])
+
+    def test_already_finalized_decline_marker_stays_valid(self):
+        run, marker = self.marker_fixture()
+        run.event(self.final_apb())
+        run.marker(marker | {"ps": 21001})
+        self.assertIsNone(run.decline_pending)
+
+    def test_partial_mixed_or_missing_acks_cannot_open_pending_interval(self):
+        for channels in ((), (0,), (1,)):
+            run, marker = self.marker_fixture(channels)
+            with self.subTest(channels=channels), self.assertRaises(Violation):
+                run.marker(marker)
+            self.assertIsNone(run.decline_pending)
+        for clock in ("ck_acks", "apb_acks"):
+            for value in (None, 1):
+                run, marker = self.marker_fixture()
+                if value is None:
+                    run.publication.active[clock].pop((1, 3))
+                else:
+                    run.publication.active[clock][1, 3] = value
+                with self.subTest(clock=clock, value=value), self.assertRaises(Violation):
+                    run.marker(marker)
+
+    def test_stale_duplicate_or_invalid_apb_ack_is_rejected_before_tracking(self):
+        for changes in ({"sequence": 12}, {"boot": 1}, {"accepted": 1}, {"phase": 0}):
+            run, _ = self.marker_fixture((0,))
+            with self.subTest(changes=changes), self.assertRaises(Violation):
+                run.event(ack(1, 3, kind="fsp_apb_ack", ps=14000) | changes)
+            self.assertEqual(run.decline_ack_ps, {0: 14000})
+        run, _ = self.marker_fixture()
+        with self.assertRaisesRegex(Violation, "duplicate FSP ACK"):
+            run.event(ack(1, 3, kind="fsp_apb_ack", ps=14000))
+
+    def test_marker_requires_current_final_ack_edge_and_one_pclk_window(self):
+        mutations = [
+            ("marker", {"ps": 13999}),
+            ("marker", {"ps": 21000}),
+            ("marker", {"boot": 1}),
+            ("ack", {1: 7000}),
+        ]
+        mutations += [
+            ("apb", {k: v})
+            for k, v in (
+                ("sequence", 12),
+                ("boot", 1),
+                ("epoch", 6),
+                ("valid", 1),
+                ("busy", 0),
+                ("settled", 0),
+                ("enabled", 1),
+            )
+        ]
+        for kind, changes in mutations:
+            run, marker = self.marker_fixture()
+            if kind == "marker":
+                marker.update(changes)
+            elif kind == "ack":
+                run.decline_ack_ps.update(changes)
+            else:
+                run.publication.apb.update(changes)
+                if "enabled" in changes:
+                    run.publication.apb["quiesced"] = 0
+            with self.subTest(kind=kind, changes=changes), self.assertRaises(Violation):
+                run.marker(marker)
+            self.assertIsNone(run.decline_pending)
+
+    def test_marker_requires_real_retained_channels_and_physical_decline(self):
+        for changes in ({"sequence": 12}, {"ready": {0: "declined"}}, {"committed": {0}}):
+            run, marker = self.marker_fixture()
+            run.owner.transaction.update(changes)
+            with self.subTest(physical=changes), self.assertRaises(Violation):
+                run.marker(marker)
+        for collection, changes in (
+            ("last", {"config": 6}),
+            ("last", {"boot": 1}),
+            ("last", {"prepared_valid": 1}),
+            ("last", {"config_valid": 0}),
+            ("last", {"trusted": 0}),
+            ("last", {"fault": 1}),
+            ("last", {"host_fault": 1}),
+            ("fsp_edges", {"prepared": 1}),
+            ("fsp_edges", {"fault": 1}),
+            ("fsp_edges", {"mb_commit": 1}),
+            ("fsp_edges", {"mb_abort": 1}),
+        ):
+            run, marker = self.marker_fixture()
+            getattr(run, collection)[1].update(changes)
+            with self.subTest(collection=collection, changes=changes), self.assertRaises(Violation):
+                run.marker(marker)
+        run, marker = self.marker_fixture()
+        run.source.settled = lambda: False
+        with self.assertRaises(Violation):
+            run.marker(marker)
+
+    def test_actual_final_apb_requires_exact_next_pclk_and_retained_valid_idle(self):
+        for changes in (
+            {"ps": 20999},
+            {"ps": 21001},
+            {"busy": 1},
+            {"valid": 0},
+            {"epoch": 11},
+            {"epoch": 6},
+            {"sequence": 12},
+            {"boot": 1},
+            {"settled": 0},
+            {"enabled": 1, "quiesced": 0},
+        ):
+            run, marker = self.marker_fixture()
+            run.marker(marker)
+            with self.subTest(changes=changes), self.assertRaises(Violation):
+                run.event(self.final_apb(**changes))
+            self.assertIsNotNone(run.decline_pending)
+            self.assertIsNotNone(run.publication.active)
+            self.assertIsNotNone(run.owner.transaction)
+
+    def test_final_witness_cannot_hide_new_fault_or_prepared_epoch_change(self):
+        for collection, changes in (
+            ("last", {"fault": 1}),
+            ("last", {"host_fault": 1}),
+            ("last", {"config": 6}),
+            ("last", {"prepared_valid": 1}),
+            ("fsp_edges", {"fault": 1}),
+        ):
+            run, marker = self.marker_fixture()
+            run.marker(marker)
+            getattr(run, collection)[0].update(changes)
+            with self.subTest(collection=collection, changes=changes), self.assertRaises(Violation):
+                run.event(self.final_apb())
+        run, marker = self.marker_fixture()
+        run.marker(marker)
+        run.source.settled = lambda: False
+        with self.assertRaises(Violation):
+            run.event(self.final_apb())
+
+    def test_missing_final_pclk_source_acceptance_markers_and_finish_rejected(self):
+        for kind in ("aw", "ar"):
+            run, marker = self.marker_fixture()
+            run.marker(marker)
+            with self.subTest(kind=kind), self.assertRaisesRegex(Violation, "source service before final"):
+                run.event(dict(kind=kind, ps=15000))
+        for name in ("fsp_declined", "fsp_published", "fsp_preserved", "fsp_end"):
+            run, marker = self.marker_fixture()
+            run.marker(marker)
+            with self.subTest(name=name), self.assertRaisesRegex(Violation, "pending final decline PCLK"):
+                run.marker(marker | {"name": name})
+        run, marker = self.marker_fixture()
+        run.marker(marker)
+        with self.assertRaisesRegex(Violation, "missing next-PCLK"):
+            run.event(dict(kind="fsp_binding", ps=21001))
+        with self.assertRaisesRegex(Violation, "unfinished next-PCLK"):
+            run.finish()
+
+    def test_published_marker_still_requires_actual_host_installation(self):
+        run, _ = self.marker_fixture()
+        run.selection = 1
+        run.publication.active = None
+        with self.assertRaisesRegex(Violation, "final publication/host installation"):
+            run.marker(dict(name="fsp_published", ps=14751, boot=0))
 
 
 class FailedMarkerPhaseTest(unittest.TestCase):

@@ -638,3 +638,21 @@ This family omits low-power decline/failure, two-rank coverage and multi-profile
 Q33 records the first actual two-case run at clean `09e9405`. The simulation completes301 assertions and two forwarded/merged scenarios, while its original aggregate fails the independent chronology gate. Its pin adapter incorrectly adds `twrdata_delay` to the already serialized DRAM endpoint. The corrected adapter separately takes the latest exclusive physical pin, DFI data-CS and conservative DFI data-end-plus-delay endpoint. This matches the adopted DFI bound used by the existing continuous physical owner; the pin path is not counted twice. Focused tests retain both the late-pin and long-CS branches and reject a result at either write-flush or return tail. No production RTL or emitted hardware trace changes.
 
 A separate corrected retained-stream replay passes6 original writes,2 reads,4 logical writes,2 forwarded reads,2 merged pairs and12 physical reads/6 writes. Both source incomplete-W hazards, original identities, exact byte overlays, physical data/check effects, stable individual6 B/8 R handshakes and final drain are checked. In the failure scenario, the untouched-byte double fault aborts the contributors’ partial RMW before any physical write and propagates failure to both writers and the dependent read. The original failed report is preserved. The corrected checker is recorded with exact hashes; a fresh clean-source run remains selected separately. These two cases do not exhaust ECC or management qualification.
+
+### Connected maximum AXI burst and unsupported exclusives
+
+The source-prepared `--family datapath --axi-extended` selection fixes two asynchronous AXI128 ports, two x16 channels, one rank, ID8/address40, depth16, 64-byte granules and profile0/CK2. It drives an aligned full-width 256-beat INCR write/read, then early/missing WLAST writes that consume all 256 W beats and retain the original readback. Moving the descriptor by 64 bytes crosses 4KB and requires one DECERR B after all 256 W plus 256 zero-data DECERR R beats. Subsequent original-region reads must remain unchanged.
+
+Two locked writes and two locked reads exercise the declared absence of an exclusive monitor: ordinary memory effects and OKAY, with no EXOKAY. An ordinary write intervenes before the second locked write; both locked and ordinary final reads check the last bytes. Each B and the first/interior/final maximum-length R beats are actually offered while READY is low. Source payload-stability assertions and the independent ledger require full response settlement.
+
+The existing `connected.py` oracle remains mandatory. It consumes raw sampled AxLOCK and independently decodes CA/data/returned slices, binds each coalesced physical granule to the admitted transaction, rejects any physical effect before complete W validation or for rejected writes, and requires every pin/return tail before success. `axi_extended.py` adds only directed stimulus/count/stall accounting; source or completion witnesses do not replace physical replay. Its fixed totals are 7 AW, 9 AR, 1036 W beats, 7 B and 1548 R handshakes. The focused synthetic Python tests establish ledger sensitivity and existing owner support; they are not a real connected pass.
+
+The following is a proposed runtime command after committing the integrated source. It requires a fresh report/build identity and a finite process ceiling. No HDL elaboration, simulation or actual pin replay has yet been performed for this selection.
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family datapath --axi-extended \
+  --ports 2 --channels 2 --ranks 1 --data-bits 128 --id-bits 8 --address-bits 40 \
+  --depth 16 --granule-bytes 64 --profile-number 0 --service-div 2 --integrity-mode 0 \
+  --report "$PWD/ips/lpddr5_mc/evidence/qualification-104/axi-extended-final/report.json" \
+  --build-name q104-axi-extended-final
+```

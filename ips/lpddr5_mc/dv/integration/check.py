@@ -82,6 +82,7 @@ def main() -> None:
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--axi-stress-seed", type=int)
     parser.add_argument("--axi-overlap", action="store_true")
+    parser.add_argument("--axi-extended", action="store_true")
     parser.add_argument("--ecc-composition", action="store_true")
     parser.add_argument("--inline-lifecycle", action="store_true")
     parser.add_argument("--wrapper-management", action="store_true")
@@ -111,6 +112,40 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.axi_extended and (
+        args.family != "datapath"
+        or (
+            args.ports,
+            args.channels,
+            args.ranks,
+            args.data_bits,
+            args.depth,
+            args.profile_number,
+            args.service_div,
+            args.integrity_mode,
+            args.id_bits if args.id_bits is not None else 8,
+            args.address_bits,
+            args.granule_bytes,
+        )
+        != (2, 2, 1, 128, 16, 0, 2, 0, 8, 40, 64)
+        or args.axi_overlap
+        or args.axi_stress_seed is not None
+        or args.ecc_composition
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.inline_lifecycle
+        or args.wrapper_management
+        or args.wrapper_power_policy is not None
+        or args.prepare_wrapper_management
+        or args.wrapper_case is not None
+        or args.continuous_observer
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy is not None
+        or args.benchmark_direction
+    ):
+        parser.error("Extended AXI requires the isolated plain P2/C2/R1 AXI128/depth16/profile0/CK2 datapath")
     if args.ecc_composition and (
         args.family != "datapath"
         or (args.ports, args.channels, args.ranks, args.data_bits, args.profile_number, args.integrity_mode)
@@ -201,6 +236,8 @@ def main() -> None:
         configuration["AXI_STRESS"] = 1
     if args.axi_overlap:
         configuration["AXI_OVERLAP"] = 1
+    if args.axi_extended:
+        configuration["AXI_EXTENDED"] = 1
     if args.ecc_composition:
         configuration["ECC_COMPOSITION"] = 1
     if args.family in ("datapath", "lint"):
@@ -370,6 +407,7 @@ def main() -> None:
         "runtime_reset_matrix": args.runtime_reset_matrix,
         "runtime_reset_case": args.runtime_reset_case,
         "inline_lifecycle": args.inline_lifecycle,
+        "axi_extended": args.axi_extended,
         "ecc_composition": args.ecc_composition,
         "wrapper_management": args.wrapper_management,
         "wrapper_case": args.wrapper_case,
@@ -436,6 +474,7 @@ def main() -> None:
             or args.runtime_reset
             or args.axi_stress_seed is not None
             or args.axi_overlap
+            or args.axi_extended
             or args.inline_lifecycle
             or args.wrapper_management
             else "OPT_FAST=-O0 OPT_SLOW=-O0",
@@ -562,6 +601,8 @@ def main() -> None:
     try:
         if args.wrapper_management and not args.prepare_wrapper_management and result["dirty"]:
             raise RuntimeError("Wrapper hardware requires a clean committed source")
+        if args.axi_extended and result["dirty"]:
+            raise RuntimeError("Extended AXI hardware requires a clean committed source")
         command = [
             sys.executable,
             "-m",
@@ -782,6 +823,13 @@ def main() -> None:
                         report.with_name("observations.jsonl"),
                         report.with_name(f"{report.stem}-2.log"),
                         args.axi_stress_seed,
+                    )
+                if args.axi_extended:
+                    from axi_extended import measure as measure_extended
+
+                    result["axi_extended_observations"] = measure_extended(
+                        report.with_name("observations.jsonl"),
+                        report.with_name(f"{report.stem}-2.log"),
                     )
                 if args.axi_overlap:
                     from axi_overlap import measure as measure_overlap

@@ -252,6 +252,16 @@ task automatic wm_case_run(input int kind,input bit failed);
     end
     check(kind==0 ? management_out[0].phyupd_ack : management_out[0].phymstr_ack,"actual unsolicited ACK");
     check(settled && b_count[0]==prior0+1 && b_count[1]==prior1+1,"ACK after actual source settlement");
+    if(kind==3) begin
+      // Empty-host entry can ACK before the delayed asynchronous probes
+      // assert VALID. Keep real ownership while both sources reach their
+      // blocked edge; the original pre-handback assertion remains required.
+      for(int n=0;n<32;n++) begin
+        @(negedge clk);#0.001;
+        check(!host_fault && management_out[0].phymstr_ack,"probe wait lost master ownership");
+        if(&wm_probe_pending) break;
+      end
+    end
     check(&wm_probe_pending,"both source probes pending before handback");
     wm_mark("ack");
     if(kind==0) begin repeat(4) @(negedge clk);management[0].phyupd_req=0;end

@@ -60,6 +60,10 @@ initial begin : injector
   else external_fault=1;
   eb_fault=1;eb_mark("inject");
 end
+end else begin : eb_no_injection
+  // The injection-only assertion is absent in non-ECC fixture variants.
+  logic unused_eb_trailing;
+  assign unused_eb_trailing=^eb_trailing;
 end
 for(genvar ec=0;ec<CHANNELS;ec++) begin : eb_edges
   always @(posedge clk) if(ECC_BOUNDARY && eb_stream!=0) begin

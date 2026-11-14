@@ -473,6 +473,15 @@ def main() -> None:
         commands[-1].append("+recovery_observations=" + str(report.with_name("recovery-observations.jsonl")))
         if args.continuous_observer:
             commands[-1].append("+continuous_observations=" + str(continuous_path))
+            if args.inline_lifecycle:
+                from continuous_physical import binding_digest
+
+                continuous_profile = json.loads((IP / "config/contracts/profiles.json").read_text())["profiles"][
+                    args.profile_number
+                ]
+                continuous_profile["device"]["mr57"] = 3
+                continuous_profile["ranks"] = args.ranks
+                commands[-1].append("+continuous_profile_sha256=" + binding_digest(continuous_profile))
         if args.power_policy is not None:
             commands[-1].append(f"+power_policy={args.power_policy}")
         if args.runtime_reset_case is not None:
@@ -753,7 +762,10 @@ def main() -> None:
                 if "recovered_external_observations" in result:
                     result["recovered_workload_costs"] = measure(report.with_name("recovery-observations.jsonl"))
         if args.continuous_observer:
-            from continuous import check as check_continuous
+            if args.inline_lifecycle:
+                from continuous_physical import check as check_continuous
+            else:
+                from continuous import check as check_continuous
 
             continuous_profile = json.loads(json.dumps(profiles[args.profile_number]))
             # This exact controller fixture supplies MR57=3 before boot; its

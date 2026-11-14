@@ -99,10 +99,14 @@ module controller_tb #(
       .mr43_i(8'd0),.mr4_i(mr4_value[c]),.mr43_count_o(mr43_count),.mr4_count_o(mr4_count),.zq_count_o(zq_count),.refresh_count_o(refresh_count),.rfm_count_o(rfm_count));
     initial forever begin
       @(negedge clk);
-      if(memory_reset || (WRAPPER_MANAGEMENT && dut.datapath.channels[c].channel.destructive_reset)) begin
+      // C1 keeps the physical fixture alive during unconfirmed reset requests.
+      // Only the registered destructive pulse may discard a live epoch.
+      if((INLINE_LIFECYCLE ? !rst_n || dut.datapath.channels[c].channel.destructive_reset : memory_reset)
+          || (WRAPPER_MANAGEMENT && dut.datapath.channels[c].channel.destructive_reset)) begin
         wm_controller_delay[0]='0;wm_controller_delay[1]='0;wm_pin_ca[c]='0;
         memories[c].memory_model.reset();report_valid[c]=2'b11>>(2-RANKS);report_sr[c]=0;
         wrapper_memory_sample(c,memories[c].memory_model.return_o);
+        continuous_memory_sample(c,memories[c].memory_model.return_o,1,dut.datapath.channels[c].channel.destructive_reset);
       end else begin
         if(WRAPPER_MANAGEMENT) begin
           check(profile.management_ck_tctrl_delay==2,"physical wrapper CA delay binding");
@@ -115,7 +119,8 @@ module controller_tb #(
             memories[c].memory_model.sample_phy_refresh(wm_phy_sample);
           end
         end
-        memories[c].memory_model.prepare();wrapper_memory_sample(c,memories[c].memory_model.return_o);memories[c].memory_model.sample();
+        memories[c].memory_model.prepare();wrapper_memory_sample(c,memories[c].memory_model.return_o);
+        continuous_memory_sample(c,memories[c].memory_model.return_o,0,dut.datapath.channels[c].channel.destructive_reset);memories[c].memory_model.sample();
       end
     end
   end

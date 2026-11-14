@@ -1,19 +1,24 @@
 // Opt-in continuous evidence. Unlike the segmented payload observers, this
-// samples every CK through reset/fault/ownership loss and closes only at $finish.
+// samples every CK through reset/fault/ownership loss to its paired final cutoff.
 // Internal handshakes are recorded as such, alongside the unmodified pins;
 // neither an empty flag nor an internal result is a physical-memory proof.
-int continuous_stream=0,continuous_ck=0;
-string continuous_path;
+int continuous_stream=0,continuous_ck=0,continuous_stop_ck=-1;
+string continuous_path,continuous_profile_sha256;
 initial begin
   if($value$plusargs("continuous_observations=%s",continuous_path)) begin
     continuous_stream=$fopen(continuous_path,"w");
     assert(continuous_stream!=0) else $fatal(1,"cannot open continuous observation trace");
-    $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":1,\"channels\":%0d,\"ranks\":%0d}",CHANNELS,RANKS);
+    if(INLINE_LIFECYCLE) begin
+      assert($value$plusargs("continuous_profile_sha256=%s",continuous_profile_sha256))
+        else $fatal(1,"missing continuous physical profile binding");
+      $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":2,\"scope\":\"inline_lifecycle\",\"phase\":\"negedge_memory_after_prepare_before_sample\",\"receiving_phase\":\"posedge_before_nba\",\"channels\":%0d,\"ranks\":%0d,\"profile_number\":%0d,\"profile_sha256\":\"%s\",\"external_flips\":1}",CHANNELS,RANKS,PROFILE_NUMBER,continuous_profile_sha256);
+    end else
+      $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":1,\"channels\":%0d,\"ranks\":%0d}",CHANNELS,RANKS);
   end
 end
 always @(posedge clk) continuous_ck<=continuous_ck+1;
 for(genvar cc=0;cc<CHANNELS;cc++) begin : continuous
-  always @(posedge clk) if(continuous_stream!=0) begin
+  always @(posedge clk) if(continuous_stream!=0 && (continuous_stop_ck<0 || continuous_ck<continuous_stop_ck)) begin
     $fdisplay(continuous_stream,"{\"kind\":\"transition\",\"ck\":%0d,\"ps\":%0d,\"channel\":%0d,\"reset_n\":%0d,\"memory_reset\":%0d,\"destructive\":%0d,\"confirmed\":%0d,\"settled\":%0d,\"enabled\":%0d,\"host_fault\":%0d,\"fault\":%0d,\"trusted\":%0d,\"owner\":%0d,\"boot\":%0d,\"config\":%0d,\"config_valid\":%0d,\"trained\":%0d,\"training_epoch\":%0d,\"drained\":%0d,\"pin_drained\":%0d,\"ecc_drained\":%0d,\"inline_idle\":%0d,\"inline_dirty\":%0d,\"command_valid\":%0d,\"command\":%0d,\"update\":%0d,\"phy_update\":%0d,\"fsp\":%0d,\"fsp_busy\":%0d,\"power\":%0d,\"master\":%0d,\"refresh_request\":%0d,\"refresh_done\":%0d,\"rank_valid\":%0d,\"rank_sr\":%0d,\"thermal\":%0d,\"ratio\":%0d,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\"}",
       continuous_ck,observer.timestamp_ps(),cc,rst_n,memory_reset,dut.datapath.channels[cc].channel.destructive_reset,
       reset_confirmed[cc],settled,enable,host_fault,status_value[cc].fault,status_value[cc].memory_trusted,status_value[cc].owner,
@@ -37,6 +42,28 @@ for(genvar cc=0;cc<CHANNELS;cc++) begin : continuous
     end
   end
 end
+// Keep the current preparation and its real receiving edge, then stop before
+// the following preparation. The final task may run in either negedge ordering.
+// This cutoff closes the observation window, not the memory fixture itself.
+task automatic continuous_close;
+  if(continuous_stream!=0 && INLINE_LIFECYCLE) begin
+    continuous_stop_ck=continuous_ck+1;
+    @(posedge clk);@(negedge clk);
+  end
+endtask
+// Called directly on the memory procedural output, before sample(). Reading
+// returns[channel] at the same negedge can observe stale port propagation.
+task automatic continuous_memory_sample(input int channel,input lpddr5_mc_return4_t value,input logic reset_applied,input logic destructive);
+  if(continuous_stream!=0 && INLINE_LIFECYCLE && (continuous_stop_ck<0 || continuous_ck<continuous_stop_ck))
+    $fdisplay(continuous_stream,"{\"kind\":\"prepared\",\"ck\":%0d,\"ps\":%0d,\"channel\":%0d,\"reset_applied\":%0d,\"reset_n\":%0d,\"destructive\":%0d,\"mr4\":%0d,\"mr43\":0,\"cs\":%0d,\"ca\":%0d,\"wck\":\"0x%h\",\"write\":\"0x%h\",\"read\":\"0x%h\",\"return\":\"0x%h\"}",
+      continuous_ck,observer.timestamp_ps(),channel,reset_applied,rst_n,
+      destructive,mr4_value[channel],ca[channel].cs,ca[channel].address,wck[channel],writes[channel],reads[channel],value);
+endtask
+task automatic continuous_memory_flip(input int channel,input longint unsigned address,input byte unsigned mask);
+  if(continuous_stream!=0 && INLINE_LIFECYCLE && (continuous_stop_ck<0 || continuous_ck<continuous_stop_ck))
+    $fdisplay(continuous_stream,"{\"kind\":\"memory_flip\",\"id\":0,\"ck\":%0d,\"ps\":%0d,\"channel\":%0d,\"rank\":0,\"address\":%0d,\"mask\":%0d}",
+      continuous_ck,observer.timestamp_ps(),channel,address,mask);
+endtask
 task automatic continuous_granule(input string kind,input int channel,input lpddr5_mc_granule_t g);
   $fdisplay(continuous_stream,"{\"kind\":\"%s\",\"ck\":%0d,\"channel\":%0d,\"tag\":%0d,\"generation\":%0d,\"boot\":%0d,\"config\":%0d,\"rank\":%0d,\"row\":%0d,\"bank\":%0d,\"column\":%0d,\"write\":%0d,\"bytes\":%0d,\"mask\":\"0x%h\",\"data\":\"0x%h\"}",
     kind,continuous_ck,channel,g.tag,g.generation,status_value[channel].boot_epoch,status_value[channel].config_epoch,
@@ -49,7 +76,9 @@ task automatic continuous_result(input string kind,input int channel,input lpddr
 endtask
 final begin
   if(continuous_stream!=0) begin
-    $fdisplay(continuous_stream,"{\"kind\":\"end\",\"ck\":%0d}",continuous_ck);
+    if(INLINE_LIFECYCLE)
+      $fdisplay(continuous_stream,"{\"kind\":\"end\",\"ck\":%0d,\"physical_closed\":%0d}",continuous_stop_ck,continuous_stop_ck>=0);
+    else $fdisplay(continuous_stream,"{\"kind\":\"end\",\"ck\":%0d}",continuous_ck);
     $fclose(continuous_stream);
   end
 end

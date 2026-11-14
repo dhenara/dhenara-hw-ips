@@ -53,7 +53,7 @@ def main():
         "PYTHONPYCACHEPREFIX": str(build / "pycache"),
     }
     records = []
-    commands = [[sys.executable, "-m", "unittest", "continuous_test", "-v"]]
+    commands = [[sys.executable, "-m", "unittest", "continuous_test", "continuous_physical_test", "-v"]]
     for top in ("controller_tb", "lpddr5_mc_channel_tb"):
         commands.append(
             [

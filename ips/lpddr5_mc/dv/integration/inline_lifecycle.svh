@@ -48,6 +48,7 @@ task automatic inline_lifecycle_run;
   end
   for(int j=0;j<64;j++) saved[j]=expected[j];
   @(negedge clk);memories[0].memory_model.memory_bytes[2]^=8'h80;
+  continuous_memory_flip(0,2,8'h80);
   $display("INLINE_FLIP ps=%0d byte=2 mask=128",observer.timestamp_ps());
   // Same-port younger data is buffered while the older correction scrubs.
   drive_bready(0);before_b=b_count[0];send_ar(0,100,0,64/BYTES);
@@ -115,5 +116,5 @@ task automatic inline_lifecycle_run;
   @(negedge clk);finish_recovery=1;repeat(2) @(negedge clk);
   check(!host_fault && dut.stale_completions==0,"fresh protected service after dirty recovery");
   $display("CONTROLLER_INLINE_LIFECYCLE_PASS shared_granules=4 scrub=1 phy_error=1 boot=1");
-  $display("CONTROLLER_INTEGRATION_PASS checks=%0d inline_lifecycle=1",checks);$finish;
+  $display("CONTROLLER_INTEGRATION_PASS checks=%0d inline_lifecycle=1",checks);continuous_close();$finish;
 endtask

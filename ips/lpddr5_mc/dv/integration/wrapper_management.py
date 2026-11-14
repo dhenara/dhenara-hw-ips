@@ -388,8 +388,9 @@ class Source:
             self.counts[kind] += 1
         elif kind in ("b", "r"):
             tag = self.tags[e["port"], e["id"], kind == "b"]
-            h.offer(tag, number(e.get("data", 0)), e["response"], bool(e.get("last", 1)))
             key = e["port"], kind
+            require(self.held.get(key, tag) == tag, "exposed response identity changed under backpressure")
+            h.offer(tag, number(e.get("data", 0)), e["response"], bool(e.get("last", 1)))
             if e["ready"]:
                 h.handshake(tag)
                 self.held.pop(key, None)

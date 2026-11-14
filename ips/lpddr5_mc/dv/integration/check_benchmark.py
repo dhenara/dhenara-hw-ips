@@ -19,7 +19,7 @@ IP = Path(__file__).resolve().parents[2]
 REPO = IP.parents[1]
 sys.path.insert(0, str(IP / "dv"))
 
-from benchmark import check, number  # noqa: E402
+from benchmark import check, number, require_full_performance  # noqa: E402
 from system.host import Violation, require  # noqa: E402
 
 
@@ -167,6 +167,8 @@ def main():
     temporary = storage / "mutation.jsonl"
     try:
         report["baseline"] = check(args.trace, args.log, args.direction, args.service, smoke=args.smoke)
+        if not args.smoke:
+            require_full_performance(report["baseline"])
         if args.sensitivity:
             storage.mkdir(parents=True, exist_ok=False)
             with gzip.open(args.trace, "rt") if args.trace.suffix == ".gz" else args.trace.open() as stream:

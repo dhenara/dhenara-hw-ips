@@ -265,13 +265,15 @@ task automatic wm_case_run(input int kind,input bit failed);
     for(int n=0;n<100;n++) begin @(negedge clk);if(status_value[0].state==1 && !management_out[0].phyupd_ack && !management_out[0].phymstr_ack) break;end
     check(status_value[0].state==1 && status_value[0].memory_trusted,"legal management handback");
     write_csr(INDEX_CONTROL,1);wait(enable);wm_mark("returned");
-    if(kind==3) begin
-      send_ar(1,16'(base_id+8),64,4);read_result(1,16'(base_id+8),64,4);
-      send_ar(0,16'(base_id+9),0,4);read_result(0,16'(base_id+9),0,4);
-      wm_mark("preserved_service");
-    end
   end
+  // Existing AR probes may already be accepted on this source port. Retire
+  // their exact R streams before starting preservation reads on the same bus.
   wm_finish_probes(base_id+12);
+  if(kind==3) begin
+    send_ar(1,16'(base_id+8),64,4);read_result(1,16'(base_id+8),64,4);
+    send_ar(0,16'(base_id+9),0,4);read_result(0,16'(base_id+9),0,4);
+    wm_mark("preserved_service");
+  end
   wm_fresh_service(base_id+10);
   // No new source work follows fresh_service. Preserve natural maintenance
   // and all five quiescent owners. The generated bound accounts for staggered

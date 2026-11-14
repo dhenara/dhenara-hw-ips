@@ -736,5 +736,61 @@ class EntryRecoveryTests(unittest.TestCase):
             advance(r, sample(ps=3750, tick=2, owner=2, phyupd_req=0, phymstr_req=0), phymstr_req=0)
 
 
+class ResponseIdentityTests(unittest.TestCase):
+    def source(self, write, ports=(0,)):
+        s = Source()
+        for port in ports:
+            for identity in (1, 2):
+                s.event(
+                    dict(
+                        kind="aw" if write else "ar",
+                        port=port,
+                        id=identity,
+                        address=identity * 64,
+                        length=0,
+                        size=4,
+                        burst=1,
+                        lock=0,
+                    )
+                )
+                if write:
+                    s.event(dict(kind="w", port=port, data=0, strobe=65535, last=1))
+        s.host.fail()
+        return s
+
+    def response(self, write, identity=1, port=0, ready=0):
+        return dict(kind="b" if write else "r", port=port, id=identity, data=0, response=2, last=1, ready=ready)
+
+    def test_stalled_identity_switch_is_rejected(self):
+        for write in (False, True):
+            for ready in (0, 1):
+                with self.subTest(write=write, ready=ready):
+                    s = self.source(write)
+                    s.event(self.response(write))
+                    with self.assertRaisesRegex(Violation, "response identity changed"):
+                        s.event(self.response(write, identity=2, ready=ready))
+
+    def test_stable_offer_then_identity_change_after_handshake(self):
+        for write in (False, True):
+            with self.subTest(write=write):
+                s = self.source(write)
+                for _ in range(3):
+                    s.event(self.response(write))
+                s.event(self.response(write, ready=1))
+                s.event(self.response(write, identity=2, ready=1))
+                self.assertTrue(s.settled())
+
+    def test_other_port_response_does_not_replace_stalled_identity(self):
+        for write in (False, True):
+            with self.subTest(write=write):
+                s = self.source(write, ports=(0, 1))
+                s.event(self.response(write))
+                s.event(self.response(write, identity=2, port=1, ready=1))
+                s.event(self.response(write, port=1, ready=1))
+                s.event(self.response(write, ready=1))
+                s.event(self.response(write, identity=2, ready=1))
+                self.assertTrue(s.settled())
+
+
 if __name__ == "__main__":
     unittest.main()

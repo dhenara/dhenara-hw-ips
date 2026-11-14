@@ -2,7 +2,7 @@ module datapath_tb #(
   parameter int PORTS=2,CHANNELS=2,RANKS=1,DATA_BITS=128,DEPTH=16,
   parameter int PROFILE_NUMBER=0,SERVICE_DIV=2,INTEGRITY_MODE=0,
   parameter int ID_BITS=8,ADDRESS_BITS=40,GRANULE_BYTES=64,
-  parameter int AXI_STRESS=0,AXI_OVERLAP=0
+  parameter int AXI_STRESS=0,AXI_OVERLAP=0,ECC_COMPOSITION=0
 );
   import lpddr5_mc_contract_pkg::*;
   import lpddr5_mc_host_pkg::*;
@@ -78,7 +78,7 @@ module datapath_tb #(
     .notification_valid_o(notification_valid),.notification_ready_i({CHANNELS{1'b1}}),.notification_o(notifications),.management_i(management),
     .rank_report_valid_i(report_valid),.rank_self_refresh_i(report_sr),.phy_refresh_done_i(phy_refresh_done),.management_o(management_out),
     .ca_o(ca),.wck_o(wck),.write_o(writes),.read_request_o(reads),.return_i(returns),.status_o(status_value),.accepted_addresses_o(accepted),.grant_cycles_o(grants));
-  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(AXI_OVERLAP!=0)) observer (
+  lpddr5_mc_observer #(.PORTS(PORTS),.CHANNELS(CHANNELS),.DATA_BITS(DATA_BITS),.OBSERVE_CYCLES(AXI_OVERLAP!=0 || ECC_COMPOSITION!=0)) observer (
     .clk_ck_i(clk),.rst_ni(rst_n),.axi_clk_i(axi_clk[PORTS-1:0]),.axi_rst_ni(monitor_rst_n),
     .awvalid_i(awvalid),.arvalid_i(arvalid),.wvalid_i(wvalid),.awready_i(awready),.arready_i(arready),.wready_i(wready),
     .aw_i(aw),.ar_i(ar),.w_i(wd),.bvalid_i(bvalid),.rvalid_i(rvalid),.bready_i(bready),.rready_i(rready),.b_i(b),.r_i(r),
@@ -532,6 +532,7 @@ module datapath_tb #(
   endtask
   `include "axi_stress.svh"
   `include "axi_overlap.svh"
+  `include "ecc_composition.svh"
   initial begin
     int before_b;
     if($value$plusargs("fairness_mode=%d",fairness_mode)) begin
@@ -601,6 +602,7 @@ module datapath_tb #(
     #20;rst_n=1;axi_rst_n='1;memory_reset=0;publish_and_boot();stage=1;
     if(AXI_STRESS!=0) axi_stress_case();
     if(AXI_OVERLAP!=0) overlap_case();
+    if(ECC_COMPOSITION!=0) ecc_composition_case();
     if(fairness_mode>=0) fairness_case();
     if(zero_cap_direction>=0) zero_cap_case();
     if(cap_mode!=0) cap_case();

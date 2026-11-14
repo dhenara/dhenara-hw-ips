@@ -18,7 +18,9 @@ REPO = Path(__file__).resolve().parents[4]
 IP = REPO / "ips/lpddr5_mc"
 
 
-def reserve_observations(report: Path, family: str, benchmark: bool, caps: bool, fairness: bool = False) -> list[Path]:
+def reserve_observations(
+    report: Path, family: str, benchmark: bool, caps: bool, fairness: bool = False, composition: bool = False
+) -> list[Path]:
     """Reserve shared trace names before compilation or another writer can start.
 
     Different report filenames do not isolate observations in one directory.
@@ -34,6 +36,8 @@ def reserve_observations(report: Path, family: str, benchmark: bool, caps: bool,
         paths.append(report.with_name("cap-observations.jsonl"))
     if fairness:
         paths.append(report.with_name("fairness-observations.jsonl"))
+    if composition:
+        paths.append(report.with_name("composition-observations.jsonl"))
     for path in paths:
         if path.exists():
             raise FileExistsError(f"Refusing to overwrite retained observations: {path}; use a fresh report directory")
@@ -78,6 +82,7 @@ def main() -> None:
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--axi-stress-seed", type=int)
     parser.add_argument("--axi-overlap", action="store_true")
+    parser.add_argument("--ecc-composition", action="store_true")
     parser.add_argument("--inline-lifecycle", action="store_true")
     parser.add_argument("--wrapper-management", action="store_true")
     parser.add_argument(
@@ -103,6 +108,25 @@ def main() -> None:
     ):
         parser.add_argument("--" + flag, type=int, choices=values, default=default)
     args = parser.parse_args()
+    if args.ecc_composition and (
+        args.family != "datapath"
+        or (args.ports, args.channels, args.ranks, args.data_bits, args.profile_number, args.integrity_mode)
+        != (1, 1, 1, 128, 0, 1)
+        or args.axi_overlap
+        or args.axi_stress_seed is not None
+        or args.cap_mode is not None
+        or args.fairness_mode is not None
+        or args.inline_lifecycle
+        or args.wrapper_management
+        or args.prepare_wrapper_management
+        or args.continuous_observer
+        or args.runtime_reset
+        or args.runtime_reset_matrix
+        or args.runtime_reset_case is not None
+        or args.power_policy is not None
+        or args.benchmark_direction
+    ):
+        parser.error("ECC composition requires the isolated one-port/channel/rank AXI128 inline datapath/profile0")
     if args.prepare_wrapper_management:
         args.wrapper_management = True
     if args.wrapper_case is not None and not args.wrapper_management:
@@ -172,6 +196,8 @@ def main() -> None:
         configuration["AXI_STRESS"] = 1
     if args.axi_overlap:
         configuration["AXI_OVERLAP"] = 1
+    if args.ecc_composition:
+        configuration["ECC_COMPOSITION"] = 1
     if args.family in ("datapath", "lint"):
         configuration.update(
             ID_BITS=args.id_bits if args.id_bits is not None else 16 if args.integrity_mode == 4 else 8,
@@ -282,6 +308,7 @@ def main() -> None:
         bool(args.benchmark_direction),
         args.cap_mode is not None,
         args.fairness_mode is not None,
+        args.ecc_composition,
     )
     if args.wrapper_management:
         wrapper_path = report.with_name("wrapper-management.jsonl")
@@ -338,6 +365,7 @@ def main() -> None:
         "runtime_reset_matrix": args.runtime_reset_matrix,
         "runtime_reset_case": args.runtime_reset_case,
         "inline_lifecycle": args.inline_lifecycle,
+        "ecc_composition": args.ecc_composition,
         "wrapper_management": args.wrapper_management,
         "wrapper_case": args.wrapper_case,
         "preparation_only": args.prepare_wrapper_management,
@@ -451,6 +479,8 @@ def main() -> None:
     ]
     if args.family == "lint":
         commands.pop()
+    if args.ecc_composition:
+        commands[-1].append("+composition_observations=" + str(report.with_name("composition-observations.jsonl")))
     if args.axi_stress_seed is not None:
         commands[-1].append(f"+axi_stress_seed={args.axi_stress_seed}")
     if args.wrapper_management:
@@ -636,6 +666,15 @@ def main() -> None:
                     report.with_name(f"{report.stem}-2.log"),
                     profiles[0],
                     ranks=args.ranks,
+                )
+            elif args.ecc_composition:
+                from ecc_composition import check as check_ecc_composition
+
+                result["ecc_composition_observations"] = check_ecc_composition(
+                    trace_path,
+                    report.with_name("composition-observations.jsonl"),
+                    report.with_name(f"{report.stem}-2.log"),
+                    profiles[0],
                 )
             elif args.integrity_mode in (1, 2, 4):
                 from integrity import check as check_integrity

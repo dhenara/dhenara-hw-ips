@@ -7,6 +7,7 @@ No DUT completion/queue-empty signal is an input to this checker.
 
 import copy
 from collections import deque
+from itertools import islice
 from pathlib import Path
 
 from contracts.read_completion import CompletionOracle, ExpectedWord, ReadBusOracle
@@ -75,6 +76,7 @@ def check(
     origin_ps = None
     ended = False
     commands = writes = reads = 0
+    physical_payload_bytes = [0, 0]
     observed_fault = None
     serial = 0
 
@@ -175,7 +177,24 @@ def check(
                 values = []
                 if not b.write:
                     values = [model.dram.beat(b, beat, b.times[beat]) for beat in range(b.beats)]
-                bursts[c].append((serial, b, origin, address, values))
+                words = b.beats // 2
+                span = words + (8 if ratio == 4 and words == 16 else 0)
+                d = profile["dfi_wck"]
+                enable_latency = d["tphy_wrlat" if b.write else "trddata_en"]
+                # Exclusive DFI-word endpoint of every enable, continuous-CS
+                # and write-data observation. Returns and physical ownership
+                # keep their independent pending state after this window ends.
+                end = (
+                    origin * ratio
+                    + span
+                    + max(
+                        d["tphy_wrcslat" if b.write else "tphy_rdcslat"],
+                        enable_latency + (d["tphy_wrdata"] if b.write else 0),
+                        enable_latency,
+                    )
+                )
+                bursts[c].append((serial, b, origin, address, values, end))
+                physical_payload_bytes[int(b.write)] += b.beats * 2
                 if b.write:
                     final_ps = origin_ps + b.times[-1] / (2 * ratio) * profile["ck_ps"]
                     final_ps += profile["dfi_wck"]["twrdata_delay"] / ratio * profile["ck_ps"]
@@ -198,7 +217,8 @@ def check(
             if operation is not None and operation.kind == "MRR":
                 serial += 1
                 thermal[c].begin(serial, ck, e["cs"], operation.operand)
-                mrr_windows[c].append((ck, e["cs"]))
+                mrr_end = ck * ratio + max(profile["dfi_wck"]["trddata_en"], profile["dfi_wck"]["tphy_rdcslat"]) + 8
+                mrr_windows[c].append((ck, e["cs"], mrr_end))
                 for w in range(8):
                     byte = (
                         (13 if mr4_change_ck is not None and ck >= mr4_change_ck else 9)
@@ -225,7 +245,7 @@ def check(
             write_enable, write_cs = (raw_write >> 24) & 255, (raw_write >> 16) & 255
             read_enable, read_cs = raw_read >> 16, raw_read & 65535
             expected_write = expected_read = expected_wcs = expected_rcs = 0
-            for identity, burst, at, address, _values in bursts[c]:
+            for identity, burst, at, address, _values, _end in bursts[c]:
                 words = burst.beats // 2
                 d = profile["dfi_wck"]
                 for lane in range(ratio):
@@ -263,7 +283,7 @@ def check(
                 # Read data is checked against independently decoded physical bytes.
             # MRR uses eight words with continuous CS, independently derived
             # from its actual CA command, including the returned-data tail.
-            for at, rank_mask in mrr_windows[c]:
+            for at, rank_mask, _end in mrr_windows[c]:
                 d = profile["dfi_wck"]
                 for lane in range(ratio):
                     word_at = ck * ratio + lane
@@ -271,6 +291,11 @@ def check(
                         expected_read |= 3 << (lane * 2)
                     if at * ratio + d["tphy_rdcslat"] <= word_at < at * ratio + d["tphy_rdcslat"] + 8:
                         expected_rcs |= (rank_mask * 5) << (lane * 4)
+            # This CK's final DFI lane has been checked. A late enable/CS
+            # still mismatches zero after retirement; no result flag or fault
+            # cancels a scheduled word. Keep aggregate payload counts apart.
+            bursts[c] = [window for window in bursts[c] if window[-1] > (ck + 1) * ratio]
+            mrr_windows[c] = [window for window in mrr_windows[c] if window[-1] > (ck + 1) * ratio]
             require(write_enable == expected_write, "actual write enables disagree with CA")
             require(write_cs == expected_wcs, "actual continuous write CS disagrees with CA")
             require(
@@ -285,25 +310,30 @@ def check(
                 dnv=(raw_return >> 16) & 65535,
                 link_parity=raw_return & 65535,
             )
-            before = {(tag, word, lane) for tag, received in completion[c].received.items() for word, lane in received}
+            incoming = []
+            for lane in range(2):
+                count = sum(word[lane] is not None for word in decoded["data"])
+                incoming.extend(islice(completion[c].pending[lane], count))
+            # Snapshot remains the whole-snapshot authority for rotation,
+            # duplicates, unsolicited words, DNV and missing-word deadlines.
+            # Do not consume or validate the prospective prefix independently.
             bus[c].snapshot(ck, decoded["data"], decoded["dnv"])
             require(not bus[c].unavailable, "unexpected DNV in clean combined trace")
-            for tag, received in completion[c].received.items():
-                for (w, lane), value in received.items():
-                    if (tag, w, lane) in before:
-                        continue
-                    raw = expected_words[c][tag, w]
-                    expected = ((raw >> (lane * 8)) & 255) | (((raw >> (16 + lane * 8)) & 255) << 8)
-                    require(
-                        value == expected,
-                        "actual returned slice disagrees with physical memory",
-                    )
-                    thermal[c].receive(tag, w, lane, value, ck, ps)
-                    if (tag, w) in word_owner[c]:
-                        read_ownership.observe(
-                            (c, tag), (word_owner[c][tag, w] + lane + 2 * half for half in range(2)), ps
-                        )
-                    reads += 1
+            # Serial order preserves the old received-dictionary order across
+            # commands; the stable sort keeps snapshot order within a command.
+            for item in sorted(incoming, key=lambda item: item.tag):
+                tag, w, lane = item.tag, item.word, item.slice_index
+                value = completion[c].received[tag][w, lane]
+                raw = expected_words[c][tag, w]
+                expected = ((raw >> (lane * 8)) & 255) | (((raw >> (16 + lane * 8)) & 255) << 8)
+                require(
+                    value == expected,
+                    "actual returned slice disagrees with physical memory",
+                )
+                thermal[c].receive(tag, w, lane, value, ck, ps)
+                if (tag, w) in word_owner[c]:
+                    read_ownership.observe((c, tag), (word_owner[c][tag, w] + lane + 2 * half for half in range(2)), ps)
+                reads += 1
         elif kind == "axi":
             require(observe_axi and 0 <= e["port"] < ports and 0 <= e["flags"] < 1024, "unexpected AXI cycle witness")
         elif kind == "end":
@@ -347,8 +377,5 @@ def check(
             sum(t.write == bool(direction) and t.offered[1] == 2 for t in host.transactions.values())
             for direction in (0, 1)
         ]
-        result["physical_payload_bytes_by_direction"] = [
-            sum(b.beats * 2 for channel in bursts for _, b, *_ in channel if b.write == bool(direction))
-            for direction in (0, 1)
-        ]
+        result["physical_payload_bytes_by_direction"] = physical_payload_bytes
     return result

@@ -64,6 +64,7 @@ module lpddr5_mc_apb #(
   int unsigned timer_q, timer_d, hash_index_q, hash_index_d;
   logic [CHANNELS-1:0][31:0] crc_q, crc_d;
   logic [CHANNELS-1:0] sent_q, sent_d, acked_q, acked_d;
+  logic [CHANNELS-1:0] late_prepare_q, late_prepare_d;
   logic [CHANNELS-1:0] declined_q, declined_d;
   logic prior_valid_q, prior_valid_d;
   logic [CHANNELS-1:0] first_error_q, first_error_d;
@@ -175,6 +176,7 @@ module lpddr5_mc_apb #(
     logic [12:0] clear_events, set_events;
     logic [31:0] current_boot;
     logic [CHANNELS-1:0] ack_seen;
+    logic [CHANNELS-1:0] prepare_seen;
     logic bad_ack;
     logic access_fire;
     logic snapshot_ok,publication_request;
@@ -192,6 +194,7 @@ module lpddr5_mc_apb #(
     crc_d = crc_q;
     sent_d = sent_q;
     acked_d = acked_q;
+    late_prepare_d = late_prepare_q;
     declined_d = declined_q;
     prior_valid_d = prior_valid_q;
     first_error_d = first_error_q;
@@ -220,6 +223,7 @@ module lpddr5_mc_apb #(
     set_events = 0;
     current_boot = staging_q[0][INDEX_BOOT_EPOCH];
     ack_seen = acked_q;
+    prepare_seen = acked_q;
     bad_ack = 1'b0;
     access_fire = 1'b0;
     snapshot_ok = 1'b1;
@@ -308,6 +312,7 @@ module lpddr5_mc_apb #(
         timer_d = 0;
         sent_d = 0;
         acked_d = 0;
+        late_prepare_d = 0;
       end else begin
         // Preflight above covers every command and destination before any
         // staging value, sequence or mailbox slot is mutated.
@@ -400,17 +405,34 @@ module lpddr5_mc_apb #(
           config_o[c].destinations = 2'((1 << CHANNELS) - 1);
           if (config_valid_o[c] && config_ready_i[c]) sent_d[c] = 1'b1;
           if (config_ack_valid_i[c]) begin
-            if ((!sent_q[c] && !(config_valid_o[c] && config_ready_i[c])) || acked_q[c] ||
+            // Each channel has an independent return mailbox. A rejection
+            // already in flight when another channel failed PREPARE is still
+            // owed, but cannot acknowledge or terminate the current ABORT.
+            if (state_q == ABORT && late_prepare_q[c] && !acked_q[c] &&
+                config_ack_i[c].sequence_number == sequence_q && config_ack_i[c].boot_epoch == boot_q &&
+                config_ack_i[c].phase == LPDDR5_MC_CONFIG_PREPARE && !config_ack_i[c].accepted) begin
+              late_prepare_d[c] = 1'b0;
+            end else if ((!sent_q[c] && !(config_valid_o[c] && config_ready_i[c])) || acked_q[c] ||
                 config_ack_i[c].sequence_number != sequence_q ||
                 config_ack_i[c].boot_epoch != boot_q ||
                 !((state_q == PREPARE && config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE
                     && !config_ack_i[c].accepted) ||
                   (config_ack_i[c].phase == (state_q == PREPARE ? LPDDR5_MC_CONFIG_PREPARE :
                     state_q == COMMIT ? LPDDR5_MC_CONFIG_COMMIT : LPDDR5_MC_CONFIG_ABORT)
-                    && config_ack_i[c].accepted))) bad_ack = 1'b1;
+                    && config_ack_i[c].accepted))) begin
+              bad_ack = 1'b1;
+              if (state_q == PREPARE && !acked_q[c] &&
+                  (sent_q[c] || (config_valid_o[c] && config_ready_i[c])) &&
+                  config_ack_i[c].sequence_number == sequence_q && config_ack_i[c].boot_epoch == boot_q &&
+                  config_ack_i[c].phase == LPDDR5_MC_CONFIG_PREPARE && !config_ack_i[c].accepted)
+                prepare_seen[c] = 1'b1;
+            end
             else begin
               ack_seen[c] = 1'b1;
-              if (state_q == PREPARE) declined_d[c] = config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE;
+              if (state_q == PREPARE) begin
+                prepare_seen[c] = 1'b1;
+                declined_d[c] = config_ack_i[c].phase == LPDDR5_MC_CONFIG_DECLINE;
+              end else if (state_q == ABORT) late_prepare_d[c] = 1'b0;
             end
           end
         end
@@ -449,6 +471,7 @@ module lpddr5_mc_apb #(
         else begin
           state_d = ABORT;
           timer_d = 0;
+          late_prepare_d = state_q == PREPARE ? sent_d & ~prepare_seen : '0;
           sent_d = 0;
           acked_d = 0;
         end
@@ -503,6 +526,7 @@ module lpddr5_mc_apb #(
       crc_q <= '0;
       sent_q <= '0;
       acked_q <= '0;
+      late_prepare_q <= '0;
       declined_q <= '0;
       prior_valid_q <= 0;
       sequence_q <= 0;
@@ -528,6 +552,7 @@ module lpddr5_mc_apb #(
       crc_q <= crc_d;
       sent_q <= sent_d;
       acked_q <= acked_d;
+      late_prepare_q <= late_prepare_d;
       declined_q <= declined_d;
       prior_valid_q <= prior_valid_d;
       sequence_q <= sequence_d;

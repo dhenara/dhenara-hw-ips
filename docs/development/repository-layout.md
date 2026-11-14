@@ -1,6 +1,6 @@
 # Hardware IP repository conventions
 
-This page defines the initial repository organization for maintainers adding independent hardware IPs. LPDDR5 has canonical contracts, generated registers, numeric digital fixtures and independent reference checks; controller implementation remains pending.
+This page defines repository organization for maintainers adding independent hardware IPs. LPDDR5 includes controller RTL, canonical contracts, generated registers, digital fixtures and independent simulation checks. Its [qualification ledger](../../ips/lpddr5_mc/docs/verification/qualification.md) records the remaining release checks.
 
 ## Organize by IP
 

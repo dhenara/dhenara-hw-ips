@@ -367,6 +367,7 @@ class FspRun(Run):
         self.markers = []
         self.faults = set()
         self.failure_seen = False
+        self.failure_pending = None
         self.baseline = False
         self.finished = False
         self.host_edge = None
@@ -380,6 +381,7 @@ class FspRun(Run):
         return (
             self.selection == 2
             and self.failure_seen
+            and self.failure_pending is None
             and self.publication.failure is not None
             and self.publication.recover_requested
         )
@@ -503,6 +505,14 @@ class FspRun(Run):
 
     def event(self, e):
         kind = e["kind"]
+        if self.failure_pending is not None:
+            require(e["ps"] <= self.failure_pending[1], "missing next-edge FSP host fatal witness")
+            if kind == "host_settlement":
+                require(
+                    (e["tick"], e["ps"]) == self.failure_pending and e["fatal"],
+                    "FSP fault fence not consumed at next qualified host edge",
+                )
+                self.failure_pending = None
         if kind == "fsp_binding":
             return
         if kind == "fsp_edge":
@@ -677,7 +687,27 @@ class FspRun(Run):
                 self.host_completions.checkpoint(e)
                 self.finished = True
         elif name == "fsp_failed":
-            require(self.failure_seen and self.faults == {0, 1}, "missing both actual FSP timeouts/host fault")
+            require(self.faults == {0, 1}, "missing both actual FSP timeouts")
+            # The fixture marks the wrapper fault fence at falling CK+1ps.
+            # Its fatal input is consumed/recorded on the following rising
+            # edge. Bind both sampled outputs and require that exact next
+            # receiving witness before allowing recovery or finishing.
+            require(
+                all(
+                    s
+                    and s["channel"] == c
+                    and s["host_fault"]
+                    and not s["enabled"]
+                    and s["ps"] <= e["ps"] < s["ps"] + self.p["ck_ps"] // 2
+                    for c, s in enumerate(self.last)
+                ),
+                "FSP failed marker without actual sampled host fault/admission fence",
+            )
+            require(
+                (self.last[0]["tick"], self.last[0]["ps"]) == (self.last[1]["tick"], self.last[1]["ps"]),
+                "FSP failed marker without paired channel samples",
+            )
+            self.failure_pending = self.last[0]["tick"], self.last[0]["ps"] + self.p["ck_ps"] // 2
         elif name == "fsp_recover_requested":
             require(self.recovery_allowed(), "RECOVER marker without settled ABORT and actual accepted request")
         elif name == "fsp_recovery_baseline":
@@ -714,6 +744,7 @@ class FspRun(Run):
             self.publication.require_failed()
             require(
                 self.failure_seen
+                and self.failure_pending is None
                 and self.baseline
                 and self.recovery_channels == {0, 1}
                 and "fsp_retrained" in self.markers,

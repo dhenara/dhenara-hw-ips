@@ -4,6 +4,7 @@ import copy
 import unittest
 import zlib
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from contracts import commands
 from system.host import Violation
@@ -353,6 +354,7 @@ class FailedPublicationTest(unittest.TestCase):
         owner.prepare(sequence=11, boot=0, target_fsp=1, targets=[q, q], source_settled=True)
         run = FspRun.__new__(FspRun)
         run.active, run.baseline, run.selection, run.failure_seen = True, False, 2, True
+        run.failure_pending = None
         run.source = SimpleNamespace(settled=lambda: True)
         run.publication = started(failed_case=True)
         run.owner, run.physical = owner, physical
@@ -508,6 +510,125 @@ class FailedPublicationTest(unittest.TestCase):
         run.markers = list(before)
         with self.assertRaises(Violation):
             run.marker(dict(name="fsp_preserved"))
+
+
+class FailedMarkerPhaseTest(unittest.TestCase):
+    """Synthetic phase boundary; saved producer streams are not replayed."""
+
+    def marker_fixture(self):
+        run = FspRun.__new__(FspRun)
+        run.active, run.baseline, run.selection, run.failure_seen = True, False, 2, False
+        run.failure_pending = None
+        run.p = profile_binding()
+        run.faults = {0, 1}
+        run.markers = [
+            "fsp_begin",
+            "fsp_initial_preserved",
+            "fsp_dirty",
+            "fsp_dirty_rejected",
+            "fsp_quiesced",
+            "fsp_publish_offer",
+        ]
+        run.last = [dict(ps=36138750, tick=28910, channel=c, host_fault=1, enabled=0) for c in range(2)]
+        run.publication = SimpleNamespace(failure=object(), recover_requested=True)
+        run.source = SimpleNamespace(host=SimpleNamespace(fail=lambda: None))
+        return run, dict(name="fsp_failed", ps=36138751)
+
+    def test_sampled_fence_marker_precedes_consuming_host_fatal_witness(self):
+        run, marker = self.marker_fixture()
+        run.marker(marker)
+        self.assertEqual(run.markers[-1], "fsp_failed")
+        self.assertFalse(run.failure_seen)
+        self.assertEqual(run.failure_pending, (28910, 36139375))
+        self.assertFalse(run.recovery_allowed())
+        calls = []
+        run.source.host.fail = lambda: calls.append("sampled host fatal")
+        with patch.object(Run, "event"):
+            run.event(dict(kind="host_settlement", ps=36139375, tick=28910, fatal=1))
+            run.event(dict(kind="host_settlement", ps=36140625, tick=28911, fatal=1))
+        self.assertTrue(run.failure_seen)
+        self.assertIsNone(run.failure_pending)
+        self.assertTrue(run.recovery_allowed())
+        self.assertEqual(calls, ["sampled host fatal"])
+
+    def test_marker_requires_both_sampled_engine_timeouts(self):
+        for faults in (set(), {0}, {1}):
+            run, marker = self.marker_fixture()
+            run.failure_seen, run.faults = True, faults
+            with self.subTest(faults=faults), self.assertRaises(Violation):
+                run.marker(marker)
+
+    def test_consumed_fatal_cannot_replace_both_sampled_closed_wrapper_fences(self):
+        for channel in (0, 1):
+            for changes in (
+                {"host_fault": 0},
+                {"enabled": 1},
+                {"ps": 36138752},
+                {"channel": 1 - channel},
+                {"tick": 28909},
+                {"ps": 36137500},
+            ):
+                run, marker = self.marker_fixture()
+                run.failure_seen = True
+                run.last[channel].update(changes)
+                with self.subTest(channel=channel, changes=changes), self.assertRaises(Violation):
+                    run.marker(marker)
+            run, marker = self.marker_fixture()
+            run.failure_seen, run.last[channel] = True, None
+            with self.subTest(channel=channel, missing=True), self.assertRaises(Violation):
+                run.marker(marker)
+
+    def test_missing_or_wrong_receiving_fatal_is_rejected(self):
+        for changes in ({"fatal": 0}, {"tick": 28911}, {"ps": 36139374}):
+            run, marker = self.marker_fixture()
+            run.marker(marker)
+            edge = dict(kind="host_settlement", ps=36139375, tick=28910, fatal=1) | changes
+            with (
+                self.subTest(changes=changes),
+                patch.object(Run, "event"),
+                self.assertRaisesRegex(Violation, "not consumed at next qualified host edge"),
+            ):
+                run.event(edge)
+            self.assertFalse(run.failure_seen)
+            self.assertFalse(run.recovery_allowed())
+
+    def test_late_fatal_cannot_discharge_next_edge_obligation(self):
+        run, marker = self.marker_fixture()
+        run.marker(marker)
+        with patch.object(Run, "event"), self.assertRaisesRegex(Violation, "missing next-edge FSP host fatal"):
+            run.event(dict(kind="host_settlement", ps=36140625, tick=28911, fatal=1))
+        self.assertFalse(run.failure_seen)
+        self.assertFalse(run.recovery_allowed())
+
+    def test_omitted_receiving_record_is_rejected_when_time_advances(self):
+        run, marker = self.marker_fixture()
+        run.marker(marker)
+        with patch.object(Run, "event"), self.assertRaisesRegex(Violation, "missing next-edge FSP host fatal"):
+            run.event(dict(kind="sample", ps=36140000, tick=28911, channel=0))
+        self.assertFalse(run.failure_seen)
+
+    def test_recovery_marker_cannot_substitute_for_consuming_fatal(self):
+        run, marker = self.marker_fixture()
+        run.marker(marker)
+        with self.assertRaisesRegex(Violation, "RECOVER marker without settled ABORT"):
+            run.marker(dict(name="fsp_recover_requested"))
+
+    def test_finish_requires_consumed_fatal_and_no_pending_receiving_witness(self):
+        for consumed_fatal in (False, True):
+            run, marker = self.marker_fixture()
+            run.marker(marker)
+            run.failure_seen = consumed_fatal
+            self.assertFalse(run.recovery_allowed())
+            run.finished, run.baseline, run.recovery_channels = True, True, {0, 1}
+            run.markers += ["fsp_retrained", "fsp_end"]
+            run.source.host.finish = lambda: None
+            run.addresses = SimpleNamespace(held={}, offers={})
+            run.publication = SimpleNamespace(history=[dict(outcome="failed")], require_failed=lambda: None)
+            with (
+                self.subTest(consumed_fatal=consumed_fatal),
+                self.assertRaisesRegex(Violation, "incomplete FSP fatal recovery"),
+            ):
+                run.finish()
 
 
 class ProfileAndSchemaTest(unittest.TestCase):

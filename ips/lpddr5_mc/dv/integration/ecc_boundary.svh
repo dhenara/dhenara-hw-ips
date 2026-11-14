@@ -29,7 +29,9 @@ endtask
 initial forever begin
   @(negedge clk);
   if(ECC_BOUNDARY && eb_armed && !eb_scheduled) begin
-  if(eb_kind==0 && ca[0].cs==1 && ca[0].address[2:0]==3'd4) begin
+  // WR32 has C0 reserved low. CAS sync shares opcode[2:0]=4 but has
+  // opcode[3]=1, so the complete low nibble must identify the write.
+  if(eb_kind==0 && ca[0].cs==1 && ca[0].address[3:0]==4'd4) begin
     eb_anchor_fs=eb_now_fs()+((64'(profile.management_ck_tctrl_delay)+64'(profile.wl_ck))*8
       +64'(profile.phy_half_wck_dq_input)+48)*156250;
     eb_scheduled=1;eb_mark("pin_schedule");

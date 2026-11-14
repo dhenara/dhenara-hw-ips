@@ -253,6 +253,11 @@ task automatic wm_case_run(input int kind,input bit failed);
     check(kind==0 ? management_out[0].phyupd_ack : management_out[0].phymstr_ack,"actual unsolicited ACK");
     check(settled && b_count[0]==prior0+1 && b_count[1]==prior1+1,"ACK after actual source settlement");
     if(kind==3) begin
+      // Service the PHY's real refresh request before waiting for delayed
+      // source probes: tphymstr_rfsh still runs while admission is blocked.
+      // The refresh/recovery task keeps ownership asserted throughout, so
+      // both probes can independently reach their blocked source edges.
+      wm_active_refresh();
       // Empty-host entry can ACK before the delayed asynchronous probes
       // assert VALID. Keep real ownership while both sources reach their
       // blocked edge; the original pre-handback assertion remains required.
@@ -265,7 +270,7 @@ task automatic wm_case_run(input int kind,input bit failed);
     check(&wm_probe_pending,"both source probes pending before handback");
     wm_mark("ack");
     if(kind==0) begin repeat(4) @(negedge clk);management[0].phyupd_req=0;end
-    else if(kind==3) begin wm_active_refresh();management[0].phymstr_req=0;end
+    else if(kind==3) management[0].phymstr_req=0;
     else begin
       report_valid[0]=0;repeat(3) @(negedge clk);
       report_sr[0]=0;report_valid[0]=1;repeat(3) @(negedge clk);

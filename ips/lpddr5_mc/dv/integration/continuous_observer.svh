@@ -11,7 +11,7 @@ initial begin
     if(INLINE_LIFECYCLE) begin
       assert($value$plusargs("continuous_profile_sha256=%s",continuous_profile_sha256))
         else $fatal(1,"missing continuous physical profile binding");
-      $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":2,\"scope\":\"%s\",\"phase\":\"negedge_memory_after_prepare_before_sample\",\"receiving_phase\":\"posedge_before_nba\",\"channels\":%0d,\"ranks\":%0d,\"profile_number\":%0d,\"profile_sha256\":\"%s\",\"external_flips\":%0d}",ECC_BOUNDARY ? "ecc_boundary" : "inline_lifecycle",CHANNELS,RANKS,PROFILE_NUMBER,continuous_profile_sha256,ECC_BOUNDARY ? 0 : 1);
+      $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":2,\"scope\":\"%s\",\"phase\":\"negedge_memory_after_prepare_before_sample\",\"receiving_phase\":\"posedge_before_nba\",\"channels\":%0d,\"ranks\":%0d,\"profile_number\":%0d,\"profile_sha256\":\"%s\",\"external_flips\":%0d}",ECC_BOUNDARY ? string'("ecc_boundary") : string'("inline_lifecycle"),CHANNELS,RANKS,PROFILE_NUMBER,continuous_profile_sha256,ECC_BOUNDARY ? 0 : 1);
     end else
       $fdisplay(continuous_stream,"{\"kind\":\"header\",\"version\":1,\"channels\":%0d,\"ranks\":%0d}",CHANNELS,RANKS);
   end

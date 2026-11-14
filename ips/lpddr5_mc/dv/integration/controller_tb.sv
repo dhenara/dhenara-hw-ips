@@ -431,10 +431,10 @@ module controller_tb #(
   end
   // Retain useful owner state even if a process deadline interrupts simulation.
   initial forever begin
-    #5000;
+    #(64'd5000);
     $display("CONTROLLER_PROGRESS stage=%0d settled=%0d fault=%0d coordinator=%0d channels=%0d/%0d reset=%0d boot=%0d",
       stage,settled,host_fault,dut.coordinator.state_q,status_value[0].state,status_value[CHANNELS-1].state,reset_request,status_value[0].boot_epoch);
     $fflush();
   end
-  initial begin #(BENCHMARK ? 650000 : RESET_MATRIX ? 600000 : RUNTIME_RESET || INLINE_LIFECYCLE || WRAPPER_MANAGEMENT ? 200000 : 65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
+  initial begin #(BENCHMARK ? 64'd650000 : RESET_MATRIX ? 64'd600000 : RUNTIME_RESET || INLINE_LIFECYCLE || WRAPPER_MANAGEMENT ? 64'd200000 : 64'd65000);$fatal(1,"controller deadline stage%0d settled=%0d fault=%0d coordinator=%0d",stage,settled,host_fault,dut.coordinator.state_q);end
 endmodule

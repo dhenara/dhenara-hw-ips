@@ -632,3 +632,9 @@ python3 ips/lpddr5_mc/dv/integration/check.py --family controller \
 ```
 
 This family omits low-power decline/failure, two-rank coverage and multi-profile FSP. It supplies no forwarding/merging or full-Definition claim. Runtime phase qualification, actual model/controller composition and selected outcomes remain pending until their retained runs complete.
+
+### ECC composition runtime and independent flush endpoint
+
+Q33 records the first actual two-case run at clean `09e9405`. The simulation completes301 assertions and two forwarded/merged scenarios, while its original aggregate fails the independent chronology gate. Its pin adapter incorrectly adds `twrdata_delay` to the already serialized DRAM endpoint. The corrected adapter separately takes the latest exclusive physical pin, DFI data-CS and conservative DFI data-end-plus-delay endpoint. This matches the adopted DFI bound used by the existing continuous physical owner; the pin path is not counted twice. Focused tests retain both the late-pin and long-CS branches and reject a result at either write-flush or return tail. No production RTL or emitted hardware trace changes.
+
+A separate corrected retained-stream replay passes6 original writes,2 reads,4 logical writes,2 forwarded reads,2 merged pairs and12 physical reads/6 writes. Both source incomplete-W hazards, original identities, exact byte overlays, physical data/check effects, stable individual6 B/8 R handshakes and final drain are checked. In the failure scenario, the untouched-byte double fault aborts the contributors’ partial RMW before any physical write and propagates failure to both writers and the dependent read. The original failed report is preserved. The corrected checker is recorded with exact hashes; a fresh clean-source run remains selected separately. These two cases do not exhaust ECC or management qualification.

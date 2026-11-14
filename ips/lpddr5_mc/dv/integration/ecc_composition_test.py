@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from fractions import Fraction
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest import mock
@@ -15,7 +16,7 @@ from unittest import mock
 import check as runner
 from contracts import commands
 from ecc_composition import AXI_PS, DATA_BYTES, FULL, correlate, source_cycles
-from ecc_composition_pins import replay
+from ecc_composition_pins import replay, write_tail
 from system.ecc import InlineWitness
 from system.host import Violation
 from system.phy import DigitalPhy
@@ -389,6 +390,17 @@ def pin_fixture():
 
 
 class CompositionPinTests(unittest.TestCase):
+    def test_write_tail_separates_pin_path_from_dfi_flush(self):
+        p = json.loads((Path(__file__).resolve().parents[2] / "config/contracts/profiles.json").read_text())[
+            "profiles"
+        ][0]
+        # CAS100, physical last half-WCK937; DFI data/CS ends at115CK,
+        # and the separate 64-WCK output flush ends at131CK.
+        self.assertEqual(write_tail(p, 100, 937, 32), 131)
+        self.assertEqual(write_tail(p, 100, 2000, 32), Fraction(2001, 8))
+        p["dfi_wck"]["tphy_wrcslat"] = 1000
+        self.assertEqual(write_tail(p, 100, 937, 32), 356)
+
     def test_real_pin_adapter_checks_raw_memory_and_external_flip(self):
         events, p, flips = pin_fixture()
         accesses = replay(events, p, flips)
@@ -442,6 +454,16 @@ class CompositionPinTests(unittest.TestCase):
 
 
 class CompositionTests(unittest.TestCase):
+    def test_result_must_follow_each_independent_tail(self):
+        for write in (False, True):
+            s, w, accesses = fixture()
+            index = next(i for i, a in enumerate(accesses) if a["write"] == write)
+            result = [e for e in w if e["kind"] == "result"][index]
+            tail = "tail_ps" if write else "return_tail_ps"
+            accesses[index][tail] = result["ps"]
+            with self.subTest(write=write), self.assertRaisesRegex(Violation, "physical/result/final chronology"):
+                correlate(s, w, accesses)
+
     def test_synthetic_success_and_failed_contributor(self):
         result = correlate(*fixture())
         self.assertEqual(result["individual_B"], 6)

@@ -6,6 +6,7 @@ External-memory fault markers change only the independent DRAM byte image.
 
 import copy
 from collections import deque
+from fractions import Fraction
 
 from contracts.read_completion import CompletionOracle, ExpectedWord, ReadBusOracle
 from system.adapters import returned_snapshot
@@ -15,6 +16,21 @@ from system.phy import DigitalPhy
 from system.return_timing import ReturnTiming
 from system.trace import number
 from wck_observations import WckObservations
+
+
+def write_tail(profile, command_ck, last_pin_half_wck, beats):
+    """Latest independent pin, DFI data-CS and output-flush endpoint in CK.
+
+    DFI 5.0 3.2/Table12/4.9.3 measures twrdata_delay from DFI enable.
+    The admitted conservative data-end-plus-delay flush is separate from
+    the physical pin path; adding that delay to the last pin double counts
+    serialization. Keep all endpoints exclusive and preserve half-WCK time.
+    """
+    ratio, d = profile["ratio"], profile["dfi_wck"]
+    span = beats // 2 + (8 if ratio == 4 and beats == 32 else 0)
+    cs_end = Fraction(command_ck * ratio + d["tphy_wrcslat"] + span, ratio)
+    flush = Fraction(command_ck * ratio + d["tphy_wrlat"] + d["tphy_wrdata"] + span + d["twrdata_delay"], ratio)
+    return max(Fraction(last_pin_half_wck + 1, 2 * ratio), cs_end, flush)
 
 
 def replay(events, profile, flips):
@@ -50,7 +66,7 @@ def replay(events, profile, flips):
             access = {"write": bool(burst.write), "address": address, "ps": ps, "words": 0, "data": bytearray(64)}
             access["tail_ps"] = origin + burst.times[-1] * p["ck_ps"] / (2 * ratio)
             if burst.write:
-                access["tail_ps"] += p["dfi_wck"]["twrdata_delay"] * p["ck_ps"] / ratio
+                access["tail_ps"] = origin + write_tail(p, command_at, burst.times[-1], burst.beats) * p["ck_ps"]
             accesses.append(access)
             bursts.append((burst, command_at, access))
             controls.append((command_at, bool(burst.write), burst.beats, burst.rank))

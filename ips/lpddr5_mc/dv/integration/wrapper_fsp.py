@@ -370,6 +370,7 @@ class FspRun(Run):
         self.failure_seen = False
         self.failure_pending = None
         self.decline_pending = None
+        self.published_pending = None
         self.decline_ack_ps = {}
         self.baseline = False
         self.finished = False
@@ -567,8 +568,78 @@ class FspRun(Run):
         # final idle/valid state. Neither ACKs nor the marker finalize them.
         self.decline_pending = dict(ps=a["ps"] + PCLK_PS, sequence=t["sequence"], boot=t["boot"], epoch=w.epoch)
 
+    def published_marker(self, e):
+        w, t = self.publication, self.owner.transaction
+        require(
+            w.active is None and w.history and w.history[-1]["outcome"] == "published",
+            "FSP outcome before actual final publication/host installation",
+        )
+        if t is None:
+            require(
+                self.host_edge
+                and self.host_edge["config_valid"]
+                and self.host_edge["config_epoch"] == w.epoch
+                and self.host_edge["config_boot"] == e["boot"] == self.owner.boot
+                and self.owner.epoch == w.epoch,
+                "FSP published marker lacks actual installed host image",
+            )
+            return
+        h, half = self.host_edge, self.p["ck_ps"] // 2
+        require(
+            self.selection == 1
+            and e["boot"] == self.owner.boot == t["boot"]
+            and w.epoch == t["sequence"]
+            and t["committed"] == {0, 1}
+            and self.source.settled()
+            and h is not None
+            and h["reset_n"]
+            and h["cfg_valid"]
+            and h["cfg_ready"]
+            and h["cfg_boot"] == t["boot"]
+            and h["cfg_epoch"] == t["sequence"]
+            and h["config_epoch"] != t["sequence"]
+            and h["settled"]
+            and not any(h[k] for k in ("fatal", "fault", "enable")),
+            "FSP outcome before actual final publication/host installation",
+        )
+        require(
+            all(
+                s
+                and s["channel"] == c
+                and (s["tick"], s["ps"]) == (h["tick"] + 1, h["ps"] + half)
+                and s["boot"] == t["boot"]
+                and s["config"] == t["sequence"]
+                and s["config_valid"]
+                and s["settled"]
+                and not any(s[k] for k in ("enabled", "host_fault", "prepared_valid"))
+                and s["ps"] <= e["ps"] < s["ps"] + half
+                for c, s in enumerate(self.last)
+            ),
+            "FSP published marker outside consumed-config/paired-sample interval",
+        )
+        # The marker polls after the config-handshake NBA. Its preceding host
+        # witness captured the old config, so keep the physical transaction
+        # live until the exact next real edge observes the installed image.
+        self.published_pending = dict(
+            tick=h["tick"] + 1, ps=h["ps"] + self.p["ck_ps"], sequence=t["sequence"], boot=t["boot"]
+        )
+
     def event(self, e):
         kind = e["kind"]
+        installed = getattr(self, "published_pending", None)
+        if installed is not None:
+            require(e["ps"] <= installed["ps"], "missing next-edge FSP host installation witness")
+            require(kind not in ("aw", "ar"), "source service before final FSP host installation witness")
+            if kind == "host_edge":
+                require(
+                    (e["tick"], e["ps"]) == (installed["tick"], installed["ps"])
+                    and e["config_valid"]
+                    and (e["config_boot"], e["config_epoch"]) == (installed["boot"], installed["sequence"])
+                    and e["reset_n"]
+                    and e["settled"]
+                    and not any(e[k] for k in ("fatal", "fault", "enable", "cfg_valid")),
+                    "FSP installed host image not observed on exact next edge",
+                )
         pending = getattr(self, "decline_pending", None)
         if pending is not None:
             require(e["ps"] <= pending["ps"], "missing next-PCLK FSP decline publication witness")
@@ -671,6 +742,9 @@ class FspRun(Run):
                         host_epoch=e["config_epoch"],
                         channel_epochs=[s["config"] for s in self.last],
                     )
+            if installed is not None:
+                require(self.owner.transaction is None, "next-edge FSP host installation did not close actual owner")
+                self.published_pending = None
         if kind == "host_settlement" and self.active and e["fatal"] and not self.failure_seen:
             require(self.selection == 2 and self.faults, "host fatal without selected sampled FSP timeout")
             self.failure_seen = True
@@ -701,6 +775,7 @@ class FspRun(Run):
 
     def marker(self, e):
         name = e["name"]
+        require(getattr(self, "published_pending", None) is None, "FSP marker before pending host installation witness")
         require(getattr(self, "decline_pending", None) is None, "FSP marker before pending final decline PCLK witness")
         require(name.startswith("fsp_"), "unexpected FSP marker")
         expected = [
@@ -752,10 +827,7 @@ class FspRun(Run):
         elif name == "fsp_declined":
             self.decline_marker(e)
         elif name == "fsp_published":
-            require(
-                self.publication.active is None and self.owner.transaction is None,
-                "FSP outcome before actual final publication/host installation",
-            )
+            self.published_marker(e)
         elif name == "fsp_dirty":
             require(
                 not self.source.settled()
@@ -826,6 +898,7 @@ class FspRun(Run):
             )
 
     def finish(self):
+        require(getattr(self, "published_pending", None) is None, "unfinished next-edge FSP host installation witness")
         require(getattr(self, "decline_pending", None) is None, "unfinished next-PCLK FSP decline publication witness")
         require(self.finished and self.markers.count("fsp_end") == 1, "missing FSP terminal tail")
         self.source.host.finish()

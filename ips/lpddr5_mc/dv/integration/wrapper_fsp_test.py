@@ -766,6 +766,185 @@ class DeclinedMarkerPhaseTest(unittest.TestCase):
             run.marker(dict(name="fsp_published", ps=14751, boot=0))
 
 
+class PublishedMarkerPhaseTest(unittest.TestCase):
+    """Synthetic config-consuming edge and following installed-state witness."""
+
+    def fixture(self):
+        p = profile_binding()
+        physical = [PhysicalStream(copy.deepcopy(p)), PhysicalStream(copy.deepcopy(p))]
+        owner = ProfilePublication([p, p], physical, boot=0, epoch=5)
+        owner.transaction = dict(sequence=11, boot=0, committed={0, 1}, targets=[p, p], target_fsp=1)
+        w = prepared()
+        for c in (0, 1):
+            w.transfer(transfer(c, 1))
+            w.commit(committed(c))
+            w.ack(ack(c, 1))
+            w.ack(ack(c, 1), apb=True)
+        w.observe_apb(apb(psel=0, valid=1, epoch=11), True)
+        run = FspRun.__new__(FspRun)
+        run.p, run.owner, run.publication = p, owner, w
+        run.active, run.baseline, run.selection, run.failure_seen = True, False, 1, False
+        run.failure_pending = run.decline_pending = run.published_pending = None
+        run.source = SimpleNamespace(settled=lambda: True)
+        run.markers = [
+            "fsp_begin",
+            "fsp_initial_preserved",
+            "fsp_dirty",
+            "fsp_dirty_rejected",
+            "fsp_quiesced",
+            "fsp_publish_offer",
+        ]
+        run.host_edge = dict(
+            kind="host_edge",
+            ps=100625,
+            tick=10,
+            reset_n=1,
+            config_valid=1,
+            config_epoch=5,
+            config_boot=0,
+            cfg_valid=1,
+            cfg_ready=1,
+            cfg_epoch=11,
+            cfg_boot=0,
+            settled=1,
+            fatal=0,
+            fault=0,
+            enable=0,
+        )
+        run.last = [
+            dict(
+                channel=c,
+                tick=11,
+                ps=101250,
+                boot=0,
+                config=11,
+                config_valid=1,
+                settled=1,
+                enabled=0,
+                host_fault=0,
+                prepared_valid=0,
+            )
+            for c in (0, 1)
+        ]
+        marker = dict(name="fsp_published", ps=101251, boot=0)
+        installed = run.host_edge | dict(ps=101875, tick=11, config_epoch=11, cfg_valid=0)
+        return run, marker, installed
+
+    def test_marker_keeps_actual_owner_live_until_next_host_edge(self):
+        run, marker, installed = self.fixture()
+        owner, transaction, physical = run.owner, run.owner.transaction, tuple(run.owner.physical)
+        run.marker(marker)
+        self.assertIs(owner.transaction, transaction)
+        with self.assertRaisesRegex(Violation, "current common publication"):
+            owner.service(host_epoch=11, channel_epochs=[11, 11])
+        with patch.object(Run, "event"):
+            run.event(dict(kind="host_settlement", ps=101875, fatal=0))
+            run.event(installed)
+        self.assertIs(run.owner, owner)
+        self.assertTrue(all(a is b for a, b in zip(owner.physical, physical, strict=True)))
+        self.assertIsNone(run.published_pending)
+        owner.service(host_epoch=11, channel_epochs=[11, 11])
+
+    def test_already_observed_installation_needs_no_pending_edge(self):
+        run, marker, installed = self.fixture()
+        with patch.object(Run, "event"):
+            run.event(installed)
+        run.marker(marker | dict(ps=102501))
+        self.assertIsNone(run.published_pending)
+
+    def test_missing_or_unaccepted_config_handshake_rejects(self):
+        for changes in (
+            dict(cfg_valid=0),
+            dict(cfg_ready=0),
+            dict(cfg_epoch=10),
+            dict(cfg_boot=1),
+            dict(reset_n=0),
+            dict(fatal=1),
+            dict(fault=1),
+            dict(enable=1),
+            dict(settled=0),
+            dict(config_epoch=11),
+        ):
+            run, marker, _ = self.fixture()
+            run.host_edge.update(changes)
+            with self.subTest(changes=changes), self.assertRaises(Violation):
+                run.marker(marker)
+
+    def test_partial_final_publication_or_commit_rejects(self):
+        for change in ("active", "unpublished", "partial_commit", "wrong_boot"):
+            run, marker, _ = self.fixture()
+            if change == "active":
+                run.publication.active = {}
+            elif change == "unpublished":
+                run.publication.history[-1]["outcome"] = "declined"
+            elif change == "partial_commit":
+                run.owner.transaction["committed"] = {0}
+            else:
+                marker["boot"] = 1
+            with self.subTest(change=change), self.assertRaises(Violation):
+                run.marker(marker)
+
+    def test_unpaired_channel_epoch_phase_or_open_fence_rejects(self):
+        for changes in (
+            dict(channel=0),
+            dict(tick=12),
+            dict(ps=101249),
+            dict(boot=1),
+            dict(config=10),
+            dict(config_valid=0),
+            dict(settled=0),
+            dict(enabled=1),
+            dict(host_fault=1),
+            dict(prepared_valid=1),
+        ):
+            run, marker, _ = self.fixture()
+            run.last[1].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(Violation):
+                run.marker(marker)
+        for ps in (101249, 101875):
+            run, marker, _ = self.fixture()
+            with self.subTest(ps=ps), self.assertRaises(Violation):
+                run.marker(marker | dict(ps=ps))
+
+    def test_missing_early_late_faulted_or_stale_next_edge_rejects(self):
+        for changes in (
+            dict(ps=101874),
+            dict(ps=101876),
+            dict(tick=12),
+            dict(config_valid=0),
+            dict(config_epoch=5),
+            dict(config_boot=1),
+            dict(reset_n=0),
+            dict(settled=0),
+            dict(fatal=1),
+            dict(fault=1),
+            dict(enable=1),
+            dict(cfg_valid=1),
+        ):
+            run, marker, installed = self.fixture()
+            run.marker(marker)
+            with self.subTest(changes=changes), patch.object(Run, "event"), self.assertRaises(Violation):
+                run.event(installed | changes)
+
+    def test_admission_markers_and_finish_cannot_hide_pending_installation(self):
+        for kind in ("aw", "ar"):
+            run, marker, _ = self.fixture()
+            run.marker(marker)
+            with self.subTest(kind=kind), self.assertRaisesRegex(Violation, "source service before final"):
+                run.event(dict(kind=kind, ps=101800))
+        for name in ("fsp_publish_offer", "fsp_preserved", "fsp_end"):
+            run, marker, _ = self.fixture()
+            run.marker(marker)
+            with self.subTest(name=name), self.assertRaisesRegex(Violation, "pending host installation"):
+                run.marker(marker | dict(name=name))
+        run, marker, _ = self.fixture()
+        run.marker(marker)
+        with self.assertRaisesRegex(Violation, "missing next-edge"):
+            run.event(dict(kind="fsp_binding", ps=101876))
+        with self.assertRaisesRegex(Violation, "unfinished next-edge"):
+            run.finish()
+
+
 class FailedMarkerPhaseTest(unittest.TestCase):
     """Synthetic phase boundary; saved producer streams are not replayed."""
 

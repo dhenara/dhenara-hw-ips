@@ -82,6 +82,7 @@ for(genvar ec=0;ec<CHANNELS;ec++) begin : eb_edges
 end
 task automatic ecc_boundary_run;
   int seed_count,target_count;
+  logic [31:0] stale_baseline;
   check(PORTS==2 && CHANNELS==2 && RANKS==1 && DATA_BITS==128,"ECC boundary shape");
   check(profile.write_link && !profile.read_link && !profile.write_dbi,"ECC boundary numeric profile");
   // Channel1 supplies an actual exposed successful response. Channel0 supplies
@@ -115,6 +116,10 @@ task automatic ecc_boundary_run;
   for(int n=0;n<300;n++) begin @(negedge clk);if(!host_fault && status_value[0].boot_epoch==1) break;end
   check(!host_fault && !enable && !dut.host_config_active && !status_value[0].config_valid
     && status_value[0].boot_epoch==1 && status_value[1].boot_epoch==1,"ECC boundary destructive invalidation");
+  // Recovery preserves the diagnostic count from cancelled pre-fault work.
+  // Fresh protected service must add no stale completion to that history.
+  stale_baseline=dut.stale_completions;
+  check(stale_baseline!=32'hffffffff,"ECC boundary unsaturated recovery diagnostic");
   eb_armed=0;eb_mark("reset_consumed");
   wait_status(INDEX_BOOT_EPOCH,32'hffffffff,1);
   for(int i=0;i<65536;i++) expected[i]=0;
@@ -124,7 +129,7 @@ task automatic ecc_boundary_run;
   eb_mark("fresh_checked");
   $display("ECC_BOUNDARY_FRESH_DIAGNOSTIC host_fault=%0d stale_completions=%0d late_error=%0d",
     host_fault,dut.stale_completions,dut.late_error);
-  check(!host_fault && dut.stale_completions==0,"ECC boundary fresh protected service");
+  check(!host_fault && dut.stale_completions==stale_baseline,"ECC boundary fresh protected service");
   write_csr(INDEX_CONTROL,2);
   for(int c=0;c<CHANNELS;c++) begin
     for(int n=0;n<10000;n++) begin
@@ -132,6 +137,7 @@ task automatic ecc_boundary_run;
     end
     check(status_value[c].state==1 && status_value[c].drained,"ECC boundary final quiesce tail");
   end
+  check(!host_fault && dut.stale_completions==stale_baseline,"ECC boundary quiesced recovery diagnostic");
   @(negedge clk);finish_observations=1;repeat(2) @(negedge clk);
   continuous_close();eb_mark("end");$fclose(eb_stream);eb_stream=0;
   $display("CONTROLLER_ECC_BOUNDARY_PASS kind=%0d delta=%0d posted=%0d checks=%0d",eb_kind,eb_delta,eb_posted,checks);

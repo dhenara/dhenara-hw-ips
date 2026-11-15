@@ -8,7 +8,7 @@ from pathlib import Path
 from continuous_physical import Replay
 from continuous_physical_test import fixture, records
 from contracts import commands
-from ecc_boundary import CK_FS, boundary, host, physical
+from ecc_boundary import CK_FS, boundary, host, physical, recovery_diagnostics
 from system.host import Violation
 from system.phy import DigitalPhy
 from wck_observations_test import fixture as wck_fixture
@@ -112,6 +112,48 @@ class BoundaryTests(unittest.TestCase):
         e[0]["error"] = 1
         with self.assertRaisesRegex(Violation, "before injection"):
             boundary(h, m, e, **kw)
+
+
+class RecoveryDiagnosticTests(unittest.TestCase):
+    def marks(self, baseline=1):
+        return {
+            name: dict(host_fault=int(name == "settled"), stale_completions=baseline, late_error=1)
+            for name in ("settled", "reset_consumed", "fresh", "fresh_checked", "end")
+        }
+
+    def test_retained_fault_count_is_not_new_service_failure(self):
+        for count in (0, 1, 4):
+            with self.subTest(count=count):
+                result = recovery_diagnostics(self.marks(count))
+                self.assertEqual(result["stale_baseline"], count)
+                self.assertEqual(result["fresh_stale_delta"], 0)
+
+    def test_new_stale_or_reset_diagnostic_is_rejected(self):
+        for name in ("settled", "fresh", "fresh_checked", "end"):
+            for count in (0, 2):
+                marks = self.marks()
+                marks[name]["stale_completions"] = count
+                with self.subTest(name=name, count=count), self.assertRaisesRegex(Violation, "new stale"):
+                    recovery_diagnostics(marks)
+        for count in (-1, 0xFFFFFFFF):
+            with self.subTest(count=count), self.assertRaisesRegex(Violation, "baseline"):
+                recovery_diagnostics(self.marks(count))
+
+    def test_fault_lost_history_or_missing_witness_is_rejected(self):
+        for name in self.marks():
+            for field in ("host_fault", "late_error"):
+                marks = self.marks()
+                marks[name][field] ^= 1
+                with self.subTest(name=name, field=field), self.assertRaisesRegex(Violation, "unhealthy"):
+                    recovery_diagnostics(marks)
+            marks = self.marks()
+            del marks[name]
+            with self.subTest(name=name), self.assertRaisesRegex(Violation, "witness"):
+                recovery_diagnostics(marks)
+        marks = self.marks()
+        del marks["fresh_checked"]["stale_completions"]
+        with self.assertRaisesRegex(Violation, "field"):
+            recovery_diagnostics(marks)
 
 
 class PhysicalLinkTests(unittest.TestCase):

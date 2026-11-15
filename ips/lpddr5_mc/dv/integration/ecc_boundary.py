@@ -20,6 +20,27 @@ from wrapper_management import Source
 CK_FS = 1_250_000
 
 
+def recovery_diagnostics(marks):
+    """Retained diagnostics may be nonzero; fresh service must add no fault."""
+    names = ("settled", "reset_consumed", "fresh", "fresh_checked", "end")
+    require(all(name in marks for name in names), "missing recovery diagnostic witness")
+    fields = ("host_fault", "stale_completions", "late_error")
+    require(all(all(field in marks[name] for field in fields) for name in names), "missing recovery diagnostic field")
+    baseline = marks["reset_consumed"]["stale_completions"]
+    require(type(baseline) is int and 0 <= baseline < 0xFFFFFFFF, "invalid/saturated recovery stale baseline")
+    require(
+        all(marks[name]["stale_completions"] == baseline for name in names),
+        "new stale completion after fault settlement",
+    )
+    require(
+        marks["settled"]["host_fault"] == 1
+        and all(marks[name]["host_fault"] == 0 for name in names[1:])
+        and all(marks[name]["late_error"] == 1 for name in names),
+        "lost late-error history or unhealthy fresh service",
+    )
+    return dict(stale_baseline=baseline, fresh_stale_delta=0, late_error_retained=True)
+
+
 def boundary(header, marks, edges, *, pin_fs=None, mr43_ready_fs=None):
     """Bind a scheduled instant to independent pins or a witnessed epoch edge."""
     require(header["version"] == 1 and header["boundary"] in (0, 1), "boundary header")
@@ -247,7 +268,7 @@ def check(continuous_path, source_path, boundary_path, profile):
     marks = {e["name"]: e for e in controls if e["kind"] == "mark"}
     require(len(marks) == sum(e["kind"] == "mark" for e in controls), "duplicate boundary marker")
     require(
-        all(n in marks for n in ("held", "inject", "settled", "reset_consumed", "fresh", "end")),
+        all(n in marks for n in ("held", "inject", "settled", "reset_consumed", "fresh", "fresh_checked", "end")),
         "missing boundary lifecycle marker",
     )
     schedule = marks["pin_schedule" if header["boundary"] == 0 else "mr43_schedule"]["fs"]
@@ -258,6 +279,7 @@ def check(continuous_path, source_path, boundary_path, profile):
         < marks["settled"]["fs"]
         < marks["reset_consumed"]["fs"]
         < marks["fresh"]["fs"]
+        < marks["fresh_checked"]["fs"]
         < marks["end"]["fs"],
         "reordered boundary lifecycle",
     )
@@ -271,6 +293,7 @@ def check(continuous_path, source_path, boundary_path, profile):
     )
     return dict(
         boundary=b,
+        recovery_diagnostics=recovery_diagnostics(marks),
         physical=pins,
         host=host(source_events, continuous, controls, times),
         limitations=[

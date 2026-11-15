@@ -21,7 +21,10 @@ task automatic eb_select;
   $fdisplay(eb_stream,"{\"kind\":\"header\",\"version\":1,\"boundary\":%0d,\"delta_ck\":%0d,\"posted\":%0d,\"posted_early\":0,\"epoch_posted\":0,\"ck_fs\":1250000,\"pin_phase\":\"exclusive_last_beat_fs\",\"mr43_phase\":\"input_1fs_before_epoch_result_edge\"}",eb_kind,eb_delta,eb_posted);
 endtask
 task automatic eb_mark(input string name);
-  $fdisplay(eb_stream,"{\"kind\":\"mark\",\"name\":\"%s\",\"fs\":%0d,\"anchor_fs\":%0d}",name,eb_now_fs(),eb_anchor_fs);
+  $fdisplay(eb_stream,"{\"kind\":\"mark\",\"name\":\"%s\",\"fs\":%0d,\"anchor_fs\":%0d,\"host_fault\":%0d,\"stale_completions\":%0d,\"late_error\":%0d}",
+    name,eb_now_fs(),eb_anchor_fs,host_fault,dut.stale_completions,dut.late_error);
+  // Preserve the last diagnostic witness even when the next assertion aborts.
+  $fflush(eb_stream);
 endtask
 // Pin timing derives from the actual external WR32 CA and admitted paths.
 // This is only a scheduling prediction: the offline pin owner must decode and
@@ -118,6 +121,9 @@ task automatic ecc_boundary_run;
   publish_and_boot(1);eb_mark("fresh");
   target_count=b_count[0];send_aw(0,120,0,4);inline_payload(0,0,8'ha7);wait_b(0,120,target_count+1);
   send_ar(1,121,0,4);read_result(1,121,0,4);wait_settled();
+  eb_mark("fresh_checked");
+  $display("ECC_BOUNDARY_FRESH_DIAGNOSTIC host_fault=%0d stale_completions=%0d late_error=%0d",
+    host_fault,dut.stale_completions,dut.late_error);
   check(!host_fault && dut.stale_completions==0,"ECC boundary fresh protected service");
   write_csr(INDEX_CONTROL,2);
   for(int c=0;c<CHANNELS;c++) begin

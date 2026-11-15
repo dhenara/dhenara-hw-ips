@@ -873,7 +873,7 @@ def main() -> None:
                     mapped_end=(1 << 30) * args.channels * args.ranks if args.ranks == 2 else 1 << 20,
                     id_bits=configuration.get("ID_BITS", 8),
                     address_bits=args.address_bits,
-                    granule_bytes=args.granule_bytes,
+                    granule_bytes=args.cap_granule_bytes if args.cap_mode is not None else args.granule_bytes,
                     observe_axi=args.axi_overlap,
                     fault_ps=(
                         int(

@@ -974,7 +974,11 @@ def main() -> None:
                         report.with_name(f"{report.stem}-2.log"),
                         args.depth,
                     )
-                result["workload_costs"] = measure(report.with_name("observations.jsonl"))
+                # Reset fixtures close this idle prefix before admitting the
+                # obligations they intentionally destroy. Only the final clean
+                # recovery segment has a complete workload to measure below.
+                if not args.runtime_reset:
+                    result["workload_costs"] = measure(report.with_name("observations.jsonl"))
                 if args.integrity_mode == 3:
                     text = report.with_name(f"{report.stem}-2.log").read_text()
                     start = int(re.search(r"HOT_WORKLOAD_START ps=(\d+)", text)[1])

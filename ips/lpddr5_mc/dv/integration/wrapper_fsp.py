@@ -587,7 +587,7 @@ class FspRun(Run):
         h, half = self.host_edge, self.p["ck_ps"] // 2
         require(
             self.selection == 1
-            and e["boot"] == self.owner.boot == t["boot"]
+            and e["boot"] == self.owner.boot == w.history[-1]["boot"]
             and w.epoch == t["sequence"]
             and t["committed"] == {0, 1}
             and self.source.settled()
@@ -595,7 +595,7 @@ class FspRun(Run):
             and h["reset_n"]
             and h["cfg_valid"]
             and h["cfg_ready"]
-            and h["cfg_boot"] == t["boot"]
+            and h["cfg_boot"] == self.owner.boot
             and h["cfg_epoch"] == t["sequence"]
             and h["config_epoch"] != t["sequence"]
             and h["settled"]
@@ -607,7 +607,7 @@ class FspRun(Run):
                 s
                 and s["channel"] == c
                 and (s["tick"], s["ps"]) == (h["tick"] + 1, h["ps"] + half)
-                and s["boot"] == t["boot"]
+                and s["boot"] == self.owner.boot
                 and s["config"] == t["sequence"]
                 and s["config_valid"]
                 and s["settled"]
@@ -621,7 +621,7 @@ class FspRun(Run):
         # witness captured the old config, so keep the physical transaction
         # live until the exact next real edge observes the installed image.
         self.published_pending = dict(
-            tick=h["tick"] + 1, ps=h["ps"] + self.p["ck_ps"], sequence=t["sequence"], boot=t["boot"]
+            tick=h["tick"] + 1, ps=h["ps"] + self.p["ck_ps"], sequence=t["sequence"], boot=self.owner.boot
         )
 
     def event(self, e):

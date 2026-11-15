@@ -772,8 +772,11 @@ class PublishedMarkerPhaseTest(unittest.TestCase):
     def fixture(self):
         p = profile_binding()
         physical = [PhysicalStream(copy.deepcopy(p)), PhysicalStream(copy.deepcopy(p))]
+        for channel in physical:
+            channel.sample(dict(tick=0, trusted=0, cs=0, ca=0, wck=0, write=0, read=0, **{"return": 0}))
         owner = ProfilePublication([p, p], physical, boot=0, epoch=5)
-        owner.transaction = dict(sequence=11, boot=0, committed={0, 1}, targets=[p, p], target_fsp=1)
+        owner.prepare(sequence=11, boot=0, target_fsp=1, targets=[p, p], source_settled=True)
+        owner.transaction["committed"] = {0, 1}
         w = prepared()
         for c in (0, 1):
             w.transfer(transfer(c, 1))
@@ -871,7 +874,7 @@ class PublishedMarkerPhaseTest(unittest.TestCase):
                 run.marker(marker)
 
     def test_partial_final_publication_or_commit_rejects(self):
-        for change in ("active", "unpublished", "partial_commit", "wrong_boot"):
+        for change in ("active", "unpublished", "partial_commit", "wrong_boot", "wrong_publication_boot"):
             run, marker, _ = self.fixture()
             if change == "active":
                 run.publication.active = {}
@@ -879,6 +882,8 @@ class PublishedMarkerPhaseTest(unittest.TestCase):
                 run.publication.history[-1]["outcome"] = "declined"
             elif change == "partial_commit":
                 run.owner.transaction["committed"] = {0}
+            elif change == "wrong_publication_boot":
+                run.publication.history[-1]["boot"] = 1
             else:
                 marker["boot"] = 1
             with self.subTest(change=change), self.assertRaises(Violation):

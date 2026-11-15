@@ -484,7 +484,7 @@ sequenceDiagram
 
 APB owns separate staging, frozen and active images. A whole-image reflected CRC32 checks transfer integrity; channel control validates the original register image and supplies a second CRC over its typed channel configuration. Prepare alone cannot activate a profile. Channels compare exact boot/configuration identities, CRC, frozen payload and actual drain again at commit.
 
-A unanimous normal FSP decline can preserve a previously valid operating point and consume the attempted sequence. Mixed ready/decline outcomes, malformed acknowledgements or timeout invalidate admission and take the abort/fault path; rollback is not assumed. Host admission reopens only when the committed host image, every channel's installed epoch, training/trust and endpoint initialization agree.
+A unanimous normal FSP decline can preserve a previously valid operating point and consume the attempted sequence. Mixed ready/decline outcomes, malformed acknowledgements or timeout invalidate admission and take the abort/fault path; rollback is not assumed. Host admission reopens only when the committed host image, every channel's installed epoch, training/trust and endpoint initialization agree. Every installed host image requires one endpoint rearm while admission is disabled, the host is settled and the transport is ready. ENABLE stays fenced through the registered pulse and a subsequent initialized low/high acknowledgement; an old high from the previous configuration is insufficient. Same-boot rearm preserves source sequences and generations; destructive recovery still requires fresh boot/profile epochs.
 
 ### 10.3 Boot, run and low power
 

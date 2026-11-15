@@ -21,7 +21,11 @@ module coordinator_tb;
   logic reset_request,force_fault,fault,rejected,recovered,profile_ready,trained,train_request,quiesced,trusted;
   logic [31:0] boot,epoch;
   logic [3:0] state_value;
-  int checks=0,sequence_value=0;
+  int checks=0,sequence_value=0,rearm_count;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if(!rst_n) rearm_count<=0;
+    else if(rearm) rearm_count<=rearm_count+1;
+  end
   logic unused_values;
   assign unused_values=^{host_config,profile_ready,trained,train_request,trusted,state_value};
   lpddr5_mc_coordinator dut (
@@ -72,6 +76,33 @@ module coordinator_tb;
     check(enable && ready && !fault,"fresh RUN witness restores source admission");
     command_ready=0;wake_request=0;
   endtask
+  // A healthy epoch change starts with initialized still high from the old
+  // image. Only a fresh low/high acknowledgement may authorize its ENABLE.
+  task automatic healthy_epoch;
+    int previous_rearms;
+    previous_rearms=rearm_count;rearm_ready=0;
+    config_value.config_epoch=2;
+    for(int c=0;c<2;c++) status_value[c].config_epoch=2;
+    cfg_valid=1;#0.01;check(cfg_ready && host_cfg_valid,"healthy epoch install after full settlement");
+    tick();cfg_valid=0;
+    repeat(3) begin tick();check(!rearm && !enable,"new epoch waits for transport readiness");end
+    submit(INDEX_CONTROL,1);check(rejected && command_valid==0,"ENABLE cannot use old initialized epoch");tick();
+    rearm_ready=1;tick();check(rearm && !enable,"new installed epoch rearms healthy endpoints once");
+    submit(INDEX_CONTROL,1);check(rejected && command_valid==0,"ENABLE rejected while registered pulse is consumed");tick();
+    repeat(3) begin tick();check(!rearm && !enable,"stale high initialized cannot complete rearm");end
+    submit(INDEX_CONTROL,1);check(rejected && command_valid==0,"ENABLE rejected before actual initialized low");tick();
+    initialized=0;tick();
+    submit(INDEX_CONTROL,1);check(rejected && command_valid==0,"ENABLE waits for initialized high after low");tick();
+    initialized=1;tick();submit(INDEX_CONTROL,1);
+    check(command_valid==3 && !enable,"fresh initialization permits channel enable dispatch");
+    command_ready=3;tick();for(int c=0;c<2;c++) status_value[c].state=2;
+    tick();check(enable && ready && !fault,"new healthy epoch restores host admission");
+    repeat(4) begin tick();check(!rearm && enable,"initialized healthy epoch cannot rearm twice");end
+    check(rearm_count==previous_rearms+1,"exactly one consumed rearm for installed epoch");
+    command_ready=0;submit(INDEX_CONTROL,2);command_ready=3;tick();
+    for(int c=0;c<2;c++) status_value[c].state=1;
+    tick();command_ready=0;check(ready && quiesced,"new epoch can quiesce normally");
+  endtask
   initial begin
     request='0;config_value='0;status_value='0;
     config_value.config_epoch=1;
@@ -111,6 +142,7 @@ module coordinator_tb;
     for(int c=0;c<2;c++) status_value[c].state=1;
     repeat(3) begin tick();check(!ready && !quiesced,"channel emptiness cannot replace host settlement");end
     settled=1;tick();check(ready && quiesced,"actual host/channel drain");command_ready=0;
+    healthy_epoch();
     submit(INDEX_PERF_SNAPSHOT,1);
     check(snapshot==0 && !ready,"performance capture waits for destination capacity");
     perf_ready=1;#0.01;check(snapshot==1,"first destination performance capture");tick();
@@ -136,6 +168,18 @@ module coordinator_tb;
     tick();check(recovered && !fault && boot==1 && epoch==0 && !enable,"recovery invalidates old service");tick();
     submit(INDEX_TRAIN_ACK,1,0,0);check(rejected && train_ack==0,"old boot training command rejected");tick();
     submit(INDEX_CONTROL,1,0,1);check(rejected && !enable,"recovery needs fresh profile and training before enable");
+    tick();
+    config_value.boot_epoch=1;config_value.config_epoch=3;
+    for(int c=0;c<2;c++) begin
+      status_value[c].config_valid=1;status_value[c].config_epoch=3;
+      status_value[c].train_done=1;status_value[c].memory_trusted=1;status_value[c].state=1;
+    end
+    cfg_valid=1;tick();cfg_valid=0;host_cfg_active=1;tick();
+    check(rearm && !enable,"recovered boot needs fresh endpoint rearm");
+    tick();initialized=1;tick();submit(INDEX_CONTROL,1,0,1);
+    check(command_valid==3 && !enable,"recovered initialized epoch permits enable dispatch");
+    command_ready=3;tick();for(int c=0;c<2;c++) status_value[c].state=2;
+    tick();check(enable && !fault,"fresh recovered profile and initialization restore service");
     $display("COORDINATOR_INTEGRATION_PASS checks=%0d",checks);$finish;
   end
   initial begin #10000;$fatal(1,"coordinator deadline");end

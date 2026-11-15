@@ -81,8 +81,9 @@ def boundary(header, marks, edges, *, pin_fs=None, mr43_ready_fs=None):
     return dict(anchor_fs=anchor, injection_fs=inject["fs"], delta_ck=header["delta_ck"], posted=header["posted"])
 
 
-def physical(events, profile, schedule_fs):
-    """Reuse the existing persistent row/data/return/WCK owner through reset."""
+def physical(events, profile, schedule_fs, *, boundary_kind=0):
+    """Replay all pins; only a pin-boundary marker selects a WR32 endpoint."""
+    require(boundary_kind in (0, 1), "unknown physical boundary kind")
     require(events and events[-1]["kind"] == "end", "missing final physical end or records after end")
     require(sum(e["kind"] == "end" for e in events) == 1, "duplicate physical end")
     h = events[0]
@@ -104,6 +105,7 @@ def physical(events, profile, schedule_fs):
     channels = [Replay(p), Replay(p)]
     structural = [dict(h, version=1)]
     prepared, pin_fs, mr43, ready_fs = {}, None, None, None
+    schedule_seen = False
     times, result = {}, None
     for e in events[1:]:
         if e["kind"] == "end":
@@ -125,6 +127,8 @@ def physical(events, profile, schedule_fs):
                 continue
             op = decode(q["ca"]) if q["cs"] else None
             if q["ps"] * 1000 == schedule_fs:
+                schedule_seen = True
+            if boundary_kind == 0 and q["ps"] * 1000 == schedule_fs:
                 require(
                     op is not None and op.kind == "WR" and op.beats == 32 and local_ck is not None,
                     "pin schedule is not actual WR32 CA",
@@ -150,6 +154,7 @@ def physical(events, profile, schedule_fs):
         else:
             raise ValueError("unexpected boundary physical event")
     require(result is not None, "missing boundary physical end")
+    require(schedule_seen, "missing boundary schedule physical sample")
     checked = structure(structural, p)
     return dict(channels=result, structure=checked, pin_fs=pin_fs, mr43_ready_fs=ready_fs), times
 
@@ -283,7 +288,9 @@ def check(continuous_path, source_path, boundary_path, profile):
         < marks["end"]["fs"],
         "reordered boundary lifecycle",
     )
-    pins, times = physical(continuous, profile, schedule)
+    # The MR43 marker predicts a result edge; it does not name a WR32 CA.
+    # Both selections still replay every physical return and WCK obligation.
+    pins, times = physical(continuous, profile, schedule, boundary_kind=header["boundary"])
     b = boundary(
         header,
         marks,

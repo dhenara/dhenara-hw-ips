@@ -4,6 +4,7 @@ import copy
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from continuous_physical import Replay
 from continuous_physical_test import fixture, records
@@ -275,6 +276,44 @@ class PhysicalLinkTests(unittest.TestCase):
         events.insert(index + 1, result)
         with self.assertRaisesRegex(Violation, "MR43 return/recovery/WCK tail"):
             self.replay(p, events, results=True)
+
+    def two_channel_mrr_stream(self):
+        p, events = self.stream(mr43=0)
+        events[0].update(scope="ecc_boundary", channels=2, profile_number=8, external_flips=0)
+        both = [events[0]]
+        for event in events[1:]:
+            both.append(event)
+            if event["kind"] != "end":
+                both.append(dict(event, channel=1))
+        return p, both
+
+    def test_complete_mrr_replay_has_no_wr32_schedule_requirement(self):
+        p, events = self.two_channel_mrr_stream()
+        # This fixture contains one physical write, not an inline RMW/check
+        # composition. Keep real pin/return/WCK replay and isolate that layer.
+        schedule = next(
+            e["ps"] * 1000 for e in events if e["kind"] == "prepared" and e["cs"] == 0 and e["ca"] == 0 and e["ck"] > 40
+        )
+        with patch("ecc_boundary.structure", return_value={}):
+            result, _ = physical(events, p, schedule, boundary_kind=1)
+        self.assertIsNone(result["pin_fs"])
+        self.assertEqual(len(result["channels"]), 2)
+        self.assertTrue(all(c["intervals"][0]["returned_slices"] == 16 for c in result["channels"]))
+
+    def test_nonwrite_pin_schedule_still_rejects(self):
+        p, events = self.two_channel_mrr_stream()
+        schedule = next(
+            e["ps"] * 1000 for e in events if e["kind"] == "prepared" and e["cs"] == 0 and e["ca"] == 0 and e["ck"] > 40
+        )
+        with self.assertRaisesRegex(Violation, "pin schedule is not actual WR32"):
+            physical(events, p, schedule)
+
+    def test_unknown_kind_or_displaced_schedule_rejects(self):
+        p, events = self.two_channel_mrr_stream()
+        with self.assertRaisesRegex(Violation, "unknown physical boundary"):
+            physical(events, p, 0, boundary_kind=2)
+        with self.assertRaisesRegex(Violation, "missing boundary schedule"):
+            physical(events, p, 1, boundary_kind=1)
 
     def test_records_after_physical_end_are_rejected(self):
         p, events = self.stream()

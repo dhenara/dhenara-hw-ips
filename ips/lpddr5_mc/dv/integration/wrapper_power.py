@@ -283,6 +283,37 @@ class PowerRun(Run):
                 )
         super().event(e)
 
+    def decline_offer(self, marker):
+        """Bind an inter-edge marker without consuming the next power edge early.
+
+        The producer observes request assertion just after a falling sample.
+        Its next rising edge is still authoritative for the four-edge pulse.
+        Retain the existing live-consumed case; otherwise require the exact
+        paired falling sample and next consumed rising request, with no ACK.
+        """
+        if any(w.requested for w in self.power):
+            return
+        half = self.p["ck_ps"] // 2
+        for channel, witness in enumerate(self.power):
+            previous, sample = witness.edge, self.last[channel]
+            if previous is None or sample is None:
+                continue
+            following = self.power_edges.get((channel, previous["tick"] + 1))
+            if (
+                marker["ps"] == previous["ps"] + half + 1
+                and sample["channel"] == channel
+                and sample["tick"] == previous["tick"] + 1
+                and sample["ps"] == marker["ps"] - 1
+                and following is not None
+                and following["channel"] == channel
+                and following["tick"] == sample["tick"]
+                and following["ps"] == previous["ps"] + self.p["ck_ps"]
+                and following["ctrl_req"] == following["data_req"] == 1
+                and following["ctrl_ack"] == following["data_ack"] == 0
+            ):
+                return
+        require(False, "decline offer without live opportunity or exact next-edge request")
+
     def marker(self, e):
         name = e["name"]
         require(
@@ -328,7 +359,7 @@ class PowerRun(Run):
         elif name == "power_source_settled":
             require(self.source.settled(), "power marker before real W/R/B settlement")
         elif name == "power_decline_offer":
-            require(any(w.requested for w in self.power), "decline offer without live opportunity")
+            self.decline_offer(e)
         elif name == "power_sleeping":
             require(
                 all(w.sleeping for w in self.power),

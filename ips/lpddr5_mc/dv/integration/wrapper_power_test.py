@@ -229,6 +229,69 @@ class DeclineTests(unittest.TestCase):
             consume(w, edge(tick), source=False)
         return w
 
+    def offer_run(self):
+        run = PowerRun.__new__(PowerRun)
+        run.p = {"ck_ps": 1250}
+        run.power = [DeclineWitness(4), DeclineWitness(4)]
+        run.last = [dict(channel=c, tick=9, ps=11250) for c in (0, 1)]
+        for channel, witness in enumerate(run.power):
+            consume(witness, edge(8, channel=channel))
+        run.power_edges = {(1, 9): edge(9, channel=1, ctrl_req=1, data_req=1)}
+        return run
+
+    def test_inter_edge_offer_keeps_exact_consumed_edge_count(self):
+        run = self.offer_run()
+        run.decline_offer(dict(ps=11251))
+        witness = run.power[1]
+        self.assertFalse(witness.requested)
+        self.assertEqual((witness.edge["tick"], witness.request_edges), (8, 0))
+        for tick in range(9, 13):
+            consume(witness, edge(tick, channel=1, ctrl_req=1, data_req=1))
+        consume(witness, edge(13, channel=1))
+        self.assertEqual(witness.declines, 1)
+
+    def test_consumed_live_offer_keeps_its_existing_path(self):
+        run = self.offer_run()
+        consume(run.power[1], edge(9, channel=1, ctrl_req=1, data_req=1))
+        run.power_edges = {}
+        run.decline_offer(dict(ps=11876))
+        self.assertEqual(run.power[1].request_edges, 1)
+
+    def test_inter_edge_offer_rejects_wrong_phase_sample_or_next_edge(self):
+        for mutation in (
+            "early",
+            "late",
+            "sample_tick",
+            "sample_phase",
+            "missing",
+            "distant",
+            "tick",
+            "channel",
+            "split",
+            "ack",
+        ):
+            run = self.offer_run()
+            marker = dict(ps=11251)
+            following = run.power_edges[(1, 9)]
+            if mutation in ("early", "late"):
+                marker["ps"] += -1 if mutation == "early" else 1
+            elif mutation == "sample_tick":
+                run.last[1]["tick"] += 1
+            elif mutation == "sample_phase":
+                run.last[1]["ps"] += 1
+            elif mutation == "missing":
+                run.power_edges.clear()
+            elif mutation == "distant":
+                following["ps"] += 1250
+            elif mutation in ("tick", "channel"):
+                following[mutation] += 1
+            elif mutation == "split":
+                following["data_req"] = 0
+            else:
+                following["ctrl_ack"] = 1
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(Violation, "exact next-edge"):
+                run.decline_offer(marker)
+
     def test_complete_no_ack_opportunity_is_a_normal_decline(self):
         w = self.witness()
         for tick in range(128, 132):

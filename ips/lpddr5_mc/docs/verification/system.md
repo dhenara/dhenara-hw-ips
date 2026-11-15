@@ -618,6 +618,8 @@ For `--inline-lifecycle --continuous-observer`, version2 records the exact numer
 
 The ordinary controller `--power-policy 1|2 --ranks 2` selection admits P2/C2/R2, AXI128, depth16, profile0, CK2 and plain data only. The runner passes the selected rank count to the compiler; the fixture loads rank-matched numeric profiles, three staging banks and rank reports, while the independent physical replay uses the same rank count and mapped capacity. Other ordinary controller parameter overrides remain rejected. The stimulus checks data before and after automatic power entry/wake; its low addresses exercise rank0 payload, while physical maintenance checks cover the configured ranks. This source preparation is not two-rank power qualification until a complete timed simulation and replay passes. Use a new report directory and build name for each policy:
 
+The independent DRAM checker handles simultaneous rank selection only for the restricted SRE/SRX/PDE/NOP family, applying bank, residence, refresh and recovery constraints to each selected rank while advancing the common CA sample once. Data/MR broadcast remains unsupported and rejected. The digital PHY batches same-edge PDX completions after independently validating each rank's sampled CS/CA pulse; a shared edge does not become two elapsed CK. The original two-rank fixture simulation passes at29bdd80 while its original checker rejects `CS=3`; see Q87 for the failed aggregate and separate correction status.
+
 ```sh
 python3 ips/lpddr5_mc/dv/integration/check.py --family controller --ranks 2 --power-policy 2 \
   --report "$PWD/ips/lpddr5_mc/evidence/two-rank-self-refresh/report.json" --build-name two-rank-self-refresh

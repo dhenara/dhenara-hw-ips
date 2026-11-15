@@ -89,7 +89,7 @@ class DigitalPhy:
     def command(self, dfi_ck: int, cs: int, ca: int) -> Burst | None:
         # Each CA sample is delayed into the DRAM clock domain by explicit CK.
         at = dfi_ck + self.p["management_ck"]["tctrl_delay"]
-        exited = False
+        exits = {}
         for rank, state in enumerate(self.dram.power):
             if state is None or state[0] != "PDE":
                 continue
@@ -107,15 +107,14 @@ class DigitalPhy:
             elif "cs_high" in pulse:
                 pulse.setdefault("cs_low", at)
                 if (at - pulse["cs_low"]) * self.p["ck_ps"] >= 4000:
-                    self.dram.power_exit(
-                        at, rank, cs_high=pulse["cs_high"], cs_low=pulse["cs_low"], ca_low=pulse["ca_low"]
-                    )
-                    del self.power_pulses[rank]
-                    exited = True
-        # power_exit already sampled/advanced this exact CK. No command may
+                    exits[rank] = {k: pulse[k] for k in ("cs_high", "cs_low", "ca_low")}
+        # power_exits consumes this exact CK once for all completing ranks. No command may
         # share the required all-low pulse-completion edge.
-        if exited:
+        if exits:
             require(cs == 0 and ca == 0, "command on PDX pulse completion")
+            self.dram.power_exits(at, exits)
+            for rank in exits:
+                del self.power_pulses[rank]
             return None
         return self.dram.command(at, cs, ca)
 

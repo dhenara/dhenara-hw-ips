@@ -137,13 +137,25 @@ class DramModel:
         while self.recent and self.recent[0].command_ck < at - horizon:
             self.recent.popleft()
         self.bus_slots = {slot for slot in self.bus_slots if slot >= at * self.ck}
-        require(cs in (0, 1, 2), "CA rank select")
+        require(cs in (0, 1, 2, 3), "CA rank select")
+        require(cs < 1 << len(self.banks), "CA absent rank")
         if not cs:
             require(self.pending is None or at < self.pending[0] + 1, "missing reserved pair")
             return None
-        rank = cs - 1
-        require(rank < len(self.banks), "CA absent rank")
-        c, d = decode(ca), dict(self.p["dram_ck"])
+        c = decode(ca)
+        if cs == 3:
+            # Both chips sample the same shared CA word on this one CK.
+            # Admit only the power family used by the restricted integration;
+            # data/MR commands still require a single selected rank.
+            require(c.kind in ("SRE", "SRX", "PDE", "NOP"), "unsupported multi-rank command")
+            for rank in range(2):
+                self._rank_command(at, rank, c)
+            return None
+        return self._rank_command(at, cs - 1, c)
+
+    def _rank_command(self, at: int, rank: int, c: Command) -> Burst | None:
+        """Check a selected chip without advancing the shared CA clock again."""
+        d = dict(self.p["dram_ck"])
         for name, extra in self.maintenance.timing_derating().items():
             d[name] += extra
         require(at >= self.des_until[rank], "FSP/VRCG DES-only recovery")
@@ -412,22 +424,30 @@ class DramModel:
         Times are CK rising-edge indices; integer conversion rounds physical
         minima up. Caller must observe continuous low CA during the pulse.
         """
-        require(
-            0 <= rank < len(self.banks) and self.power[rank] is not None and self.power[rank][0] == "PDE",
-            "PDX without power-down",
-        )
-        entered = self.power[rank][1]
-        ps = self.p["ck_ps"]
-        require(cs_high >= entered and (cs_high - entered) * ps >= 10000 + ps, "PDE to CS high")
-        require((cs_low - cs_high) * ps >= 3000 and (at - cs_low) * ps >= 4000, "PDX CS pulse")
-        require((cs_high - ca_low) * ps >= 1750 and ca_low >= entered, "PDX CA low interval")
+        self.power_exits(at, {rank: {"cs_high": cs_high, "cs_low": cs_low, "ca_low": ca_low}})
+
+    def power_exits(self, at: int, pulses: dict[int, dict[str, int]]) -> None:
+        """Validate every completing rank pulse before consuming their shared CK."""
+        require(bool(pulses), "empty PDX sample")
+        for rank, pulse in pulses.items():
+            require(
+                0 <= rank < len(self.banks) and self.power[rank] is not None and self.power[rank][0] == "PDE",
+                "PDX without power-down",
+            )
+            entered = self.power[rank][1]
+            ps = self.p["ck_ps"]
+            cs_high, cs_low, ca_low = pulse["cs_high"], pulse["cs_low"], pulse["ca_low"]
+            require(cs_high >= entered and (cs_high - entered) * ps >= 10000 + ps, "PDE to CS high")
+            require((cs_low - cs_high) * ps >= 3000 and (at - cs_low) * ps >= 4000, "PDX CS pulse")
+            require((cs_high - ca_low) * ps >= 1750 and ca_low >= entered, "PDX CA low interval")
         require(at > self.last_ck, "PDX time reversal")
         self.maintenance.advance(at)
         self.last_ck = at
-        self.power[rank] = None
-        self.rank_ready[rank] = at + self.p["dram_ck"]["txp"]
-        self.sr_recovery[rank] = False
-        self.pdx_mrr[rank] = self.rank_ready[rank] + self.p["dram_ck"]["trcd"] + 2
+        for rank in pulses:
+            self.power[rank] = None
+            self.rank_ready[rank] = at + self.p["dram_ck"]["txp"]
+            self.sr_recovery[rank] = False
+            self.pdx_mrr[rank] = self.rank_ready[rank] + self.p["dram_ck"]["trcd"] + 2
 
     def logical_beat(self, burst: Burst, beat: int, at: int, dq: int, enables: int) -> None:
         """Already corrected/mask-decoded link bytes, before physical storage."""

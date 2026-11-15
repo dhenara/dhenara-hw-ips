@@ -379,10 +379,19 @@ def main() -> None:
         != (2, 2, 1, 128, 64, 4, 0)
     ):
         parser.error("benchmark requires controller, two AXI128 ports/channels, one rank, depth 64 and profile 4")
+    # The ordinary power fixture selects rank-matched images/profiles and its
+    # physical replay already checks both ranks. Other controller families
+    # retain their fixed configurations and incompatible-selection checks.
+    two_rank_power = (
+        args.family == "controller"
+        and args.power_policy in (1, 2)
+        and list(configuration.values()) == [2, 2, 2, 128, 16, 0, 2, 0]
+    )
     if (
         args.family not in ("datapath", "lint")
         and not args.benchmark_direction
         and args.ecc_boundary_case is None
+        and not two_rank_power
         and list(configuration.values())
         != [
             2,
@@ -582,6 +591,8 @@ def main() -> None:
                 else [f"-G{key}={value}" for key, value in configuration.items() if key != "INTEGRITY_MODE"]
                 + ["-GBENCHMARK=1'b1"]
                 if args.benchmark_direction
+                else [f"-G{key}={value}" for key, value in configuration.items() if key != "INTEGRITY_MODE"]
+                if args.family == "controller" and args.power_policy is not None
                 else []
             ),
             *(["-GRUNTIME_RESET=1'b1"] if args.runtime_reset else []),

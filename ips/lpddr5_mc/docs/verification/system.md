@@ -616,6 +616,13 @@ For `--inline-lifecycle --continuous-observer`, version2 records the exact numer
 
 ### Prepared automatic-power deferral and source wake
 
+The ordinary controller `--power-policy 1|2 --ranks 2` selection admits P2/C2/R2, AXI128, depth16, profile0, CK2 and plain data only. The runner passes the selected rank count to the compiler; the fixture loads rank-matched numeric profiles, three staging banks and rank reports, while the independent physical replay uses the same rank count and mapped capacity. Other ordinary controller parameter overrides remain rejected. The stimulus checks data before and after automatic power entry/wake; its low addresses exercise rank0 payload, while physical maintenance checks cover the configured ranks. This source preparation is not two-rank power qualification until a complete timed simulation and replay passes. Use a new report directory and build name for each policy:
+
+```sh
+python3 ips/lpddr5_mc/dv/integration/check.py --family controller --ranks 2 --power-policy 2 \
+  --report "$PWD/ips/lpddr5_mc/evidence/two-rank-self-refresh/report.json" --build-name two-rank-self-refresh
+```
+
 `--wrapper-power-policy 1|2` selects the real-wrapper normal power-down/self-refresh fixture in `wrapper_power.svh`, using profile0, two AXI128 ports, two rank1 channels, depth16, inline ECC and CK2 selection. This is a prepared source family; no hardware outcome is recorded here. The ordinary `--power-policy` fixture and unsolicited wrapper cases remain separate selections.
 
 The fixture publishes the actual automatic policy with a 64-CK idle threshold. It holds exposed port1 B/R, starts a protected port0 write and selects its real final-check interval. Both source responses remain held for 128CK; no low-power request may appear while the actual source ledger is unsettled. It then completes R/B handshakes, observes actual low-power pin entry on both channels and wakes through a held source AR. The self-refresh hold is 3500CK, longer than normal tREFI; power-down holds 40CK and retains ordinary retention limits. Reads of both pre-sleep images must complete before final APB quiesce and source/pin/ECC/WCK drain. No internal counter, readiness, command or settlement is forced.

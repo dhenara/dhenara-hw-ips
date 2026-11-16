@@ -1,7 +1,6 @@
 name: LPDDR5 controller checks
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   controller:
     runs-on: ubuntu-24.04

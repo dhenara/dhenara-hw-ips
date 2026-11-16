@@ -1,29 +1,105 @@
 # Dhenara Hardware IPs
 
-A repository for reusable hardware IP, with each IP's specification, RTL, verification, constraints, and software kept together under `ips/<ip_name>/`.
+Open hardware development, with the source and evidence kept together.
 
-## IP catalog
+The first IP in this repository is an **LPDDR5 memory controller**: AXI4/APB4 interfaces, channel scheduling, inline and link ECC, refresh, power management and recovery, developed and simulation-verified using **Dhenara Engineering**.
 
-| IP | Purpose | Current status |
-| --- | --- | --- |
-| [LPDDR5 memory controller](ips/lpddr5_mc/README.md) | AXI4-to-DFI memory controller targeting LPDDR5 | Combined RTL and independent simulation checks present; [controller qualification remains incomplete](ips/lpddr5_mc/docs/verification/qualification.md) |
+![LPDDR5 delivery: 3 days 17 hours 54 minutes of recorded execution and US$1,172.14 recorded model usage through publication, with 22 reproduction steps and six benchmark replays passed.](docs/assets/lpddr5-initial-release.svg)
 
-## Repository layout
+[Explore the controller](ips/lpddr5_mc/README.md) · [Read the qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) · [Browse the RTL](ips/lpddr5_mc/rtl/)
 
-```text
-docs/development/        Repository-wide engineering conventions
-ips/<ip_name>/           Independently organized IP
-  README.md              Status, interfaces, configurations, and entry points
-  docs/                  Specifications and design documentation
-  rtl/                   Synthesizable implementation
-  dv/                    Simulation environment, models, assertions, and tests
-  formal/                Formal properties, harnesses, and proof configuration
-  constraints/           Clock, reset, timing, and integration constraints
-  syn/                   Synthesis scripts and source manifests
-  sw/                    Register definitions, drivers, and examples
-  config/                Supported configurations and canonical input manifests
+## LPDDR5: the first release
+
+This is a technology-independent controller implementation with reproducible digital simulation evidence. The initial release was accepted on **16 November 2026**, at source [`ba8f514`](https://github.com/dhenara/dhenara-hw-ips/commit/ba8f5142fd9f76809a78badfd2a7c06736e2f187). The published merge [`f324c09`](https://github.com/dhenara/dhenara-hw-ips/commit/f324c093dba01debfc393744301e4d2fd18805aa) preserves that source with an identical file tree.
+
+| Area | What is included |
+| --- | --- |
+| Host and control | AXI4 traffic, APB4 registers, ordering, backpressure and clock/reset boundaries |
+| Memory channels | Scheduling, restricted LPDDR5/DFI digital profiles, refresh and maintenance |
+| Data integrity | Inline ECC, link ECC, correction-triggered scrub and selected fault/recovery checks |
+| Lifecycle | Power-down, self-refresh, frequency-set-point management and destructive recovery |
+| Verification | Owning tests, connected-controller simulation, independent trace checkers and source-bound reports |
+
+![Conceptual controller boundary: AXI4 and APB4 enter the host/control logic, then channel scheduling and integrity logic, followed by DFI and an external PHY.](docs/assets/lpddr5-boundary.svg)
+
+The [controller guide](ips/lpddr5_mc/README.md) describes supported configurations and integration entry points. The [implemented architecture](ips/lpddr5_mc/docs/architecture/implementation.md) documents the actual design.
+
+## What was verified
+
+The final review records **22 passing reproduction steps** from a separate clean checkout, **394 passing integration tests**, and **six passing final-checker benchmark replays**. The six underlying HDL benchmarks each ran 100 periods, discarded ten warm-up periods and measured 90 complete periods, without tail-drain credit. Replaying those traces with the final checker did not rerun the benchmark HDL simulations.
+
+| Scheduler selection | Read throughput | Write throughput |
+| --- | ---: | ---: |
+| CK | 12.8000 GB/s | 12.7926 GB/s |
+| CK/2 | 12.8000 GB/s | 12.7936 GB/s |
+| CK/4 | 12.8000 GB/s | 12.7918 GB/s |
+
+These are bounded simulation measurements for the documented two-channel, one-rank-per-channel, plain-data workload with two 128-bit AXI ports at 400 MHz. CK is 800 MHz. CK/2 and CK/4 identify scheduler selection intervals; the engine still runs at CK. The reference is 12.8 GB/s for CK and CK/2, and 11.5712 GB/s for CK/4. All six meet the accepted 99% threshold. Other configurations, ECC modes and workloads do not inherit these throughput figures.
+
+**Qualification boundary:** this first release is simulation-verified within its documented profiles and representative coverage. It is not an exhaustive configuration-matrix pass. Physical CDC/timing sign-off, vendor-PHY interoperability, synthesis/PPA, silicon validation, fresh-host setup and remote CI qualification are not established. Original failures and corrected results remain distinct in the evidence, including the conditional fairness limits and original row-write G64 failure.
+
+## Built with Dhenara Engineering
+
+Dhenara Engineering coordinated the work from specification and implementation through regression, independent review and accepted delivery, using **OpenAI GPT-6 Astra and GPT-6.1 SOL through Codex**. The useful output is the controller, its development history and the evidence behind its claims. Human scope decisions and platform recovery were also part of this project.
+
+The dashboard snapshot through publication on **16 November 2026** records **3 days, 17 hours and 54 minutes of execution time** and **US$1,172.14 in recorded model usage**. Execution counts intervals when agents or background jobs were running; simultaneous work counts once. It includes publication work following the initial acceptance, and is distinct from the total calendar time, which also includes waits, interruptions and other intervals.
+
+Recorded model usage is the **API-equivalent value of subscription usage**, not a cash bill or total engineering cost. The configured budget limit is **US$1,500**. Some historical usage is incomplete; the [measurement notes](ips/lpddr5_mc/docs/verification/releases/initial/run-metrics.md) explain the scope, model breakdown and remaining accounting gaps. Infrastructure and human effort are outside this model-usage figure. No cost or speed improvement over another workflow has been measured here.
+
+<details>
+<summary>View the dashboard snapshot through publication</summary>
+
+![Mission dashboard showing 3 days 17 hours 54 minutes of recorded execution after publication.](docs/assets/lpddr5-dashboard-execution.jpg)
+
+![Mission dashboard showing US$1,172.14 usage against a US$1,500 budget, with incomplete usage identified.](docs/assets/lpddr5-dashboard-usage.jpg)
+
+These unaltered views show the same Mission after publication on 16 November 2026. The accepted initial result remains in its history; the Mission can continue with further work.
+
+</details>
+
+<details>
+<summary>View the original completed-Mission snapshot</summary>
+
+![Original Dhenara Engineering Mission snapshot showing execution time, total elapsed time and completed work packages.](docs/assets/lpddr5-mission-completed.png)
+
+The snapshot records the first completed version, before the Mission was continued for publication and additional work.
+
+</details>
+
+## Evidence that travels with the source
+
+Start with the [qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) for the source-bound checks, original failures, corrections and limitations. The final accepted review completes the ledger's then-pending final reproduction and source-reconciliation gates; historical entries retain their original status.
+
+The public release evidence belongs alongside the controller under `ips/lpddr5_mc/docs/verification/releases/initial/`: the accepted-source summary, final review, reproduction commands and results, benchmark reports, source/tool identities and SHA-256 manifests. Large traces and immutable evidence archives belong in the corresponding GitHub Release assets, linked from that index. Readers should be able to inspect and retrieve the qualification evidence without access to a private workspace or Mission transcript.
+
+The retained final archive contains **4,176 members**, split into **13 parts**, with assembled SHA-256 `53cf115163d26333aa97ef38fa1be54324029d95b3541506658d26a8106c8b6e`. It preserves the final source snapshot, reports and benchmark inputs. Earlier qualification packages referenced by the ledger remain separate evidence. Archive size and member counts are provenance, not additional test coverage.
+
+## Run the checks
+
+The current reproduction recipe requires **Linux amd64 and Python 3.13.18**, with `pip`, `dpkg-deb`, GCC/G++ and Make already available. The reference checks enforce that Python version. The recorded final run used GCC/G++ 12.2.0 and Make 4.3. `make prepare` downloads and checksum-verifies Verilator 5.006, extracts it without system privileges, and installs the pinned Ruff utility into local tool storage; it does not install Python or the system compiler. See the [preparation script](ips/lpddr5_mc/tools/prepare_tools.py) and [verification guide](ips/lpddr5_mc/docs/verification/system.md).
+
+`DHENARA_AGENT_TOOL_STORAGE_ROOT` is simply an absolute local directory for tools, caches and build outputs. These commands do not require a Dhenara account, an OpenAI API key or an agent session. Use a fresh evidence directory and build name for each run.
+
+```sh
+git clone https://github.com/dhenara/dhenara-hw-ips.git
+cd dhenara-hw-ips
+git checkout --detach ba8f5142fd9f76809a78badfd2a7c06736e2f187
+
+# Create a fresh absolute local directory for verification tools and builds.
+export DHENARA_AGENT_TOOL_STORAGE_ROOT="$(mktemp -d /tmp/lpddr5-tools.XXXXXX)"
+make -f ips/lpddr5_mc/Makefile prepare
+make -f ips/lpddr5_mc/Makefile check-controller \
+  EVIDENCE="$PWD/ips/lpddr5_mc/evidence/initial-reproduction-01" \
+  BUILD_SUBDIR=initial-reproduction-01 \
+  CHECK_ARGS=--require-clean
 ```
 
-See [repository conventions](docs/development/repository-layout.md) for ownership boundaries, shared components, generated files, and the expected contents of an IP. Start with [Contributing](CONTRIBUTING.md) when adding or changing an IP.
+`prepare` installs the local tools; `check-controller` compiles and runs the 22-step public owning and representative connected suite, saving reports and logs under the evidence directory. It checks that the source stays unchanged. The same suite passed in the retained Linux environment; a fresh-machine setup has not yet been qualified. The recorded throughput figures additionally depend on their original benchmark traces and independent checker replays. Running this suite does not reproduce every historical qualification result.
 
-The initial LPDDR5 documents are preserved as supplied. Read the [specification index](ips/lpddr5_mc/docs/spec/README.md) for the current contracts and historical review. The [contract check flow](ips/lpddr5_mc/docs/verification/contracts.md) checks models, interfaces and generated sources; the [system guide](ips/lpddr5_mc/docs/verification/system.md) describes checks against combined RTL. The [qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) records executed results, source applicability and remaining release checks.
+## Repository and next steps
+
+Each IP keeps its RTL, specifications, verification, constraints and software under `ips/<ip_name>/`. See the [repository conventions](docs/development/repository-layout.md) and [contributing guide](CONTRIBUTING.md).
+
+The next engineering stage is synthesis and physical-design exploration with open-source tools, followed by measured PPA and further qualification. Those results will be reported separately against their own source revisions and tool configurations.
+
+**License:** a license has not yet been selected for this initial publication. Public source visibility does not itself grant an open-source license; reuse terms will be made explicit when the project owner chooses one.

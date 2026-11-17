@@ -1,0 +1,133 @@
+{
+  "passed": true,
+  "source_commit": "ba8f5142fd9f76809a78badfd2a7c06736e2f187",
+  "source_files": 332,
+  "public_steps": 22,
+  "nested_reports": 44,
+  "execution_records": 319,
+  "expected_nonzero_commands": 16,
+  "source_comparisons": 9286,
+  "benchmarks": [
+    {
+      "completed_bytes": 4320000,
+      "reference_bytes": 4320000,
+      "gb_per_second": 12.8,
+      "missing_bytes": 0,
+      "maximum_outstanding_by_channel": [
+        63,
+        63
+      ],
+      "name": "read-d1"
+    },
+    {
+      "completed_bytes": 4320000,
+      "reference_bytes": 4320000,
+      "gb_per_second": 12.8,
+      "missing_bytes": 0,
+      "maximum_outstanding_by_channel": [
+        63,
+        63
+      ],
+      "name": "read-d2"
+    },
+    {
+      "completed_bytes": 4320000,
+      "reference_bytes": 3905280,
+      "gb_per_second": 12.8,
+      "missing_bytes": 0,
+      "maximum_outstanding_by_channel": [
+        63,
+        63
+      ],
+      "name": "read-d4"
+    },
+    {
+      "completed_bytes": 4317504,
+      "reference_bytes": 4320000,
+      "gb_per_second": 12.792604444444445,
+      "missing_bytes": 2496,
+      "maximum_outstanding_by_channel": [
+        64,
+        64
+      ],
+      "name": "write-d1",
+      "channels": [
+        {
+          "warmup_floor": 6,
+          "recurring_floor_range": [
+            6,
+            6
+          ],
+          "max_age_ps": 1060000
+        },
+        {
+          "warmup_floor": 6,
+          "recurring_floor_range": [
+            6,
+            6
+          ],
+          "max_age_ps": 1060000
+        }
+      ]
+    },
+    {
+      "completed_bytes": 4317824,
+      "reference_bytes": 4320000,
+      "gb_per_second": 12.793552592592592,
+      "missing_bytes": 2176,
+      "maximum_outstanding_by_channel": [
+        64,
+        64
+      ],
+      "name": "write-d2",
+      "channels": [
+        {
+          "warmup_floor": 6,
+          "recurring_floor_range": [
+            6,
+            6
+          ],
+          "max_age_ps": 1067500
+        },
+        {
+          "warmup_floor": 6,
+          "recurring_floor_range": [
+            6,
+            6
+          ],
+          "max_age_ps": 1070000
+        }
+      ]
+    },
+    {
+      "completed_bytes": 4317248,
+      "reference_bytes": 3905280,
+      "gb_per_second": 12.791845925925927,
+      "missing_bytes": 0,
+      "maximum_outstanding_by_channel": [
+        64,
+        64
+      ],
+      "name": "write-d4",
+      "channels": [
+        {
+          "warmup_floor": 6,
+          "recurring_floor_range": [
+            6,
+            6
+          ],
+          "max_age_ps": 1097500
+        },
+        {
+          "warmup_floor": 6,
+          "recurring_floor_range": [
+            6,
+            6
+          ],
+          "max_age_ps": 1092500
+        }
+      ]
+    }
+  ],
+  "hardware_execution": false
+}

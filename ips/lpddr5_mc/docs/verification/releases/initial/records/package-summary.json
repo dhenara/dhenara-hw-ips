@@ -1,0 +1,103 @@
+{
+  "status": "verified",
+  "commit": "ba8f5142fd9f76809a78badfd2a7c06736e2f187",
+  "members": 4176,
+  "uncompressed_bytes": 412859992,
+  "archive": {
+    "bytes": 107325176,
+    "sha256": "53cf115163d26333aa97ef38fa1be54324029d95b3541506658d26a8106c8b6e"
+  },
+  "parts": [
+    {
+      "path": "evidence.tar.gz.part-001",
+      "bytes": 8388608,
+      "sha256": "f38fa5808e5d7eec781787b2bae3d283414fae5b92418c22ab9d9fffc311ba0a"
+    },
+    {
+      "path": "evidence.tar.gz.part-002",
+      "bytes": 8388608,
+      "sha256": "1b6a3f6a6bdb7b2250da0a2892622c345e95e5cc2f0f86ed85ebbf6cdfaa5e02"
+    },
+    {
+      "path": "evidence.tar.gz.part-003",
+      "bytes": 8388608,
+      "sha256": "73f67b3194dbc15c9b37376763f642c2f47cc74039bc406a9d34ec0097a568be"
+    },
+    {
+      "path": "evidence.tar.gz.part-004",
+      "bytes": 8388608,
+      "sha256": "34d48e730e7d0b52d724ea26340e4dde2a7a1a49d96eefe03c6f79856cd10163"
+    },
+    {
+      "path": "evidence.tar.gz.part-005",
+      "bytes": 8388608,
+      "sha256": "8bf876e614c06b9983c8d0e49591efd864dbbf9fbd5bd2038d66ab59bb89311a"
+    },
+    {
+      "path": "evidence.tar.gz.part-006",
+      "bytes": 8388608,
+      "sha256": "c10478d75b6cfbeeb4267f09871f1d7a7eecc858222cd3c362839aae5d69baf8"
+    },
+    {
+      "path": "evidence.tar.gz.part-007",
+      "bytes": 8388608,
+      "sha256": "a855147dac03abe6bb677e6afad259d9505bd709dfe75e06576bf4d3cba60e73"
+    },
+    {
+      "path": "evidence.tar.gz.part-008",
+      "bytes": 8388608,
+      "sha256": "7e0675876e120c0738cab68060fdbee8f1fe373c89774f553769f2ea377e5dbf"
+    },
+    {
+      "path": "evidence.tar.gz.part-009",
+      "bytes": 8388608,
+      "sha256": "c404b9d922160c5e3fd1fa5ade1380b9e05793f3b42e6cd5c2c0747d2eb89795"
+    },
+    {
+      "path": "evidence.tar.gz.part-010",
+      "bytes": 8388608,
+      "sha256": "2dd3ddb7ea36e2fdf339a1187b8a46aff6ee57d848a805ceff53045e185ad012"
+    },
+    {
+      "path": "evidence.tar.gz.part-011",
+      "bytes": 8388608,
+      "sha256": "3a0e881f1100313869e553773387fcb38e546cfb5ff8168a5117230af9940ef5"
+    },
+    {
+      "path": "evidence.tar.gz.part-012",
+      "bytes": 8388608,
+      "sha256": "23799409d232eba1516ec9ab18297720e2f959655853d18a4520c95e0f856864"
+    },
+    {
+      "path": "evidence.tar.gz.part-013",
+      "bytes": 6661880,
+      "sha256": "64653ee28844e615d1bc2243289bc126f8476d1a5fd40b82d16c39090d4ab74f"
+    }
+  ],
+  "audit": {
+    "bytes": 601870,
+    "sha256": "14a1f7f861486470edc9ddec7bfbb9cbe63bf50a2273039fba98bfbfb60ac41a"
+  },
+  "manifest": {
+    "bytes": 1109043,
+    "sha256": "c9b287482dd8dafb537c2970f4cbddb8e92c7c534e1e6603d971dd6cae006519"
+  },
+  "included": [
+    "Exact 332-file final source snapshot",
+    "All fresh final combined/replay reports and logs",
+    "All fresh raw observation streams",
+    "Original six complete benchmark inputs",
+    "Post-execution simulator executables and generated dependency metadata",
+    "Post-execution hashes of generated C++ lowering, without copying that disposable output",
+    "Launchers, retained prior reviews and completed final review"
+  ],
+  "limits": [
+    "Installed-tool exact-final reproduction; fresh-host setup and remote CI unexecuted.",
+    "Final six benchmark operations are complete-trace replay of the original 100-period HDL runs.",
+    "Generated sources/executables below are observed after execution at packaging time; the final launcher did not hash every nested executable at execution boundaries.",
+    "Representative configuration and fault families; scope and conditional bounds in joint review remain.",
+    "Earlier broad matrix raw proof remains in its separately published packages.",
+    "Post-execution runtime files do not establish execution-boundary binary custody.",
+    "Generated C++ and header contents are omitted; their packaging-time hashes are retained."
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "final_reproduction": {
+    "execution_id": "01a1e358-f5bd-7562-9059-94ef06dfbc32",
+    "status": "succeeded",
+    "exit_code": 0,
+    "started_at": "2026-11-16T07:53:42.451485Z",
+    "finished_at": "2026-11-16T10:19:05.092185Z"
+  },
+  "audit": {
+    "execution_id": "01a1e3e5-d4dc-7082-af13-1c4aaf1ef76b",
+    "status": "succeeded",
+    "exit_code": 0,
+    "started_at": "2026-11-16T10:27:33.024485Z",
+    "finished_at": "2026-11-16T10:27:41.472596Z"
+  },
+  "earlier_pending_reports_preserved": true,
+  "source_commit": "ba8f5142fd9f76809a78badfd2a7c06736e2f187"
+}

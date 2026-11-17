@@ -1,0 +1,101 @@
+{
+  "description": "Byte-identical copies of retained qualification records. Text extensions preserve original review bytes and their historical workspace links.",
+  "files": {
+    "accepted-source-tree.json": {
+      "sha256": "b6fb0e9f43ffebbf96aa1374f53ce2749ede0406c18086ba51a011caeff992b8",
+      "bytes": 201
+    },
+    "audit-accounting-corrections.json": {
+      "sha256": "845b3894829f6a4044abb08b692ab8a06806090d6f19f5f6b892d1929c58f43b",
+      "bytes": 1139
+    },
+    "benchmark-replay-execution.json": {
+      "sha256": "7ead4c0bfe0cb83f4db096b9b7b7a49732ca6bf11973dc9963c007ce634a814f",
+      "bytes": 116604
+    },
+    "benchmarks/read-d1.json": {
+      "sha256": "c2d414fade6d90743315a37a5e5eddc04a9a1a452036503502290abbb09a2c32",
+      "bytes": 30963
+    },
+    "benchmarks/read-d2.json": {
+      "sha256": "0c04ee4cff3f1cc3ddb1d6f7e1452d3b0bacd293a1891fdada90e4d6e2c2f1fe",
+      "bytes": 30963
+    },
+    "benchmarks/read-d4.json": {
+      "sha256": "fdc515f4bc4874ab954a38ed1ad98a72e04cac926ecc5cf1cfa1a47a4d6d71b9",
+      "bytes": 30965
+    },
+    "benchmarks/write-d1.json": {
+      "sha256": "48b0409d00b53e53d957acda24595e633eb53f7c8754ce7af98ecdcb6e0b80b4",
+      "bytes": 199767
+    },
+    "benchmarks/write-d2.json": {
+      "sha256": "320b9ffd7440d323a3e4cd136baf9be407d766f8205533cafa7eb09b5e2ecda1",
+      "bytes": 199772
+    },
+    "benchmarks/write-d4.json": {
+      "sha256": "8b25175d3d17e855c0a57362a424aad865854a16fb26f66056bf0bbd6bf35939",
+      "bytes": 199799
+    },
+    "combined-execution.json": {
+      "sha256": "70162f362c09422b293d0f77a2249784e40149aa922ec56ca40624e7454cfde9",
+      "bytes": 115732
+    },
+    "combined-report.json": {
+      "sha256": "1e5f6db32b77a4aa899184aedfd4e8325e1b354e4d221ffb44d6c4c6dc747f70",
+      "bytes": 104954
+    },
+    "execution-disposition.json": {
+      "sha256": "930c438b2791f90da6d25a4b8ca1d93ec4508ec851432464682b869a23850567",
+      "bytes": 570
+    },
+    "joint-behavior-review.txt": {
+      "sha256": "8bbfe5550dbe4200e2a6a92449e810828ac1a9d17d0e29a58119c4692b2f8efe",
+      "bytes": 16695
+    },
+    "lead-behavior-audit.json": {
+      "sha256": "fa004bcb5fbf232436350e2a8710145b5200a7d5f3d62a56c240d2468ecc18fa",
+      "bytes": 560
+    },
+    "lead-package-audit.json": {
+      "sha256": "53922ac3718ccdf50ab3f7a4e4c45fc139cd1dde1aeb858c43e900c2b0765b66",
+      "bytes": 414
+    },
+    "lead-report-audit.json": {
+      "sha256": "2e08a6c28f05ec7901e7ac6267cb6aa4f9658bd0d720397d2c7956bc6c6fad35",
+      "bytes": 2804
+    },
+    "lead-review.txt": {
+      "sha256": "46e52e1dada388ad9a83fbc5736880ab80fca2960bf4ca9b7460914a6d6b1193",
+      "bytes": 8911
+    },
+    "package-manifest.json": {
+      "sha256": "c9b287482dd8dafb537c2970f4cbddb8e92c7c534e1e6603d971dd6cae006519",
+      "bytes": 1109043
+    },
+    "package-summary.json": {
+      "sha256": "e285f160f2568124981b287e024a83e3a002e6152f72df587522825e982ac621",
+      "bytes": 3836
+    },
+    "reproduction-selection.json": {
+      "sha256": "20fc97b963c51764b31f87f8ae73b634e738778de07bc0c5c32548393bc4b47a",
+      "bytes": 63257
+    },
+    "source-applicability-review.json": {
+      "sha256": "d953b3fab68d19d97da0e99e380cf7142a2c7ee4cbd250b3c8a9dafc7711d9b8",
+      "bytes": 49402
+    },
+    "worker-audit.json": {
+      "sha256": "14a1f7f861486470edc9ddec7bfbb9cbe63bf50a2273039fba98bfbfb60ac41a",
+      "bytes": 601870
+    },
+    "worker-reports.json": {
+      "sha256": "e627eba0cd8e2f52dea14fa2a291be353d1debd43ed670b2658ef0d66faccc7d",
+      "bytes": 10749
+    },
+    "worker-review.txt": {
+      "sha256": "b80a7d97e3651abba202f58427e21c3dca83964abdad448c79de4314a3023571",
+      "bytes": 12092
+    }
+  }
+}

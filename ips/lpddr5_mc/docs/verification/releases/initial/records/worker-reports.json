@@ -1,0 +1,178 @@
+{
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/apb_publication/report.json": {
+    "top_status": "passed",
+    "sha256": "7896db0235dba622320ec8c76c9fddd35e8efa8110ca13c0f9f6979dbadb43fd"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/axi256-ck1/report.json": {
+    "top_status": "passed",
+    "sha256": "ca1ff6165447917891481467ac173c00ed57508a7582a8e44056d0d69ae27966"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/channel/report.json": {
+    "top_status": "passed",
+    "sha256": "1ce74f5d1e1ca2f37e6522a2b07f5d9de54fd77012e3a823cabf9337250ea0e4"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/channel-refpb/report.json": {
+    "top_status": "passed",
+    "sha256": "06f44c3196080c7fcdec29b9fc69f39a82b8cc35c32d93b7dbe58ffc03cea484"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/control-example/report.json": {
+    "top_status": "passed",
+    "sha256": "edb8f00387b9cfd9d43142d768a98bf9cec6a39046e799b1febcd71285e49b39"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/controller/report.json": {
+    "top_status": "passed",
+    "sha256": "d1eae064ae47e9a306c21dce538fb0ed77fa3112466ff1c86003c30f0b866319"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/coordinator/report.json": {
+    "top_status": "passed",
+    "sha256": "33ff71ceae4da2df3ad0efc59e8170e3e5f6005dd1c62452afb79a43f6dd0803"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/datapath/report.json": {
+    "top_status": "passed",
+    "sha256": "92b109e776e3ad57e1744cf644a610b6719f5d3d65b6a509ce95fcdb3690d9fc"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/decoder/report.json": {
+    "top_status": "passed",
+    "sha256": "6d4db91d7668d94ca3f8a69107beec0e93e381256fdca8b3710927ed67c0c2d8"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/inline-fault/report.json": {
+    "top_status": "passed",
+    "sha256": "9f6e2909be8955913d849d8e766f1b3eadb543ccbb1713dc20812756f120e43f"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/inline-lifecycle/report.json": {
+    "top_status": "passed",
+    "sha256": "b9826d4718c4060aa55ed2bb2ac2666507641eb49f166eeb27c2b0a28dfcc528"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/notification/report.json": {
+    "top_status": "passed",
+    "sha256": "d6f9c58717758a7fe87af0132785163de3d567657a796548b0a4668a0b29f6e4"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/power-down/report.json": {
+    "top_status": "passed",
+    "sha256": "b7da5606fa693b56736277925e3cc446ab299d9eaa25c809d970c5ef91afad45"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/publication/report.json": {
+    "top_status": "passed",
+    "sha256": "ffd8c4bb1ad7e780b819223ce6ff2780bca5b329c46b476d6ef89f3cc963f33c"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/ratio2-ck4/report.json": {
+    "top_status": "passed",
+    "sha256": "8d8ba3d92c1b071eb01a2bd6d031fa920d5751f20b54781a3f162937c25a61b3"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/report.json": {
+    "top_status": "passed",
+    "sha256": "1e5f6db32b77a4aa899184aedfd4e8325e1b354e4d221ffb44d6c4c6dc747f70"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/self-refresh/report.json": {
+    "top_status": "passed",
+    "sha256": "33a14dc6465dbc54b16d58cfaecfc8f28cbb062e91f3c1910d23e5011e092351"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/benchmark-read-1.json": {
+    "top_status": null,
+    "sha256": "cd575f8ba43a86b8a7e40b30b1399c49d0d7867e6edcd69d0a5f1f4e506fc490"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/benchmark-read-2.json": {
+    "top_status": null,
+    "sha256": "360496a23a9e86f705becafd47383411ee16724338e2357d0434a83248d4682f"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/benchmark-read-4.json": {
+    "top_status": null,
+    "sha256": "93c6bd6ac10a522f92ea3a238c139edbb40d280d6f855c764005cb524f878f5f"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/benchmark-write-1.json": {
+    "top_status": null,
+    "sha256": "8c9e0ac7a3482bc778a176292853c5dc227b0935b1cc672a3f681aa52baee5da"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/benchmark-write-2.json": {
+    "top_status": null,
+    "sha256": "c4a789514eb7d1e4dacf11a02e9459c49e9827bb72190044b3845d423d0cd8a8"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/benchmark-write-4.json": {
+    "top_status": null,
+    "sha256": "2c2d5eb5a988c22ad94e270d7101c7c662a66343c0cc797f2e9201d8ac5de45f"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/report.json": {
+    "top_status": true,
+    "sha256": "6199d0cd8e79e1cb58c038b389cc8568e20a1b6d16a34b3254bcb2385e5769f6"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/tests.json": {
+    "top_status": true,
+    "sha256": "69eefc4d37159a5659d4214854187c47beec797ced35ce9739f1d4af186dc679"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/system/trace.json": {
+    "top_status": null,
+    "sha256": "0c6da1a4ea43b2ed52433d1a2e0b267673898347c082ccdafd91200c3b367c21"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/thermal-rfm/report.json": {
+    "top_status": "passed",
+    "sha256": "10849d115f86def66fdecf7ebd052dbd7a248f9af4fd272b137f1731ba65fbbc"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/wrapper-max/report.json": {
+    "top_status": "passed",
+    "sha256": "b29aad59fb4ef91eb0151cd6f5b414d83cb570c533ba46cff957498f9ef8349e"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/wrapper-min/report.json": {
+    "top_status": "passed",
+    "sha256": "abf0ef427baaa85cfb1c590939e587ef0fb1e3183cdea01d2868cdf709e458a2"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/combined/suites/write-link-fault/report.json": {
+    "top_status": "passed",
+    "sha256": "a41489e436b1bb328ca4ed274694d63e54b7352a12f1be73423fe9e2e28f1790"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/adapters.json": {
+    "top_status": null,
+    "sha256": "c203fdadeda27ab7eb9eed18e5b2bc6b3bacaf2e1166b7beaa279e7031180898"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/apb.json": {
+    "top_status": null,
+    "sha256": "df446e8fe4cb97f57e64347cd4bb72f0d69c2728334e35d11c34dad6662f02e5"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/assembly.json": {
+    "top_status": "passed",
+    "sha256": "ecf83b5e9c07a0b4fbfb27efed09e0dab3d96e5d5eacf01b689098d90a530e55"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/axi.json": {
+    "top_status": "passed",
+    "sha256": "1662136ab34ee2ebfc5e20e4b5ff9e91e4ca7ad0b0c55666c553ab9fcfa873a9"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/cdc.json": {
+    "top_status": null,
+    "sha256": "e49f16801c1149c1c4461849c47ecf6e68ec38d0a7cd8f66de143d7cb8ad9372"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/core-128-16-early.json": {
+    "top_status": "passed",
+    "sha256": "fdf9843d1f85e4671e0d4988a71b77cdfd474c59368894904cec14d0f9441af0"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/core-128-16-strict.json": {
+    "top_status": "passed",
+    "sha256": "f7af28cce7c452f02c7a19f343082ff135de2fb9ba84fa85f107cdbe4a8b450a"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/core-256-64-strict.json": {
+    "top_status": "passed",
+    "sha256": "47d26b6360c67c91585cf9a9362ff2503133f4fff4dcf963f98f6b2ff55dee2d"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/core-64-16-strict.json": {
+    "top_status": "passed",
+    "sha256": "baf60e456df8b533abc5e977a62f69a0834db02153e5731c49e26cf291ed8973"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/foundation-qualification.json": {
+    "top_status": "passed",
+    "sha256": "7f871321019614057d08db93fb2aebec5439c90f075998c1bba7fc5f1e001c96"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/foundation.json": {
+    "top_status": "passed",
+    "sha256": "2c68ec85615659ce538c15276d2b05d69dcb2493b875867b103174b630e95cce"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/lease.json": {
+    "top_status": "passed",
+    "sha256": "5d6e348cc86ad53690baf3682781262ace6448d62417113765cfd33ee8f63c04"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report-phases/parameters.json": {
+    "top_status": "passed",
+    "sha256": "d074646b1e848cfa6def17445d5e1fb1b831b83ec9604484aa5de81f3e555f6d"
+  },
+  "ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/host/out/qualification-final-qualification121-final-reproduction/report.json": {
+    "top_status": "passed",
+    "sha256": "2c2d38726a60b65f49d4fd9d7ce853710b707ee601f93f69859fa8015fdb7b26"
+  }
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "task": "01a1e3e3-fa7b-73e2-abbb-b258466dcdde",
+    "exit_code": 1,
+    "cause": "New packaging audit incorrectly required a generated directory for --lint-only. Verilator lint may finish without creating it.",
+    "correction": "Require retained generated directory for non-lint commands; explicitly record absent lint directories. Execution verdicts, source/input hashes and all behavior acceptance checks remain required.",
+    "preserved_script": "audit-original-lint-directory-assumption.py"
+  },
+  {
+    "task": "01a1e3e4-b004-7d11-b4d5-a78f31ceebf9",
+    "exit_code": 1,
+    "cause": "New packaging audit did not recognize host lease report expected_oracle_failure/caught schema for deliberate corruption probes.",
+    "correction": "For that schema require nonzero exit, caught=true and the exact expected oracle message in its retained log. Ordinary execution still requires zero. Also recognize the explicit expected_assertion_commands list for invalid parameter rejection, requiring nonzero exit and Assertion failed in the corresponding log.",
+    "preserved_script": "audit-before-lease-sensitivity-schema.py"
+  }
+]

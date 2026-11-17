@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "candidate": {
+    "digest": "0a0d1cdec0823224f9e7c36bbff612baab85293b0c5e3f015f3c6d124929a05a",
+    "id": "92441dec-f9c5-d307-8f37-fa5813230610",
+    "revision": 1
+  },
+  "retained_files_verified": 50,
+  "parts": 13,
+  "members": 4176,
+  "uncompressed_bytes": 412859992,
+  "archive_sha256": "53cf115163d26333aa97ef38fa1be54324029d95b3541506658d26a8106c8b6e",
+  "hardware_execution": false
+}

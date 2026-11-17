@@ -6,7 +6,7 @@ Use [the repository layout](docs/development/repository-layout.md) when adding a
 
 Create `ips/<lower_snake_case_name>/` and add it to the root IP catalog. Its README should identify its purpose, current maturity, interfaces, supported configurations, dependencies, and available build and verification commands. Create implementation subdirectories as needed; a placeholder directory does not establish implemented capability.
 
-Keep imported specifications versioned and distinguish drafts, reviewed requirements, implemented behavior, and verified results. For LPDDR5, preserve the two supplied originals listed in its [specification index](ips/lpddr5_mc/docs/spec/README.md); use its linked current contracts for proposed corrections and keep the historical review intact until a revised specification is agreed.
+Keep imported specifications versioned and distinguish drafts, reviewed requirements, implemented behavior, and verified results. For LPDDR5, preserve the two supplied originals listed in its [specification index](ips/lpddr5_mc/docs/spec/README.md); use its linked reviewed contracts as the implementation basis and keep the historical review intact.
 
 ## Source and checks
 
@@ -21,4 +21,8 @@ For documentation-only changes, check relative links, `git diff --check`, and an
 git diff --check
 ```
 
-LPDDR5 has a scoped [reference-contract check flow](ips/lpddr5_mc/docs/verification/contracts.md), including a pinned simulator recipe and CI entry point, plus [combined controller checks](ips/lpddr5_mc/docs/verification/system.md). The [qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) distinguishes executed evidence from remaining release checks. No repository-wide EDA release flow or formatter convention is established. Keep proprietary tool installations, licensed external models, generated outputs, and credentials out of source commits; record authorized external dependencies and their versions instead.
+LPDDR5 has a scoped [reference-contract check flow](ips/lpddr5_mc/docs/verification/contracts.md), including a pinned simulator recipe and CI entry point, plus [combined controller checks](ips/lpddr5_mc/docs/verification/system.md). The [qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) preserves the executed evidence and development history; the [final verification report](ips/lpddr5_mc/docs/verification/releases/initial/README.md) records the accepted release status. No repository-wide EDA release flow or formatter convention is established. Keep proprietary tool installations, licensed external models, generated outputs, and credentials out of source commits; record authorized external dependencies and their versions instead.
+
+## License
+
+Unless explicitly stated otherwise, contributions intentionally submitted for inclusion in this project are provided under the [Apache License 2.0](LICENSE). Preserve applicable third-party notices and include only material you have the right to contribute.

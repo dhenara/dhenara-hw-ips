@@ -1,6 +1,6 @@
 # Host and control verification
 
-This page records owning RTL checks for the host/control contribution. Combined controller qualification remains governed by the [canonical contracts](../spec/contracts.md).
+This page records owning RTL checks for the host/control contribution. The host-foundation step passed in the exact-final reproduction at accepted source `ba8f5142fd9f76809a78badfd2a7c06736e2f187`. The [initial release evidence](releases/initial/README.md) records the completed combined-controller review against the [canonical contracts](../spec/contracts.md).
 
 ## Run the owning checks
 
@@ -60,7 +60,7 @@ python3 ips/lpddr5_mc/dv/host/lease_run.py --compose-only \
 
 The core fixture captures source descriptors/W bytes, physical requests/completions and offered/consumed responses. The [independent composer oracle](../../dv/host/compose_oracle.py) uses the existing serial host and merge ledgers to derive byte results. A read request and completed base data before contributor integrity, or fewer physical writes than originals, distinguish exercised optimization from serial fallback. Ten cases cover multiple contributors/overwrites, partial and narrow multibeat writes, delayed/failed integrity, incompatible attributes, intervening reads, unvalidated AW/W barriers, response stalls, stale completion, contributor slot reuse and fatal/reset recovery. Five deliberate trace mutations must fail independently. This selection uses AXI128, two core ports/channels, depth16; minimum/maximum lint checks structure, not the behavioral parameter matrix.
 
-The connected selection drives three original writes and one read through one actual AXI source. It requires a read before writer integrity, then two compatible originals sharing one physical write, with exactly three B responses and one R response. Independent source-byte and memory-image checks reject two corruption probes. Cross-port conflicts still serialize through the existing leases before READY. The modeled channel completion boundary is an explicit physical/integrity witness; actual ECC/DFI pin composition remains a separate combined check. The [qualification matrix](qualification.md#source-impact-and-minimum-remaining-selections) records current reports, original development failures and the remaining source-impact/reproduction work.
+The connected selection drives three original writes and one read through one actual AXI source. It requires a read before writer integrity, then two compatible originals sharing one physical write, with exactly three B responses and one R response. Independent source-byte and memory-image checks reject two corruption probes. Cross-port conflicts still serialize through the existing leases before READY. The modeled channel completion boundary is an explicit physical/integrity witness; actual ECC/DFI pin composition remains a separate combined check. The [qualification matrix](qualification.md#source-impact-and-minimum-remaining-selections) records current reports, original development failures and the completed source-applicability/reproduction review.
 
 ## CDC transports
 
@@ -71,7 +71,7 @@ python3 ips/lpddr5_mc/dv/host/cdc_check.py \
   --report /absolute/path/to/evidence/cdc.json
 ```
 
-Disposable compilation output is placed below `DHENARA_AGENT_TOOL_STORAGE_ROOT/host-cdc`. The report records source hashes, Git revision/dirty state, simulator version, literal commands, durations, seed 2095 and logs. A dirty-tree run is development evidence. The final contribution must rerun on its committed source and preserve that report separately.
+Disposable compilation output is placed below `DHENARA_AGENT_TOOL_STORAGE_ROOT/host-cdc`. The report records source hashes, Git revision/dirty state, simulator version, literal commands, durations, seed 2095 and logs. A dirty-tree run is development evidence. Delivery runs must identify their exact committed source and preserve the report separately; the completed accepted-source run is linked above.
 
 The testbench compares every accepted transport payload against independent queues and checks VALID/data stability under backpressure. It exercises depth 2/16/64, widths 1/80/1024, independently phased 6/10-ns and 10/4-ns clocks, full capacity, pointer wrap, enable gating, random receiver stalls, mailbox acknowledgement delay, destination reset while its clock is stopped, one-sided rearm rejection and source reset. It explicitly accounts aborted entries separately from consumed entries and checks that old payload/toggle state cannot reappear after rearm.
 

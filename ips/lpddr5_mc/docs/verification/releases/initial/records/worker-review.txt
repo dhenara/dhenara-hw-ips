@@ -1,0 +1,80 @@
+# Final controller qualification review
+
+Final source **ba8f5142fd9f76809a78badfd2a7c06736e2f187** passes the selected simulation release checks within the supported digital profiles and documented coverage limits. The exact-final reproduction, complete benchmark replays, source applicability and required behavior/failure review are now complete. This is the performer's evidence and recommendation for lead review; it does not accept the delivery or publish it externally.
+
+The canonical source-bound ledger remains [qualification.md](../../../docs/verification/qualification.md). Its required final reproduction gate is satisfied by the settled execution recorded here. Earlier [source review](../../qualification-121/final-source-review/review.json) and [joint behavior review](../../qualification-122/joint-review/review.md) retain their original, then-pending execution status. This review supplies the completed observation without changing those historical files.
+
+## Exact source and final execution
+
+The working branch and separate full-history checkout are clean at the same commit. All 332 tracked source files agree. The clone has its own ordinary Git directory, no alternates and no shared Git metadata. Production RTL/configuration matches the six original complete benchmark producers. Earlier broader runs are reused only through the specific source/checker applicability reviewed in the linked source and behavior reviews.
+
+Task `01a1e358-f5bd-7562-9059-94ef06dfbc32` started 2026-11-16T07:53:42.451485Z and finished 2026-11-16T10:19:05.092185Z with exit 0. The combined stage took 8315.711215s; the six benchmark replay stage took 403.055787s. Both stages have equal source and tool maps before/after. Full commands, seeds, configurations, tools and logs are retained in [selection](../../qualification121-final-reproduction/selection.json), [combined execution](../../qualification121-final-reproduction/combined/execution.json), [aggregate](../../qualification121-final-reproduction/combined/suites/report.json) and [benchmark execution](../../qualification121-final-reproduction/benchmarks/execution.json).
+
+The installed environment is Linux amd64, Python 3.13.18, Ruff 0.17.4, Debian Verilator 5.006-3, GCC/G++ 12.2.0 and make 4.3. Tool maps bind executable/package/runtime bytes. Fresh-host installation, remote CI, physical CDC/metastability/timing, vendor-PHY interoperability, silicon and technology-specific PPA remain unexecuted.
+
+| Public combined step | Seconds | Result |
+| --- | ---: | --- |
+| host-foundation | 1046.774 | passed |
+| channel | 773.980 | passed |
+| channel-refpb | 307.351 | passed |
+| system | 21.356 | passed |
+| control-example | 0.114 | passed |
+| notification | 49.951 | passed |
+| decoder | 48.097 | passed |
+| publication | 113.524 | passed |
+| apb_publication | 1586.498 | passed |
+| coordinator | 37.527 | passed |
+| controller | 1177.988 | passed |
+| datapath | 214.950 | passed |
+| wrapper-min | 29.613 | passed |
+| wrapper-max | 33.671 | passed |
+| power-down | 839.040 | passed |
+| self-refresh | 842.838 | passed |
+| inline-lifecycle | 409.244 | passed |
+| ratio2-ck4 | 120.336 | passed |
+| axi256-ck1 | 258.409 | passed |
+| inline-fault | 109.914 | passed |
+| write-link-fault | 104.160 | passed |
+| thermal-rfm | 190.099 | passed |
+
+These 22 steps freshly execute the complete public owning/representative suite. They complement the retained broad matrix; they do not rerun every historical qualification configuration. Local fixture reports that retain `controller_qualified:false` describe those layers' own scope and remain unchanged.
+
+## Complete benchmark reconciliation
+
+All six final-checker replays pass with whole loaded-JSON `baseline` equality to their original independent reports, byte-identical trace/log bindings and the exact final checker source. Each original HDL simulation ran 100 periods of 3000 CK, discarded ten warm-up periods and measured the next 90 integral periods without tail-drain credit. The final replay stage performs no new benchmark HDL execution.
+
+| Direction and selection | Completed/reference bytes | GB/s | Reference deficit bytes |
+| --- | ---: | ---: | ---: |
+| read-d1 | 4320000 / 4320000 | 12.8000000 | 0 |
+| read-d2 | 4320000 / 4320000 | 12.8000000 | 0 |
+| read-d4 | 4320000 / 3905280 | 12.8000000 | 0 |
+| write-d1 | 4317504 / 4320000 | 12.7926044 | 2496 |
+| write-d2 | 4317824 / 4320000 | 12.7935526 | 2176 |
+| write-d4 | 4317248 / 3905280 | 12.7918459 | 0 |
+
+The applicable references remain 12.8 GB/s for CK/CK2 and 11.5712 GB/s for CK/4, with the accepted 99% threshold. Read measured endpoints are 62/channel and maximum occupancy 63. Write boundaries stay within 64 credits and all prior AW identities turn over across 90 complete REF recurrence intervals/channel, with no slow identities. CK4 write endpoints remain 50/channel to 62/channel; its maximum live AW-to-B is 1.0975 us. The older equal-endpoint predicate is false for that write case and is not used as a pass criterion. The separate complete-turnover stability check passes. No indefinite-time or equal-endpoint claim is made.
+
+Source and engine stall ledgers retain the observed costs. They do not assign each missing byte one-to-one to an overlapping stall reason. Mixed/random, narrow/partial, ECC, hot, rank-switch, backpressure and management measurements retain their finite-workload scope and no same-rate promise.
+
+## Joint requirement disposition
+
+| Assigned check | Evidence and conclusion | Limits retained |
+| --- | --- | --- |
+| `axi_memory_correctness` | Q95 owning host/CDC and Q83 overlap/credit coverage, Q109 current parameter/AXI/stress replay, Q90/Q84 actual inline composition and Q97/Q99/Q100 fault/reset settlement remain applicable. Fresh host-foundation, controller/datapath and boundary cases pass on the final commit. Complete original W/B/R custody and independent physical effects are checked at their owning layers. | Representative minimum/maximum and mixed samples, not a Cartesian matrix. Reset-matrix pin replay brackets reset; separate C1 observes continuous physical recovery. |
+| `protocol_legality_progress` | Q95 profiles/data/commands/maintenance, Q96/Q98 management/hot replays, Q97 continuous physical reset, Q103 dirty-wrapper replay, fresh Q110 refresh wrappers and all six complete benchmark command/pin checks jointly pass. Fresh channel/all-bank/REFpb, ratio2/CK4 and thermal-RFM steps pass. Deliberate profile/pin/timing/return/refresh mutations remain detected. | Restricted digital PHY profiles. General ACT-1 oracle is conservative relative to the reviewed ACT-2 endpoint. Selected rank/mode/fault combinations only. |
+| `ecc_fault_recovery` | Arithmetic enumerates 1848 singles and 96824 unordered doubles over eight selected payloads across inline 72/link 137/DMI 22. Raw returned-link covers all 137 single positions on both groups/slices, 548 corrected singles, eight selected UEs and two clean reads. Q95 scrub/rewrite/poison/MR43 and Q90/Q84 composition, Q96's twelve pin/MR43 boundaries, Q97 and Q103 connect host/integrity/recovery. Fresh inline lifecycle/fault/write-link checks pass. | Raw double faults are selected, not exhaustive. One serialized protected owner replaces historical multi-entry dirty-cache/deferred-scrub language. Composed posted responses wait for final integrity; early-posted MR43 exposure is absent. |
+| `management_transitions` | Q95 canonical APB/CDC/profile/update/two-rank FSP and maintenance, Q99/Q100 ten reset/stopped-clock cases, Q101 control/C-example, Q103 wrappers, Q108 fresh FSP decline/timeout, Q110 natural RFM failure/active PHY-refresh and Q88/Q89 ordinary two-rank power jointly pass. Fresh decoder/publication/APB/coordinator/controller and power steps pass. Confirmed destructive reset precedes invalidation and fresh service where required. | Constant CK. Wrapper fault paths are one-rank. No successful ownership-entry proof with trailing W still owed at request. Digital reset checks do not prove physical CDC. |
+| `throughput_and_fairness` | Six actual full producer simulations and final complete replays meet payload/protocol/resource/turnover gates. Q94's thirteen cap and eighteen all-class fairness selections plus complete tails/suspensions and mutations remain applicable. | Balanced read/write A32/G64/bound4360; balanced mixed G128/bound8456. Row A1: read G64/bound4112, write G96/bound6160, mixed G128/bound8208. Original row-write G64 failure remains failed. Row/timing/WCK waiting stays eligible. |
+| `reproduce_delivery` | Exact-final clean separate checkout passes all 22 public steps and six complete replays with unchanged source/tools. Preserved originals, generated artifacts, C examples, source manifests, documentation and final applicability/coverage checks pass. Architecture docs explain bounded storage, serialized inline ownership and candidate critical paths. | Installed tools only. No synthesis/PPA numbers or fresh-host/remote-CI qualification. |
+| `release_evidence` | All six checks above are jointly supported on the final source; no new simulation release blocker was found in this review. Submit the completed evidence for the lead's normal review. | Acceptance remains separate from this performer verdict. All stated model/coverage limits apply. |
+| `available_source_integrity` | Exact committed source, final child/nested report bindings, generated consistency, preserved historical bytes, source manifests, documentation links and owning/combined checks pass. | No upstream merge or remote publication occurred. |
+
+The [joint behavior review](../../qualification-122/joint-review/review.md) explains individual procedure mappings and the 32 independent environment inventory families. The [source review](../../qualification-121/final-source-review/review.json) binds the selected producers and current checker closure. The current audit rehashes all 446 files selected by the joint review. It does not turn an original failed aggregate into a pass. Original failures, cancelled/time-limited executions, accounting errors and separately corrected replays remain retained.
+
+## Evidence audit and custody
+
+The successful [audit](audit.json) verifies 44 substantive nested JSON reports, 319 execution records, 34 report references, 11370 source-entry comparisons and 746 retained files. Sixteen deliberate nonzero executions comprise two environment sensitivity probes, two host-lease corruption probes and twelve invalid-parameter assertion cases. Their expected failures remain separate from ordinary passing commands. Two new audit-script accounting mistakes and their original scripts are retained in [corrections](audit-accounting-corrections.json); they concern absent lint-only output directories and negative-probe report schemas. They changed no source, simulation, checker behavior, original report or acceptance threshold.
+
+[Runtime observations](runtime-packaging-observation.json) record 6828 available generated/executable files after execution. These are packaging-time observations. The final launcher did not instrument each nested simulator executable at its execution boundary; this review does not invent that custody. The package includes the available simulator executables, generated dependency metadata and hashes of disposable C++ lowering. It omits compiler caches, Git metadata and the bulky generated C++/header contents.
+
+The final archive includes the 332-file selected source snapshot, all fresh final reports/logs/raw observations, the six original complete benchmark inputs, launchers and completed/earlier reviews. Every archived member and every bounded part is hash-verified in [package-summary.json](package-summary.json) and [package-manifest.json](package-manifest.json). Earlier broad matrix raw evidence stays in its separately published packages referenced by the ledger and joint review. Restore the archive by concatenating the parts in numeric order and checking its SHA-256 before reading members; absolute recorded runtime paths identify the observed environment and need normal relocation when reproducing elsewhere.

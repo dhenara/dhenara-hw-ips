@@ -1,0 +1,25 @@
+{
+  "passed": true,
+  "source_commit": "ba8f5142fd9f76809a78badfd2a7c06736e2f187",
+  "source_unchanged": true,
+  "checks": [
+    {
+      "name": "integration-tests",
+      "exit_code": 0,
+      "seconds": 24.65546765597537
+    },
+    {
+      "name": "read-d4",
+      "exit_code": 0,
+      "seconds": 65.2233778629452,
+      "complete_baseline_and_bindings_match": true
+    },
+    {
+      "name": "write-d4",
+      "exit_code": 0,
+      "seconds": 67.12617414980195,
+      "complete_baseline_and_bindings_match": true
+    }
+  ],
+  "hardware_execution": false
+}

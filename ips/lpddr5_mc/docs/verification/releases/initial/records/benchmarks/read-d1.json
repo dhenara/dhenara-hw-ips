@@ -1,0 +1,1304 @@
+{
+  "argv": [
+    "/workspace/dhenara-hw-ips/ips/lpddr5_mc/evidence/qualification121-final-reproduction/source/ips/lpddr5_mc/dv/integration/check_benchmark.py",
+    "/workspace/dhenara-hw-ips/ips/lpddr5_mc/evidence/qualification-106/benchmark-run-2f22274-j1/read-d1/simulation-e00ad4f41580-read-d1/observations.jsonl.gz",
+    "--log",
+    "/workspace/dhenara-hw-ips/ips/lpddr5_mc/evidence/qualification-106/benchmark-run-2f22274-j1/read-d1/simulation-e00ad4f41580-read-d1/simulation.log",
+    "--report",
+    "/workspace/dhenara-hw-ips/ips/lpddr5_mc/evidence/qualification121-final-reproduction/benchmarks/read-d1.json",
+    "--direction",
+    "read",
+    "--service",
+    "1"
+  ],
+  "python": "3.13.18",
+  "trace": "/workspace/dhenara-hw-ips/ips/lpddr5_mc/evidence/qualification-106/benchmark-run-2f22274-j1/read-d1/simulation-e00ad4f41580-read-d1/observations.jsonl.gz",
+  "trace_sha256": "59b7939bfb9caa63e1dc52d46f2684229ee31c7328e955e34f9b7a80ecece68a",
+  "log_sha256": "5ae8f9e753840b03585ef81f432de69c012153ed8da892b4f27ca0f23da496ac",
+  "source_sha256": {
+    "ips/lpddr5_mc/dv/integration/axi_extended.py": "e01c649074ca1f7dbfcde789a26636fc7bb6f936ee6fe575bc525880606f4969",
+    "ips/lpddr5_mc/dv/integration/axi_extended_test.py": "24efaa8d7cfbbe8e64190dd45e8a1d8d53f12e2fa14ddf9c814e45e982175b48",
+    "ips/lpddr5_mc/dv/integration/axi_overlap.py": "e0abe4df1d7dd13c592ac96a3fe194d7256d31518c56618651698a8ec220647d",
+    "ips/lpddr5_mc/dv/integration/axi_stress.py": "0287fde9064f4bd554ee09415e4c7f6e2c0566c29b8e1279d498ef16d1fc2087",
+    "ips/lpddr5_mc/dv/integration/benchmark.py": "0e4e72c0c34f46f412ffffd7d43bf3a774de4b6afd375ba5ee7ee386608c6851",
+    "ips/lpddr5_mc/dv/integration/benchmark_pins.py": "b516a500c718b7656d9e9eb73733d3b713652669e047b22ee13d178339f35b74",
+    "ips/lpddr5_mc/dv/integration/benchmark_stability.py": "e60c5336ad1ec05e1462bb6f65e0755fbed408472cc858e6171bc2270f52f254",
+    "ips/lpddr5_mc/dv/integration/benchmark_stability_test.py": "a9dc50fc0e876a5ec17c175af023df1a87decc81f62c54c7545bfb16a68c8d16",
+    "ips/lpddr5_mc/dv/integration/benchmark_test.py": "9096d5191721db38adbbab31db0718f249d143be79f55de2ae647cea355393d7",
+    "ips/lpddr5_mc/dv/integration/cap_eligibility.py": "6e60179d6b604ab5b29fbc38b099e48d7fa2236e1be0c4f0b417f2ea4c74b623",
+    "ips/lpddr5_mc/dv/integration/cap_eligibility_test.py": "c1ba28d5185ea6348b94012e602704dbf827293820a59f5788f7fa67ccb78016",
+    "ips/lpddr5_mc/dv/integration/cap_granule_runner_test.py": "27cc57760da429ff3a58887afc849146d05382c705d273406eafa97150438647",
+    "ips/lpddr5_mc/dv/integration/caps.py": "0185905c11e6c11a232b9496043ac2b7511e835bc3a5e78914695dc18d75564e",
+    "ips/lpddr5_mc/dv/integration/check.py": "14ecb350568347f2ff78728a7daabdd23e5d95822553f2b8d1f3b9ca5e15ddbe",
+    "ips/lpddr5_mc/dv/integration/check_axi_stress.py": "648057b7797b4d64629225c4c10d826942f268d727e3fde1bd9e08e22bdd07bf",
+    "ips/lpddr5_mc/dv/integration/check_benchmark.py": "717572e10cbdb7e753ce0f8fa511eae75d552c889c751320ec86ce77e6e6f8ab",
+    "ips/lpddr5_mc/dv/integration/check_benchmark_test.py": "c8a205bf5f72e30fcc132a7a6fafe13023b97509e5aac10f00d62574286d0fe8",
+    "ips/lpddr5_mc/dv/integration/check_observations.py": "6d27b6a0e2b88a72ec15f4f08d8f550382a729e6609fb3e57fa6d55a8fd03f9a",
+    "ips/lpddr5_mc/dv/integration/check_observations_test.py": "f4ed3876142b4d612e10d69f8dd51782266a422a10357d6fdb7f1911c8e0e64f",
+    "ips/lpddr5_mc/dv/integration/check_test.py": "d76fffe55bea50335fb9dcd2ebed41cf5cbcf48703457c897713778964d1dc5e",
+    "ips/lpddr5_mc/dv/integration/connected.py": "acaa4cb8d73723fe2dac44342dbf573415bc2b9f6f825f6f73d660cfae906dc1",
+    "ips/lpddr5_mc/dv/integration/connected_scaling_test.py": "196e9649a40354f431d8d7214d97da587b31cd5659f884b0f44deff6bb7dcca4",
+    "ips/lpddr5_mc/dv/integration/connected_test.py": "6a54fc384ed41edb8526f137abaae2aeb3446f261d7ecb54839644e7426a47c7",
+    "ips/lpddr5_mc/dv/integration/continuous.py": "5e8df62166ca55c93511f56628d5a59275247a18a1b1d4742157939418990a72",
+    "ips/lpddr5_mc/dv/integration/continuous_physical.py": "ada26b024dc5826adf84103996f24ec6fbafb8d3fbe6fa35b8bfde6e6677407b",
+    "ips/lpddr5_mc/dv/integration/continuous_physical_test.py": "9cb7ec912e8e8cb96923a6414d23490c3bb8650c1e30656ad286a8fc1abf5b5e",
+    "ips/lpddr5_mc/dv/integration/continuous_test.py": "95878d8cf20bd377e73e9f566e4f54c318aaa0176cce6fd9706cd4d873b6c684",
+    "ips/lpddr5_mc/dv/integration/control_example.py": "4f32f8b65960c89ff53ef4be446987ab5f24b3bc5affd91a311c4f65427e89ec",
+    "ips/lpddr5_mc/dv/integration/ecc_boundary.py": "078353b0425a337189ab011ab0a270bbe7b184ccf125a7d44dded3aa5f158063",
+    "ips/lpddr5_mc/dv/integration/ecc_boundary_runner_test.py": "5bec98e0cefc9b75e60d8e67bcef5931ade3e69bd642482e1da159f9d65803e1",
+    "ips/lpddr5_mc/dv/integration/ecc_boundary_schedule_test.py": "8bf6700299c08b8825895681511bb60f797de8b7d81601e0fcf9ba5e2d0abc8a",
+    "ips/lpddr5_mc/dv/integration/ecc_boundary_test.py": "139c4e0bdf118710c4a4e8363477400707fa6e035d22b3a7565b24f545cda70d",
+    "ips/lpddr5_mc/dv/integration/ecc_composition.py": "1209d72f710b62c8949abe7edb96ab4e3ae0ac8facbaa083278ce02361708642",
+    "ips/lpddr5_mc/dv/integration/ecc_composition_pins.py": "9b86d7bbd2e6a2eed1260dee0a9badaf920205b820ea330d11e628c6b83c271b",
+    "ips/lpddr5_mc/dv/integration/ecc_composition_test.py": "42749209ce4840373fea4040de0d69f0454942296fd7322b21ee6507184cfe3c",
+    "ips/lpddr5_mc/dv/integration/fairness.py": "acba3f90e8ac59fc556523b496fadee8a1f1a6c06a0e3dae9f42132d77c3d4fd",
+    "ips/lpddr5_mc/dv/integration/fairness_test.py": "d27b4daf401addf55265cb29c849a26b923f25b045cd5fb4bf929c56aca5ea83",
+    "ips/lpddr5_mc/dv/integration/host_completions.py": "b7bc6034e84359291bf197a1a964096f08c56658533d687cf131503fe8b35b4e",
+    "ips/lpddr5_mc/dv/integration/inline_lifecycle.py": "c616e49a8fe8c0bb54795d6397cd2389add771de71c5be1fbe59736c07b96d75",
+    "ips/lpddr5_mc/dv/integration/inline_lifecycle_test.py": "4a701e6434b1491f6d3a32a70c8d6935e030b56f29ab64fc58bcacd5f957652d",
+    "ips/lpddr5_mc/dv/integration/integrity.py": "3d91a7fcef7eaf7991e63162986429cfe1905c5ba09e71413347bd8c895692d6",
+    "ips/lpddr5_mc/dv/integration/maintenance_window.py": "67a5486fa7e68b78160dc04662b5ecf51358f0ac51791cd1c72c1f9a4fa37fad",
+    "ips/lpddr5_mc/dv/integration/master_refresh.py": "c68a7079778bdda8bf4b75daa39543e247e486cdc252886f4e960aa47cf0901a",
+    "ips/lpddr5_mc/dv/integration/master_refresh_check.py": "203ef3eda9c979cf599a457b3d29b61b6a46fdbcc6f30b3571a7b59ac571cae2",
+    "ips/lpddr5_mc/dv/integration/master_refresh_rfm.py": "1640ca0c96f54036cfb9a56d69b497555c6369bb6f741ba4f0f1557c8037dadd",
+    "ips/lpddr5_mc/dv/integration/master_refresh_test.py": "fe74636654bac40758ce15498688a81eee8f04b08a0f347d9e597cfe5d2a5f52",
+    "ips/lpddr5_mc/dv/integration/physical_ownership.py": "d4085bec3d871716d664ce70a0df8a2ae4c693d72d90bcfaea63829d3db60df4",
+    "ips/lpddr5_mc/dv/integration/physical_ownership_test.py": "f571a27f85279f1dfa0cb9ed16ae667c0ae75dbaa817d3e22b3e97ab138f91dc",
+    "ips/lpddr5_mc/dv/integration/power_runner_test.py": "1bbd693e9cc563eb246feff1f5ac85cc07a21dbccc7b30e5e0d5584900fdc80b",
+    "ips/lpddr5_mc/dv/integration/prepare_continuous.py": "95066052791fb7730aba72197d30ed21576f5d3ce8d14b098e2a347affc5ad7f",
+    "ips/lpddr5_mc/dv/integration/read_ownership.py": "fa3011fd4e4be53edd84afefe7c1c8001f0fba5d1a945298a78899caa90b0fca",
+    "ips/lpddr5_mc/dv/integration/read_ownership_test.py": "196ae9b1a6bcbbfc69270080f6ad34df860fcbfc866ba13c8290cf2926eae0e6",
+    "ips/lpddr5_mc/dv/integration/reset_runner_test.py": "bd6866489a990072a2ad32f5a322714d24dcf104899d790bbb8ca2ac6ed9fcc2",
+    "ips/lpddr5_mc/dv/integration/run_benchmark_binary.py": "2573da5e03a181e1f9dc0764df2ff6270fa9028f0dc7f301eecccf4af4aeccc0",
+    "ips/lpddr5_mc/dv/integration/run_fairness_binary.py": "00f9421f6f061c978b36d1a08e79c9ba37450f18cbb641a2ef98f368866c4425",
+    "ips/lpddr5_mc/dv/integration/thermal.py": "484ad9a250cfd6f066d35112e3b5ee8250704a398fba6828df81712e0f803fd2",
+    "ips/lpddr5_mc/dv/integration/thermal_test.py": "c7c2e95e31ed02f85768ea540e3fef6f972be140653ef6dddec5c6cd11932480",
+    "ips/lpddr5_mc/dv/integration/vectors.py": "baa763790bd7e7647b30223ebc8f0608c5bb910e053a5601a0c7215a38009190",
+    "ips/lpddr5_mc/dv/integration/vectors_test.py": "5f04d0d042a4ee9019a424e20e523920b6a65045536fd6dd4169a14ddf4039c6",
+    "ips/lpddr5_mc/dv/integration/wck_observations.py": "7f250bcd3a7004aca2030cded565163b1e142b32b18e5a84b0e5cb1c896f2430",
+    "ips/lpddr5_mc/dv/integration/wck_observations_test.py": "e99d87b7d6d5a3b0cee7a1fdde8540f85755453e8d66452193cac33d42e53ad4",
+    "ips/lpddr5_mc/dv/integration/workload_costs.py": "bd128fa4c848d17955bdd595a11a689cb0ddf3379f1043d374c7efad6e1e8d94",
+    "ips/lpddr5_mc/dv/integration/workload_costs_test.py": "3867bd689cf0fac26e2a8b88fa7a9f8972ef8d1ca94d294563a09bb2db673340",
+    "ips/lpddr5_mc/dv/integration/wrapper_capture_check.py": "147a67665182d6c755bf4ce28bce2d8bcb9503cf8a8179f4dffcdb320775c0f2",
+    "ips/lpddr5_mc/dv/integration/wrapper_fsp.py": "2cea3458f221fd9e95ce56e5c71d259e08a5eddc518dd3197b285690e94bccb9",
+    "ips/lpddr5_mc/dv/integration/wrapper_fsp_profiles.py": "e2593ba1fb36cbea01c8ecf3d4df18e3c65247c34cf8ed883ff7e6beed4bc4c0",
+    "ips/lpddr5_mc/dv/integration/wrapper_fsp_profiles_test.py": "985cd7cce4314da0be14fbb2e96b44f331aee466ce2c2d4d342da88f4932bde8",
+    "ips/lpddr5_mc/dv/integration/wrapper_fsp_test.py": "75241c9e8138cb7761c8e79e5341e72cbe67f115ac56162efd41f75559739c86",
+    "ips/lpddr5_mc/dv/integration/wrapper_management.py": "30f7dbed08d029f1704a8520c16a8f60a2376f8f11f353f10a4b77cc988e3994",
+    "ips/lpddr5_mc/dv/integration/wrapper_management_host_test.py": "e2f3d40b856a253e24d97c1de7eb03ae846f6acf6d7dd0effab54d654bfb9423",
+    "ips/lpddr5_mc/dv/integration/wrapper_management_master_test.py": "ec2656bd5b08e2f4043a630907950fcd113519dafb9f9904f96148f00140c3a5",
+    "ips/lpddr5_mc/dv/integration/wrapper_management_recovery_test.py": "011be97642fc3d13d99d23fe61afb63ddf157ba1d0464b4dd828508343f2d928",
+    "ips/lpddr5_mc/dv/integration/wrapper_management_test.py": "c52276f7ce3f21508fbbc5188ec7de5cd903844b2146b3f8d61a88b22364e480",
+    "ips/lpddr5_mc/dv/integration/wrapper_management_window_test.py": "54412884d26324020a8a6aab3f1ffba2ebe7cd0bbb676b33178bee7f11a5eca5",
+    "ips/lpddr5_mc/dv/integration/wrapper_master.py": "119c654ba4bd2d58d2da32fc71a8a6e8d943ac218014b6c4778dcea016509396",
+    "ips/lpddr5_mc/dv/integration/wrapper_power.py": "66d42257975d72eedac996789bb29e4bae569cc6d83776f564df076499cc0a9f",
+    "ips/lpddr5_mc/dv/integration/wrapper_power_test.py": "f0b701bf90e34572a204b7e7b47fe3b396fa65330821e65891a47ea65fd5bc07",
+    "ips/lpddr5_mc/dv/integration/wrapper_readiness_check.py": "1d8f4c37b3ad57e0b75a09c25ca12ece581ffd2fb4513107b514fa743edbde6f",
+    "ips/lpddr5_mc/dv/integration/wrapper_recovery.py": "8b8953ba9d9e8b768ba2fa5db2c4011dbe3c184e2d5676edd4d621a5fdc54157",
+    "ips/lpddr5_mc/dv/integration/wrapper_recovery_check.py": "e999acfde501d332afeeae9b1a45988a53a98f04d66cf12beed918596a7ebbab",
+    "ips/lpddr5_mc/dv/integration/zero_caps.py": "22f912b99031f6bf1524fb74a109b19f0e0e4379ac7e5846cf67786a8c98685a",
+    "ips/lpddr5_mc/dv/integration/zero_caps_test.py": "42a5898adcf8e60e6823928a86e83538805d486482f4d41091d247ac60bb14d6",
+    "ips/lpddr5_mc/dv/system/__init__.py": "6db39acc6f1d48bda9f5704e4f92bde609914dedb9df81b7d3fc01cbc1131631",
+    "ips/lpddr5_mc/dv/system/adapters.py": "57eac57cc4d68e6917ea27abdedcc2205b4f32bc5d4184b76a16a825714e2fa2",
+    "ips/lpddr5_mc/dv/system/admission.py": "ec648e23d5e22fe962c92c4b30bdf0ff3485c25fa3e9d7ccf675c6427ee2d338",
+    "ips/lpddr5_mc/dv/system/benchmark_trace.py": "3dc3db09e6de2bcf7008c5fd4f01d2e00636220e3585610c595d4ffbbabd3ce2",
+    "ips/lpddr5_mc/dv/system/control.py": "96ed6a31d4b4ea47c509f6cfd8bcded7d7e81fde3c302377f408d1698593535a",
+    "ips/lpddr5_mc/dv/system/coverage.py": "ae4ab9821db8b22372111daf60e50db8ac31e839bac282d58410f776ecc35765",
+    "ips/lpddr5_mc/dv/system/dram.py": "98dac33efd23cc2792dc30dacd6a7af9f7bd8e900f5e206316ea8540d7ed7ad2",
+    "ips/lpddr5_mc/dv/system/ecc.py": "604aaf1c1ec967f7ff96b576d64675526614c93c32ca7bd7061f24810ba22c87",
+    "ips/lpddr5_mc/dv/system/host.py": "973db6fe85c9476a26eaef3cfb9b0d8eaffdcc4d8621c0e378601cd6c7d1330c",
+    "ips/lpddr5_mc/dv/system/measurement.py": "bf2aa6c5246311e5e4a6bbf33389f8b6a2f6200c859a8862ceb6256ac67c1536",
+    "ips/lpddr5_mc/dv/system/merge.py": "9981a24867c3aa25786a5a723709c067fdb632e276f7e00b9dbc0abd9ed88b50",
+    "ips/lpddr5_mc/dv/system/ownership.py": "2716dbea2a62fb862956b217ad578ae2828a250f8fb67f2bd1483b347636705a",
+    "ips/lpddr5_mc/dv/system/phy.py": "4d6ebcfd91a461ac72412960e1f52c3c9ddedbdf648509d56b334978aba56ea4",
+    "ips/lpddr5_mc/dv/system/qualify.py": "4477ca9b0f2927828ba4b8d84fc759424d82dfa15d003740e15692c8e0b7d8fd",
+    "ips/lpddr5_mc/dv/system/return_timing.py": "ab2b7d1cd8bbbb4afe736b71ae02c2b002119c5014c2c70435b06cbfb5c36242",
+    "ips/lpddr5_mc/dv/system/stream.py": "92364a18a8826456f042f1ddc218fb38cc64c0ae943970c9f7288040feaec30d",
+    "ips/lpddr5_mc/dv/system/tests/test_corrections.py": "40a0147c800e1c60e29efb494ab5dc1795f39222294b64f07a1a7704e0ece0a5",
+    "ips/lpddr5_mc/dv/system/tests/test_fsp.py": "de552cd33c37f75ac9bddb96fb8cf9be2393e92cde446c07226695d2904c7bd7",
+    "ips/lpddr5_mc/dv/system/tests/test_rank_power.py": "502b4eb8a053a2b98021588b44de7ee5367b8b48d8a81163d20d364d75720e1b",
+    "ips/lpddr5_mc/dv/system/tests/test_return_timing.py": "d5f3f7ef1b75074b2c1f200d87473e4aa73104a7426bffedf897aa9931c908d4",
+    "ips/lpddr5_mc/dv/system/tests/test_review.py": "7d408f9040464c24ea9ebe1244270ec62585fcf5a0da251cc7ba846339240a26",
+    "ips/lpddr5_mc/dv/system/tests/test_system.py": "45a592b82e3d535827e9a3ec9737809feeefdf1f84f5d78c1438f2a8075ecc0d",
+    "ips/lpddr5_mc/dv/system/trace.py": "17cc1629536faff0df63b78076f7820136e1c299f9ee4374dccd2cae2701c1cd",
+    "ips/lpddr5_mc/dv/system/write_link.py": "1fe1db47caa483c81be60030f4c91848f972c04707085124d509dca6aef3c6d1",
+    "ips/lpddr5_mc/dv/contracts/commands.py": "80889223363dc5b431f74cf417d1d99efe3b47a8ec1272012437c7ff96619165",
+    "ips/lpddr5_mc/dv/contracts/configuration.py": "d7b56dc735e6aae3263a2060ddcc92f04914282fe166030537a4c7b744d04e2a",
+    "ips/lpddr5_mc/dv/contracts/dvfs.py": "d510776c041df03591951c1fa0afe112da6ea94c407869242f3c25a0df8cb0bf",
+    "ips/lpddr5_mc/dv/contracts/host.py": "fd418bad63b9d916c1c621fffe8dd39ce00281627c7b0e747fe31b9e7b57e76e",
+    "ips/lpddr5_mc/dv/contracts/integrity.py": "69e538b5e71182d88b605745d3650f9f19b7fef9393de7205f0591c2c3d781e8",
+    "ips/lpddr5_mc/dv/contracts/lifecycle.py": "fb2e5f465c84f14375a0308a6144a64390b2f5656b55aac84c89cb6f26552bee",
+    "ips/lpddr5_mc/dv/contracts/link_ecc.py": "daf9563fc4a44c6166a49e55e9c533c1c0c7fb693f9d7416ff1b1d223f4eeac9",
+    "ips/lpddr5_mc/dv/contracts/performance.py": "2cb3bdc280dc1800eeaaeb6f34313f2f5caebaaad301192ae819d1de626d3820",
+    "ips/lpddr5_mc/dv/contracts/pin_oracle.py": "aa654fbfd89a17c83e43a6f9e2acbce63f87a0615596bc0f4fc0f6a748958477",
+    "ips/lpddr5_mc/dv/contracts/profiles.py": "27b53972956b226e05d0f5b777c053cfa9099dba78ddfe81d82faf95ec94250b",
+    "ips/lpddr5_mc/dv/contracts/raw_parity.py": "df256e86abaf43a5d3394ddb2097b2d40ee3c8ee8388d852382112a32efbddf8",
+    "ips/lpddr5_mc/dv/contracts/read_completion.py": "21b3083296a674057258d607979534fe7baebccf0f8c248e357a2a1b42a9991e",
+    "ips/lpddr5_mc/dv/contracts/schedule.py": "6b2b67672297f41b844dfafae646ced404557422638bc125793c70b7f99efa2f",
+    "ips/lpddr5_mc/dv/contracts/scheduling.py": "e0460007f7d15bbdd0a1feeb5d03f169fa7d771b186f638f0e50c3502a57c31c",
+    "ips/lpddr5_mc/dv/contracts/update.py": "1c8a596d7e17749624d3d76274071c23255d3eed04891369bdba49c188b8a060",
+    "ips/lpddr5_mc/dv/contracts/waveform_oracle.py": "52ceff93feef54003a3b33372bfbf628b76bc1033c0ca03a2fc892b39f8eb32d",
+    "ips/lpddr5_mc/dv/contracts/wck.py": "b4df03cc20ae3691524a12b58f2ac49598695f4423315ae11c2e4a7536322e7d",
+    "ips/lpddr5_mc/config/contracts/example.json": "861a6678cf4425af00bf019108b2dbe7a71e9ad4aa8893307b89c93c078fb043",
+    "ips/lpddr5_mc/config/contracts/profiles.json": "eef4f170e1d35789ee97187cae8244cfb0419522923d75e31597b4a982a497d2",
+    "ips/lpddr5_mc/config/contracts/registers.json": "1b3f65546efa9c7fa0fd99b3a7afe6c67ec9e9fea27cf06d5d134763a8e13113"
+  },
+  "status": "passed",
+  "negative_cases": {},
+  "baseline": {
+    "direction": "read",
+    "service_div": 1,
+    "active_caps": [
+      {
+        "window_ck": 3000,
+        "read_bytes": 48000,
+        "write_bytes": 48000,
+        "scheduler_ck_at_start": 21967
+      },
+      {
+        "window_ck": 3000,
+        "read_bytes": 48000,
+        "write_bytes": 48000,
+        "scheduler_ck_at_start": 21967
+      }
+    ],
+    "completed_bytes": 4320000,
+    "reference_bytes": 4320000,
+    "missing_bytes": 0,
+    "threshold_passed": true,
+    "smoke_only": false,
+    "gb_per_second": 12.8,
+    "completed_bytes_per_channel_period": [
+      [
+        22976,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064
+      ],
+      [
+        22976,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936,
+        24064,
+        23936
+      ]
+    ],
+    "backlog_by_port": [
+      [
+        0,
+        0
+      ],
+      [
+        60,
+        58
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ]
+    ],
+    "backlog_by_channel": [
+      [
+        0,
+        0
+      ],
+      [
+        59,
+        59
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ],
+      [
+        62,
+        62
+      ]
+    ],
+    "maximum_outstanding_by_channel": [
+      63,
+      63
+    ],
+    "steady_backlog_endpoint_passed": true,
+    "physical_observations": [
+      {
+        "commands": {
+          "ACT1": 2710,
+          "ACT2": 2710,
+          "wck_sync": 203,
+          "CAS": 406,
+          "RD": 37547,
+          "PRE": 1200,
+          "ws_off": 203,
+          "REF": 101,
+          "MRR": 101,
+          "MPC": 101
+        },
+        "wck_half_edges_both_slices": 4396312,
+        "last_ck": 300536,
+        "physical_return_timing": {
+          "commands": 37648,
+          "returned_slices": 1203120,
+          "last_ck": 300536
+        }
+      },
+      {
+        "commands": {
+          "ACT1": 2710,
+          "ACT2": 2710,
+          "wck_sync": 203,
+          "CAS": 406,
+          "RD": 37547,
+          "PRE": 1202,
+          "ws_off": 203,
+          "REF": 101,
+          "MRR": 101,
+          "MPC": 101
+        },
+        "wck_half_edges_both_slices": 4395800,
+        "last_ck": 300536,
+        "physical_return_timing": {
+          "commands": 37648,
+          "returned_slices": 1203120,
+          "last_ck": 300536
+        }
+      }
+    ],
+    "source_cycle_observations": [
+      {
+        "aw_stall": 0,
+        "ar_stall": 112452,
+        "w_stall": 0,
+        "edges": 150000
+      },
+      {
+        "aw_stall": 0,
+        "ar_stall": 112454,
+        "w_stall": 0,
+        "edges": 150000
+      }
+    ],
+    "engine_cycle_observations": [
+      {
+        "queue_empty_cdc_or_source": 104231,
+        "selection_feedback": 33997,
+        "payload_issue": 33750,
+        "timing_or_policy": 64096,
+        "selection": 257,
+        "refresh": 3792,
+        "mr4": 18473,
+        "zq": 2639,
+        "row_command": 6331,
+        "reserved_pair": 2434
+      },
+      {
+        "queue_empty_cdc_or_source": 104160,
+        "timing_or_policy": 64172,
+        "selection_feedback": 33997,
+        "payload_issue": 33750,
+        "selection": 258,
+        "refresh": 3776,
+        "mr4": 18473,
+        "zq": 2639,
+        "row_command": 6341,
+        "reserved_pair": 2434
+      }
+    ],
+    "maximum_outstanding_by_port": [
+      63,
+      63
+    ],
+    "accepted_by_port": [
+      37548,
+      37546
+    ],
+    "completed_by_port": [
+      37548,
+      37546
+    ],
+    "write_bytes_by_port": [
+      0,
+      0
+    ],
+    "write_prefill_claim_ps": null,
+    "first_write_by_port": [
+      null,
+      null
+    ],
+    "controller_qualified": false,
+    "limits": [
+      "The engine reason counts partition observed cycles; overlapping pipeline costs do not convert one-for-one into missing bytes. Write stability uses observed REF recurrence and full AW turnover; read stability retains its endpoint gate. Caps, all-class fairness and overall qualification remain separately required."
+    ]
+  }
+}

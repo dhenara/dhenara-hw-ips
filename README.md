@@ -1,12 +1,12 @@
 # Dhenara Hardware IPs
 
-Open hardware development, with the source and evidence kept together.
+Open-source hardware development, with the source and verification evidence kept together.
 
 The first IP in this repository is an **LPDDR5 memory controller**: AXI4/APB4 interfaces, channel scheduling, inline and link ECC, refresh, power management and recovery, developed and simulation-verified using **Dhenara Engineering**.
 
 ![LPDDR5 delivery: 3 days 17 hours 54 minutes of recorded execution and US$1,172.14 recorded model usage through publication, with 22 reproduction steps and six benchmark replays passed.](docs/assets/lpddr5-initial-release.svg)
 
-[Explore the controller](ips/lpddr5_mc/README.md) · [Read the qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) · [Browse the RTL](ips/lpddr5_mc/rtl/)
+[Explore the controller](ips/lpddr5_mc/README.md) · [Read the final verification report](ips/lpddr5_mc/docs/verification/releases/initial/README.md) · [Browse the RTL](ips/lpddr5_mc/rtl/)
 
 ## LPDDR5: the first release
 
@@ -26,7 +26,7 @@ The [controller guide](ips/lpddr5_mc/README.md) describes supported configuratio
 
 ## What was verified
 
-The final review records **22 passing reproduction steps** from a separate clean checkout, **394 passing integration tests**, and **six passing final-checker benchmark replays**. The six underlying HDL benchmarks each ran 100 periods, discarded ten warm-up periods and measured 90 complete periods, without tail-drain credit. Replaying those traces with the final checker did not rerun the benchmark HDL simulations.
+**All eight first-release acceptance checks passed.** The final review records **22 passing reproduction steps** from a separate clean checkout, an independent **394-test integration pass on the accepted source**, and **six passing final-checker benchmark replays**. The six underlying HDL benchmarks each ran 100 periods, discarded ten warm-up periods and measured 90 complete periods, without tail-drain credit. Replaying those traces with the final checker did not rerun the benchmark HDL simulations.
 
 | Scheduler selection | Read throughput | Write throughput |
 | --- | ---: | ---: |
@@ -36,7 +36,7 @@ The final review records **22 passing reproduction steps** from a separate clean
 
 These are bounded simulation measurements for the documented two-channel, one-rank-per-channel, plain-data workload with two 128-bit AXI ports at 400 MHz. CK is 800 MHz. CK/2 and CK/4 identify scheduler selection intervals; the engine still runs at CK. The reference is 12.8 GB/s for CK and CK/2, and 11.5712 GB/s for CK/4. All six meet the accepted 99% threshold. Other configurations, ECC modes and workloads do not inherit these throughput figures.
 
-**Qualification boundary:** this first release is simulation-verified within its documented profiles and representative coverage. It is not an exhaustive configuration-matrix pass. Physical CDC/timing sign-off, vendor-PHY interoperability, synthesis/PPA, silicon validation, fresh-host setup and remote CI qualification are not established. Original failures and corrected results remain distinct in the evidence, including the conditional fairness limits and original row-write G64 failure.
+This release completes the accepted simulation qualification for the documented digital profiles. The [final verification report](ips/lpddr5_mc/docs/verification/releases/initial/README.md) maps the requirements to results, reviews and source revisions. Physical implementation, vendor-PHY integration and silicon qualification are the next engineering stages.
 
 ## Built with Dhenara Engineering
 
@@ -68,11 +68,9 @@ The snapshot records the first completed version, before the Mission was continu
 
 ## Evidence that travels with the source
 
-Start with the [qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) for the source-bound checks, original failures, corrections and limitations. The final accepted review completes the ledger's then-pending final reproduction and source-reconciliation gates; historical entries retain their original status.
+Start with the [final verification report](ips/lpddr5_mc/docs/verification/releases/initial/README.md): it brings the accepted scope, requirement-to-result table, independent review, benchmark results and reproduction evidence together. The [qualification ledger](ips/lpddr5_mc/docs/verification/qualification.md) preserves the detailed development and correction history.
 
-The public release evidence belongs alongside the controller under `ips/lpddr5_mc/docs/verification/releases/initial/`: the accepted-source summary, final review, reproduction commands and results, benchmark reports, source/tool identities and SHA-256 manifests. Large traces and immutable evidence archives belong in the corresponding GitHub Release assets, linked from that index. Readers should be able to inspect and retrieve the qualification evidence without access to a private workspace or Mission transcript.
-
-The retained final archive contains **4,176 members**, split into **13 parts**, with assembled SHA-256 `53cf115163d26333aa97ef38fa1be54324029d95b3541506658d26a8106c8b6e`. It preserves the final source snapshot, reports and benchmark inputs. Earlier qualification packages referenced by the ledger remain separate evidence. Archive size and member counts are provenance, not additional test coverage.
+The [initial GitHub Release](https://github.com/dhenara/dhenara-hw-ips/releases/tag/lpddr5-initial-2026-11-16) contains the original final evidence archive, independent review checks and earlier supporting qualification packages. The report links the original records and checksums so readers can inspect the evidence without a private workspace or Mission account.
 
 ## Run the checks
 
@@ -102,4 +100,4 @@ Each IP keeps its RTL, specifications, verification, constraints and software un
 
 The next engineering stage is synthesis and physical-design exploration with open-source tools, followed by measured PPA and further qualification. Those results will be reported separately against their own source revisions and tool configurations.
 
-**License:** a license has not yet been selected for this initial publication. Public source visibility does not itself grant an open-source license; reuse terms will be made explicit when the project owner chooses one.
+**License:** [Apache License 2.0](LICENSE). Commercial use and modification are welcome under its terms. See [NOTICE](NOTICE) for attribution.

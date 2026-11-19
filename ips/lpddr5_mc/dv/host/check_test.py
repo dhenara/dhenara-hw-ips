@@ -96,7 +96,7 @@ class AggregateTests(unittest.TestCase):
             self.assertNotIn("-Wno-fatal", phase.argv)
 
     def test_aggregate_stops_after_failure_and_retains_source_manifest(self) -> None:
-        report = self.root / "dv/host/out/summary.json"
+        report = self.root / "ci-output/host-foundation/report.json"
         snapshot = {"commit": "fixture", "source_dirty": False, "source_files": {"fixture.sv": {"sha256": "abcd"}}}
         plan = [
             owning_check.Phase("fail", [sys.executable, "-c", "raise SystemExit(7)"], 5),

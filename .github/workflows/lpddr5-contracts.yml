@@ -14,12 +14,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13.18'
-      - run: make -f ips/lpddr5_mc/Makefile prepare
-      - run: make -f ips/lpddr5_mc/Makefile check-controller EVIDENCE="$GITHUB_WORKSPACE/ips/lpddr5_mc/evidence/ci" BUILD_SUBDIR=ci CHECK_ARGS=--require-clean
+      - run: python3 -m unittest discover -s ips/lpddr5_mc/tools -p check_controller_test.py
+      - run: make prepare
+      - run: make regress ARTIFACT_DIR="$GITHUB_WORKSPACE/ips/lpddr5_mc/evidence/ci" BUILD_SUBDIR=ci CHECK_ARGS=--require-clean
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: lpddr5-controller-evidence
-          path: |
-            ips/lpddr5_mc/evidence/ci/
-            ips/lpddr5_mc/dv/host/out/ci/
+          path: ips/lpddr5_mc/evidence/ci/

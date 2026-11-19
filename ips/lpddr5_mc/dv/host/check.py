@@ -16,6 +16,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[4]
 IP = REPO / "ips/lpddr5_mc"
+sys.path.insert(0, str(REPO))
+from ips.lpddr5_mc.tools.process_group import RunInterrupted, run_group  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -247,20 +249,16 @@ def run_phase(phase: Phase, log: Path, env: dict[str, str]) -> dict:
     }
     with log.open("w") as output:
         try:
-            process = subprocess.Popen(
-                phase.argv, cwd=REPO, env=env, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
+            record["exit_code"], record["timed_out"] = run_group(
+                phase.argv,
+                cwd=REPO,
+                env=env,
+                output=output,
+                timeout=phase.timeout_seconds,
+                timeout_signal=signal.SIGKILL,
             )
-            try:
-                record["exit_code"] = process.wait(timeout=phase.timeout_seconds)
-            except subprocess.TimeoutExpired:
-                record["timed_out"] = True
-                # Kill the phase's entire compiler/simulator process group;
-                # terminating only its Python wrapper leaves children alive.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                record["exit_code"] = process.wait()
+        except RunInterrupted as exc:
+            record.update(exit_code=exc.code, launch_error=str(exc))
         except OSError as error:
             record["launch_error"] = str(error)
     record["seconds"] = time.monotonic() - started
@@ -305,8 +303,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     report = args.report.resolve()
-    if not report.is_relative_to(IP / "dv/host/out") or report.suffix != ".json":
-        parser.error("report must be a JSON path below ips/lpddr5_mc/dv/host/out")
+    if report.suffix != ".json":
+        parser.error("report must be a JSON file")
+    if report.is_relative_to(REPO) and not any(
+        report.is_relative_to(root) for root in (IP / "dv/host/out", IP / "evidence")
+    ):
+        parser.error("in-checkout host reports must be under dv/host/out or the controller evidence directory")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.build_subdir):
         parser.error("build subdirectory must be a simple name")
     if report.exists() or (report.parent / (report.stem + "-phases")).exists():

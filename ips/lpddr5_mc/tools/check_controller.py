@@ -9,11 +9,12 @@ import hashlib
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from process_group import RunInterrupted, run_group
 
 REPO = Path(__file__).resolve().parents[3]
 IP = REPO / "ips/lpddr5_mc"
@@ -29,6 +30,7 @@ def source() -> dict:
                 "--others",
                 "--exclude-standard",
                 "-z",
+                "Makefile",
                 "ips/lpddr5_mc",
                 ".github/workflows/lpddr5-contracts.yml",
             ],
@@ -59,7 +61,7 @@ def plan(evidence: Path, name: str, suite: str) -> list[dict]:
 
     if suite in ("all", "owning"):
         # The host aggregate includes the complete foundation gate once.
-        report = IP / "dv/host/out" / name / "report.json"
+        report = evidence / "host-foundation/report.json"
         add(
             "host-foundation",
             "dv/host/check.py",
@@ -196,7 +198,7 @@ def main() -> None:
         "source_before": before,
         "python": sys.version,
         "seed": 2095,
-        "steps": [],
+        "steps": [{**step, "status": "not_run"} for step in steps],
         "limits": [
             "Representative connected smoke; broad matrix, stress, coverage closure "
             "and actual 100-period throughput/fairness remain pending.",
@@ -206,51 +208,59 @@ def main() -> None:
         ],
     }
     report_path = evidence / "report.json"
+    print(f"Controller regression report: {report_path}", flush=True)
     storage = Path(os.environ["DHENARA_AGENT_TOOL_STORAGE_ROOT"])
     env = {**os.environ, "PYTHONPYCACHEPREFIX": str(storage / "lpddr5-controller/pycache")}
     failed = False
     try:
-        for step in steps:
-            record = {**step, "status": "not_run"}
-            report["steps"].append(record)
-            report_path.write_text(json.dumps(report, indent=2) + "\n")
+        for record in report["steps"]:
             if failed:
-                continue
-            print("RUN " + step["name"], flush=True)
+                break
+            record["status"] = "running"
+            report_path.write_text(json.dumps(report, indent=2) + "\n")
+            print("RUN " + record["name"], flush=True)
             start = time.monotonic()
-            log = evidence / (step["name"] + ".log")
+            log = evidence / (record["name"] + ".log")
             with log.open("w") as stream:
                 try:
-                    run = subprocess.Popen(
-                        step["argv"],
-                        cwd=REPO,
-                        env=env,
-                        stdout=stream,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,
+                    code, timed_out = run_group(
+                        record["argv"], cwd=REPO, env=env, output=stream, timeout=record["timeout_seconds"]
                     )
-                    record["exit_code"] = run.wait(timeout=step["timeout_seconds"])
-                except subprocess.TimeoutExpired:
-                    os.killpg(run.pid, signal.SIGTERM)
-                    try:
-                        run.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(run.pid, signal.SIGKILL)
-                        run.wait()
-                    record["exit_code"] = 124
-                    record["error"] = "step deadline exceeded"
+                except RunInterrupted as exc:
+                    record.update(exit_code=exc.code, seconds=time.monotonic() - start, log=str(log))
+                    raise
+                record["exit_code"] = 124 if timed_out else code
+                if timed_out:
+                    record.update(status="timed_out", error="step deadline exceeded")
             record.update(seconds=time.monotonic() - start, log=str(log))
-            child_path = Path(step["report"])
-            if record["exit_code"] == 0:
-                child = json.loads(child_path.read_text())
-                if not (
-                    child.get("status") == "passed" or child.get("result") == "passed" or child.get("passed") is True
-                ):
-                    record["error"] = "child report is not passing"
-                record["report_sha256"] = hashlib.sha256(child_path.read_bytes()).hexdigest()
-            failed = record["exit_code"] != 0 or "error" in record
-            record["status"] = "failed" if failed else "passed"
-            print(step["name"] + ": " + record["status"], flush=True)
+            if record["status"] != "timed_out":
+                try:
+                    raw = Path(record["report"]).read_bytes()
+                    child = json.loads(raw)
+                    if not isinstance(child, dict):
+                        raise ValueError("expected a JSON object")
+                    record["report_sha256"] = hashlib.sha256(raw).hexdigest()
+                    if (
+                        child.get("status") == "failed"
+                        or child.get("result") == "failed"
+                        or child.get("passed") is False
+                    ):
+                        record["status"] = "failed"
+                    elif record["exit_code"] == 0 and (
+                        child.get("status") == "passed"
+                        or child.get("result") == "passed"
+                        or child.get("passed") is True
+                    ):
+                        record["status"] = "passed"
+                    else:
+                        record.update(
+                            status="infrastructure_error",
+                            error="child exit code and report do not establish an outcome",
+                        )
+                except (OSError, ValueError) as exc:
+                    record.update(status="infrastructure_error", error=f"child report unavailable: {exc}")
+            failed = record["status"] != "passed"
+            print(record["name"] + ": " + record["status"], flush=True)
         after = source()
         report["source_after"] = after
         report["source_unchanged"] = before == after
@@ -260,6 +270,16 @@ def main() -> None:
         report.update(status="failed", error=str(error))
         raise
     finally:
+        # A child can time out before it creates a report, and later steps may never start.
+        # Publish the aggregate's complete step census beside any evidence the children retained.
+        for record in report["steps"]:
+            if record["status"] == "running":
+                record.update(status="infrastructure_error", error=report.get("error", "step was interrupted"))
+            elif record["status"] == "passed" and not report.get("source_unchanged"):
+                record.update(status="infrastructure_error", error="could not verify unchanged source")
+            step_dir = evidence / record["name"]
+            step_dir.mkdir(exist_ok=True)
+            (step_dir / "step.json").write_text(json.dumps(record, indent=2) + "\n")
         report_path.write_text(json.dumps(report, indent=2) + "\n")
     raise SystemExit(1 if failed else 0)
 

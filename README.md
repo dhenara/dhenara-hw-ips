@@ -74,7 +74,18 @@ The [initial GitHub Release](https://github.com/dhenara/dhenara-hw-ips/releases/
 
 ## Run the checks
 
-The current reproduction recipe requires **Linux amd64 and Python 3.13.18**, with `pip`, `dpkg-deb`, GCC/G++ and Make already available. The reference checks enforce that Python version. The recorded final run used GCC/G++ 12.2.0 and Make 4.3. `make prepare` downloads and checksum-verifies Verilator 5.006, extracts it without system privileges, and installs the pinned Ruff utility into local tool storage; it does not install Python or the system compiler. See the [preparation script](ips/lpddr5_mc/tools/prepare_tools.py) and [verification guide](ips/lpddr5_mc/docs/verification/system.md).
+The current checkout exposes the controller suite through ordinary Make targets. From the repository root, use Linux amd64, Python 3.13.18, pip, dpkg-deb, GCC/G++ and GNU Make:
+
+```sh
+make prepare
+make regress
+```
+
+Each run gets a fresh build name and an evidence directory beneath `ips/lpddr5_mc/evidence/`. Set `ARTIFACT_DIR` to a new absolute directory to write results elsewhere. For a focused check use `make regress SUITE=connected STEPS=controller`. Read `report.json` for the selected steps and source revision. Each selected step also has a `<step>/step.json` outcome, including when it timed out or could not run. Set `DHENARA_AGENT_TOOL_STORAGE_ROOT` to an absolute writable directory before both commands when tools and compiler output should live outside the checkout.
+
+### Reproduce the initial release
+
+The initial release reproduction recipe requires **Linux amd64 and Python 3.13.18**, with `pip`, `dpkg-deb`, GCC/G++ and Make already available. The reference checks enforce that Python version. The recorded final run used GCC/G++ 12.2.0 and Make 4.3. `make prepare` downloads and checksum-verifies Verilator 5.006, extracts it without system privileges, and installs the pinned Ruff utility into local tool storage; it does not install Python or the system compiler. See the [preparation script](ips/lpddr5_mc/tools/prepare_tools.py) and [verification guide](ips/lpddr5_mc/docs/verification/system.md).
 
 `DHENARA_AGENT_TOOL_STORAGE_ROOT` is simply an absolute local directory for tools, caches and build outputs. These commands do not require a Dhenara account, an OpenAI API key or an agent session. Use a fresh evidence directory and build name for each run.
 

@@ -26,16 +26,15 @@ The contract requires one/two AXI ports, one/two independent x16 channels, one/t
 
 The default two 128-bit AXI400 ports offer 12.8 GB/s combined in one direction. All six read/write CK/CK2/CK4 measurements at producer `2f22274` pass the agreed threshold with finite rows, refresh, MR4 and ZQ. Reads measure 12.8 GB/s; writes measure 12.7918–12.7936 GB/s. The CK/4 reference remains 11.5712 GB/s. Final-source applicability and complete replay with the accepted source's checker passed for all six. These results use two channels, one rank/channel, plain data and the exact workload in the [qualification ledger](docs/verification/qualification.md#throughput-and-fairness). The engine runs at CK with slower selection enables and immediate pair completion.
 
-Run the reference contracts or the combined owning and smoke flow from the repository root. Choose new evidence and build names for each run:
+Run the reference contracts or the combined owning and smoke flow from the repository root:
 
 ```sh
 export DHENARA_AGENT_TOOL_STORAGE_ROOT=/absolute/path/to/disposable-tools
-make -f ips/lpddr5_mc/Makefile prepare
+make prepare
 make -f ips/lpddr5_mc/Makefile check REPORT=/absolute/path/to/evidence/contracts.json
-make -f ips/lpddr5_mc/Makefile check-controller \
-  EVIDENCE="$PWD/ips/lpddr5_mc/evidence/controller-run" BUILD_SUBDIR=controller-run
+make regress ARTIFACT_DIR="$PWD/ips/lpddr5_mc/evidence/controller-run"
 ```
 
-`check-controller` runs the host aggregate (including the foundation), channel/REFpb checks, independent system fixtures and representative connected tests. `SUITE=owning` or `SUITE=connected` selects a partial suite; only the default `SUITE=all` runs both. Add `CHECK_ARGS=--require-clean` for committed-source reproduction. The [system guide](docs/verification/system.md) describes evidence and remaining qualification limits. The GitHub workflow invokes the same full command; configuring it does not establish a remote CI result.
+`make regress` runs the host aggregate (including the foundation), channel/REFpb checks, independent system fixtures and representative connected tests. `SUITE=owning` or `SUITE=connected` selects a partial suite; only the default `SUITE=all` runs both. Add `CHECK_ARGS=--require-clean` for committed-source reproduction. The [system guide](docs/verification/system.md) describes evidence and remaining qualification limits. The GitHub workflow invokes the same full command; configuring it does not establish a remote CI result.
 
 The first release includes normal refresh/ZQ/thermal handling, mandatory RFM, inline/link ECC, correction-triggered scrub, power-down/self-refresh and frequency/FSP management. PHY circuitry/training algorithms, patrol scrub, optional RFM extensions, deep power-down and LPDDR5X are excluded. Qualification covers the selected digital profiles and behavior families; it does not establish a full configuration cross-product, synthesis/PPA, physical CDC/timing, silicon, vendor-PHY integration or fresh-host qualification. The release evidence preserves the detailed limits and original failures alongside their corrections.

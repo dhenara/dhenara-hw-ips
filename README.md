@@ -83,6 +83,17 @@ make regress
 
 Each run gets a fresh build name and an evidence directory beneath `ips/lpddr5_mc/evidence/`. Set `ARTIFACT_DIR` to a new absolute directory to write results elsewhere. For a focused check use `make regress SUITE=connected STEPS=controller`. Read `report.json` for the selected steps and source revision. Each selected step also has a `<step>/step.json` outcome, including when it timed out or could not run. Set `DHENARA_AGENT_TOOL_STORAGE_ROOT` to an absolute writable directory before both commands when tools and compiler output should live outside the checkout.
 
+With `hw-regress` installed on PATH, the [project test list](hw-regress.json) provides individually selectable Verilator simulations. The notification bench checks the APB interrupt and status path across asynchronous clocks. The coordinator bench checks command and recovery sequencing. Both use the controller's existing RTL file list and SystemVerilog assertions.
+
+```sh
+make list-tests
+make compile TARGET=notification BUILD_DIR="$PWD/out/control-build"
+make run-test TEST=notification BUILD_DIR="$PWD/out/control-build"
+make run-testlist TEST_LIST=control-smoke BUILD_DIR="$PWD/out/control-build"
+```
+
+`make regress TEST=notification` and `make regress TEST_LIST=control-smoke` use the same commands. Each invocation reserves a fresh result directory. Supplying the same `BUILD_DIR` lets later tests use a matching compiled target. Read the selected test's `result.json` and `result.log` there. Override the binary with `HW_REGRESS`, the simulator with `VERILATOR`, and the stimulus seed with `SEED` when needed. The complete script-based suite remains available through `make regress`.
+
 ### Reproduce the initial release
 
 The initial release reproduction recipe requires **Linux amd64 and Python 3.13.18**, with `pip`, `dpkg-deb`, GCC/G++ and Make already available. The reference checks enforce that Python version. The recorded final run used GCC/G++ 12.2.0 and Make 4.3. `make prepare` downloads and checksum-verifies Verilator 5.006, extracts it without system privileges, and installs the pinned Ruff utility into local tool storage; it does not install Python or the system compiler. See the [preparation script](ips/lpddr5_mc/tools/prepare_tools.py) and [verification guide](ips/lpddr5_mc/docs/verification/system.md).

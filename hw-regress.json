@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "targets": {
+    "notification": {
+      "simulator": "verilator",
+      "top": "notification_tb",
+      "sources": [
+        "ips/lpddr5_mc/dv/integration/notification_tb.sv"
+      ],
+      "compile_args": [
+        "--timescale-override",
+        "1ns/1ps",
+        "--public-flat-rw",
+        "-Wall",
+        "-f",
+        "ips/lpddr5_mc/rtl/files.f",
+        "-MAKEFLAGS",
+        "OPT_FAST=-O0 OPT_SLOW=-O0"
+      ]
+    },
+    "coordinator": {
+      "simulator": "verilator",
+      "top": "coordinator_tb",
+      "sources": [
+        "ips/lpddr5_mc/dv/integration/coordinator_tb.sv"
+      ],
+      "compile_args": [
+        "--timescale-override",
+        "1ns/1ps",
+        "--public-flat-rw",
+        "-Wall",
+        "-f",
+        "ips/lpddr5_mc/rtl/files.f",
+        "-MAKEFLAGS",
+        "OPT_FAST=-O0 OPT_SLOW=-O0"
+      ]
+    }
+  },
+  "tests": {
+    "notification": {
+      "target": "notification",
+      "pass_marker": "NOTIFICATION_INTEGRATION_PASS",
+      "timeout_seconds": 60
+    },
+    "coordinator": {
+      "target": "coordinator",
+      "pass_marker": "COORDINATOR_INTEGRATION_PASS",
+      "timeout_seconds": 60
+    }
+  },
+  "test_lists": {
+    "control-smoke": [
+      "notification",
+      "coordinator"
+    ]
+  }
+}

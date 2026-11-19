@@ -13,6 +13,54 @@ from unittest import mock
 import check_controller
 
 
+class PublicMakeSelectionTests(unittest.TestCase):
+    def test_explicit_selection_reaches_the_manifest_and_unselected_steps_stay_local(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            output = Path(scratch) / "test output"
+            run = subprocess.run(
+                [
+                    "make",
+                    "--no-print-directory",
+                    "regress",
+                    "TEST=notification",
+                    "HW_REGRESS=/bin/echo",
+                    f"ARTIFACT_DIR={output}",
+                    "SEED=7",
+                ],
+                cwd=check_controller.REPO,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertIn(f"--output-dir {output} --seed 7 run-test notification", run.stdout)
+            fallback = subprocess.run(
+                [
+                    "make",
+                    "--no-print-directory",
+                    "regress",
+                    "SUITE=connected",
+                    "STEPS=notification",
+                    "CHECK_ARGS=--dry-run",
+                    f"ARTIFACT_DIR={output}",
+                ],
+                cwd=check_controller.REPO,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(
+                json.loads(fallback.stdout[fallback.stdout.index("{") :])["selected_steps"], ["notification"]
+            )
+            conflict = subprocess.run(
+                ["make", "--no-print-directory", "regress", "TEST=notification", "TEST_LIST=control-smoke"],
+                cwd=check_controller.REPO,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(conflict.returncode, 0)
+            self.assertIn("Select either TEST or TEST_LIST", conflict.stderr)
+
+
 class StepEvidenceTests(unittest.TestCase):
     def test_all_selected_steps_are_accounted_for_after_a_failure(self) -> None:
         cases = [

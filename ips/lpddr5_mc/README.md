@@ -13,13 +13,13 @@ Technology-independent AXI4-to-DFI controller IP with host/control and channel R
 - [Performance and fairness criteria](docs/spec/performance.md)
 - [Generated register/programming reference](docs/programming/registers.md)
 - [Reproduction and evidence limits](docs/verification/contracts.md)
-- [Implemented microarchitecture](docs/architecture/implementation.md)
+- [Controller RTL block diagram and module responsibilities](docs/architecture/implementation.md#4-top-level-organization)
 - [Qualification ledger and final checks](docs/verification/qualification.md)
 - [Clock architecture](docs/architecture/clocking.md)
 - [Host/control implementation and clocks](docs/architecture/host-control.md)
 - [Channel implementation](docs/architecture/channel.md)
 - [Host/control owning checks](docs/verification/host-control.md)
-- [Independent system checks and binding limits](docs/verification/system.md)
+- [Controller testbench diagram and test plan](docs/verification/system.md#controller-testbench-and-test-plan)
 - [Preserved specifications and review](docs/spec/README.md)
 
 The contract requires one/two AXI ports, one/two independent x16 channels, one/two identical 8 Gb ranks, 64/128/256-bit host data, 32/64-byte granules and bounded queues. Numeric digital fixtures keep CK/DFI at 800 MHz with WCK:CK=4 (6400 BG) or 2 (3200 16B). Link ECC requires a documented raw parity PHY extension at ratio four; inline ECC has explicit reserved-capacity/RMW/scrub rules. Missing profiles or lost ownership prevent traffic. The verification pages distinguish checked configurations from the full required matrix.

@@ -4,6 +4,42 @@ This environment supplies independent observation models, adapters, bus agents a
 
 The [current qualification matrix](qualification.md) records combined-controller evidence and the completed release disposition. Detailed case histories below preserve their original phase status and failed results; later closure is recorded in that matrix and the release summary. The [coverage map](../../dv/system/coverage.json) identifies executable environment and foundation tests; its historical combined pending labels are reconciled by that matrix and do not mean all those behaviors remain untested. The runner validates every cited test identity and the result of each environment test. A foundation reference is not an extra controller pass. The full runner executes the existing foundation flow unchanged and records its separate result.
 
+## Controller testbench and test plan
+
+The full-wrapper bench instantiates `lpddr5_mc` as the device under test. An AXI master issues reads and writes on each active port. An APB master configures the controller and reads its status. Beyond the controller’s digital PHY interface, a memory model for each channel decodes commands, applies writes and supplies read returns. The bench also drives the management, training and reset handshakes for the selected profile. The [RTL block diagram](../architecture/implementation.md#4-top-level-organization) names the synthesizable modules. The [wrapper testbench](../../dv/integration/controller_tb.sv) shows their external connections.
+
+```mermaid
+flowchart TB
+    AXI["AXI masters in testbench"]
+    APB["APB master in testbench"]
+    subgraph RTL["Controller RTL"]
+        HOST["AXI bridge and host core"]
+        CTRL["APB registers and coordinator"]
+        CH["Channel scheduling, integrity and data path"]
+        HOST <--> CH
+        CTRL --> HOST
+        CTRL --> CH
+    end
+    AXI <-->|"AXI requests, data and responses"| HOST
+    APB <-->|"configuration and status"| CTRL
+    CH <-->|"digital commands, writes and read returns"| MEM["Per-channel memory model in testbench"]
+    MGMT["Testbench management driver"] <-->|"PHY management handshake"| CH
+    HOST -.->|"AXI port observations"| OBS["Passive interface observer"]
+    CH -.->|"CA, WCK, data and returns"| OBS
+    OBS -->|"time-stamped events"| CHECK["Independent Python replay checks"]
+```
+
+The observer samples accepted transfers on each AXI clock and digital memory signals on the controller clock. For plain traffic the Python checker reconstructs the memory effects from those signals and compares them with the host transactions. The memory model supplies the simulated device response. Its internal state alone cannot establish that the controller issued the correct command. [Observer](../../dv/integration/lpddr5_mc_observer.sv) · [Memory model](../../dv/channel/lpddr5_mc_channel_memory.sv) · [Connected replay](../../dv/integration/connected.py)
+
+| Obligation | Fixture and runner options | What to check in the evidence |
+| --- | --- | --- |
+| Return the right bytes and status under stalls | Datapath, `--family datapath --axi-stress-seed 2095` | Reconcile accepted AXI addresses, strobes, held B/R responses and memory-side effects for legal bursts and rejected requests. A write is followed by readback through the other port in the two-port fixture. [Stress accounting](../../dv/integration/axi_stress.py) |
+| Preserve ordering under contention and bound admission | Datapath, `--family datapath --axi-overlap` | Check the competing port’s admission against earlier overlapping work, response stability at full capacity, and acceptance after space frees. Parse the AXI observations and decoded physical accesses for the exercised plain-data configuration. [Overlap checks](../../dv/integration/axi_overlap.py) |
+| Complete masked updates and correction scrub coherently | Full controller, `--family controller --inline-lifecycle` | Correlate source bytes and responses with decoded data and check-line effects. Verify the newer overlapping write survives scrub and each accepted transaction settles through the tested fault. The clean prefix and fresh boot have separate physical checks. [Integrity checker](../../dv/integration/inline_lifecycle.py) |
+| Restore service after a destructive reset | Full controller, `--family controller --runtime-reset` | Observe the surviving AXI obligations settle, stale reset confirmation rejected, boot epoch advanced and a fresh write read back from the other port. Trace replay covers fresh traffic. Assertions cover the intervening reset, which discards the fixture’s old memory tracking. [Reset scenario](../../dv/integration/runtime_reset.svh) |
+
+Run these selections from the repository root with the [integration runner](../../dv/integration/check.py). The commands below give each selection a build name and fresh evidence directory. Check the report for the source, configuration, seed where applicable, simulation status and checker findings. A result applies to that fixture and selection. Vendor PHY timing and electrical behavior require separate qualification.
+
 ## Actual RTL binding
 
 The [integration runner](../../dv/integration/check.py) compiles the aggregate [RTL list](../../rtl/files.f), retains exact source hashes, literal commands and logs, and checks a behavior completion marker for each simulation. Entries in this list are relative to its own directory. Supply it to Verilator using `-F path/to/rtl/files.f` so the same list works from any build directory. Give each observed run a fresh report directory: different JSON filenames in one directory still share raw observation filenames. The runner exclusively reserves its trace paths before compilation and refuses existing files or another concurrent writer. Its tooling regression checks trace preservation and distinct/concurrent output ownership before simulation. A refused directory must be replaced with a new one; do not delete earlier evidence to reuse it. Long-running checks need a deadline that includes compilation and every selected scenario; a process timeout is a failed/incomplete execution even if earlier scenarios passed.

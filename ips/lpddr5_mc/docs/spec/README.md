@@ -19,6 +19,8 @@ sha256sum -c SHA256SUMS
 
 The [controller contracts](contracts.md) and their linked supported profiles, interfaces, host/ECC, lifecycle and performance pages are the reviewed implementation basis. Combined host/control, channel and ECC RTL is implemented and simulation-verified at accepted source `ba8f5142fd9f76809a78badfd2a7c06736e2f187`. The [initial release evidence](../verification/releases/initial/README.md) records the completed exact-final reproduction and review. Use the current contract pages for resolved decisions and requirements; the imported drafts and historical review remain byte-for-byte preserved as inputs, including their original open items.
 
+For integration, follow the [RTL block diagram and module map](../architecture/implementation.md#4-top-level-organization), then the [testbench diagram and test plan](../verification/system.md#controller-testbench-and-test-plan). They show where host requests enter, where memory commands leave, and which checks observe both boundaries.
+
 ## External references
 
 The owner supplied JESD209-5C (June 2023) on 2026-11-05 as `scratchpad/uploads/cd6d9f71-884f-4f5f-a8c5-2383b8c6cede/JESD209-5C.pdf`, SHA-256 `76457d4019dc40c57b550c10dc3416cfae4d6ea1984de8f5c42e3e34d00ed031`. It is retained as an external reference and is not copied into this repository. The [review](review.md#supplied-jedec-reference-and-review-limits) records inspected sections, corrections, and the limits of that targeted review. LPDDR5X is not added to scope.

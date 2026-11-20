@@ -83,7 +83,7 @@ make regress
 
 Each run gets a fresh build name and an evidence directory beneath `ips/lpddr5_mc/evidence/`. Set `ARTIFACT_DIR` to a new absolute directory to write results elsewhere. For a focused check use `make regress SUITE=connected STEPS=controller`. Read `report.json` for the selected steps and source revision. Each selected step also has a `<step>/step.json` outcome, including when it timed out or could not run. Set `DHENARA_AGENT_TOOL_STORAGE_ROOT` to an absolute writable directory before both commands when tools and compiler output should live outside the checkout.
 
-With `hw-regress` installed on PATH, the [project test list](hw-regress.json) provides individually selectable Verilator simulations. The notification bench checks the APB interrupt and status path across asynchronous clocks. The coordinator bench checks command and recovery sequencing. Both use the controller's existing RTL file list and SystemVerilog assertions.
+The optional [Dhenara runner manifest](ips/lpddr5_mc/tools/dhenara/hw-regress.yaml) lives with the LPDDR5 controller. With `hw-regress` on PATH, you can select individual Verilator tests or run a named list. The notification bench checks the APB interrupt and status path across asynchronous clocks. The coordinator bench checks command and recovery sequencing. Both use the controller's RTL file list and SystemVerilog assertions.
 
 ```sh
 make list-tests
@@ -92,7 +92,25 @@ make run-test TEST=notification BUILD_DIR="$PWD/out/control-build"
 make run-testlist TEST_LIST=control-smoke BUILD_DIR="$PWD/out/control-build"
 ```
 
-`make regress TEST=notification` and `make regress TEST_LIST=control-smoke` use the same commands. Each invocation reserves a fresh result directory. Supplying the same `BUILD_DIR` lets later tests use a matching compiled target. Read the selected test's `result.json` and `result.log` there. Override the binary with `HW_REGRESS`, the simulator with `VERILATOR`, and the stimulus seed with `SEED` when needed. The complete script-based suite remains available through `make regress`.
+Use `make list-tests INVENTORY=/absolute/path/to/inventory.json` to write the same test inventory to a file. `make regress TEST=notification` and `make regress TEST_LIST=control-smoke` use the same commands. Each invocation reserves a fresh result directory. Supplying the same `BUILD_DIR` lets later tests use a matching compiled target. Read the selected test's `result.json` and `result.log` there. Override the binary with `HW_REGRESS`, the simulator with `VERILATOR`, and the stimulus seed with `SEED` when needed. The complete script-based suite remains available through `make regress`.
+
+### Run the same list in Dhenara Engineering
+
+If you have access to a Dhenara Semiconductor Space, you can run `control-smoke` on a managed worker and inspect the per-test logs in **Native Regressions**. Use a signed-in CLI and a Space with a managed workload configured for this repository. Set `SPACE`, `PROFILE`, `WORKLOAD`, and `REPOSITORY` to the names registered in your own environment. Run this from a checkout whose commit is available to that Space.
+
+```sh
+RUN_ID="lpddr5-control-$(date -u +%Y%m%dT%H%M%SZ)"
+dhenara den regression run workload "$RUN_ID" --regspace "$SPACE" \
+  --profile "$PROFILE" --workload "$WORKLOAD" --run-mode execute \
+  --source-repository "$REPOSITORY" --source-revision "$(git rev-parse HEAD)" \
+  --test-list control-smoke --wait
+```
+
+To investigate a failure, open that regression in **dVI**. If your team already has a dVI analysis intake file, you can also start the analysis from the CLI using its absolute path.
+
+```sh
+dhenara den dvi analyze --space "$SPACE" "$RUN_ID" --input "$DVI_INTAKE"
+```
 
 ### Reproduce the initial release
 

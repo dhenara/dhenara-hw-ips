@@ -1,0 +1,35 @@
+# Optional Dhenara hw-regress configuration for the LPDDR5 controller.
+# Add cases under tests and group them into named test_lists.
+version: 1
+targets:
+  notification:
+    simulator: verilator
+    top: notification_tb
+    sources: [../../dv/integration/notification_tb.sv]
+    compile_args: &controller_flags
+      - --timescale-override
+      - 1ns/1ps
+      - --public-flat-rw
+      - -Wall
+      # The controller RTL file list names sources relative to the repository root.
+      - -I../../../..
+      - -f
+      - ../../rtl/files.f
+      - -MAKEFLAGS
+      - OPT_FAST=-O0 OPT_SLOW=-O0
+  coordinator:
+    simulator: verilator
+    top: coordinator_tb
+    sources: [../../dv/integration/coordinator_tb.sv]
+    compile_args: *controller_flags
+tests:
+  notification:
+    target: notification
+    pass_marker: NOTIFICATION_INTEGRATION_PASS
+    timeout_seconds: 60
+  coordinator:
+    target: coordinator
+    pass_marker: COORDINATOR_INTEGRATION_PASS
+    timeout_seconds: 60
+test_lists:
+  control-smoke: [notification, coordinator]

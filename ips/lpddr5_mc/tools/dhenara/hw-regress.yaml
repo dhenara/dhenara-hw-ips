@@ -11,9 +11,7 @@ targets:
       - 1ns/1ps
       - --public-flat-rw
       - -Wall
-      # The controller RTL file list names sources relative to the repository root.
-      - -I../../../..
-      - -f
+      - -F
       - ../../rtl/files.f
       - -MAKEFLAGS
       - OPT_FAST=-O0 OPT_SLOW=-O0

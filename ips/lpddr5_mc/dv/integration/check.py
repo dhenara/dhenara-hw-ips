@@ -460,7 +460,8 @@ def main() -> None:
         "VERILATOR_BIN": "../../bin/verilator_bin",
         "PYTHONPATH": os.pathsep.join(filter(None, (str(IP / "dv"), os.environ.get("PYTHONPATH")))),
     }
-    sources = [REPO / line for line in (IP / "rtl/files.f").read_text().splitlines() if line]
+    filelist = IP / "rtl/files.f"
+    sources = [filelist.parent / line for line in filelist.read_text().splitlines() if line]
     if args.family in ("datapath", "publication", "apb_publication", "controller"):
         sources += [IP / "dv/channel/lpddr5_mc_channel_memory.sv"]
     if args.family in ("datapath", "controller"):
@@ -478,7 +479,7 @@ def main() -> None:
     ]
     manifest = {
         str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in [*sources, IP / "rtl/files.f", *dependencies]
+        for p in [*sources, filelist, *dependencies]
     }
     result = {
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),

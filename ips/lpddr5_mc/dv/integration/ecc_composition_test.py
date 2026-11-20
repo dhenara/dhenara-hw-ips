@@ -684,7 +684,7 @@ class CompositionRunnerTests(unittest.TestCase):
             root = Path(temporary)
             ip = root / "ips/lpddr5_mc"
             for name in (
-                "rtl/files.f",
+                "rtl/integration/controller_stub.sv",
                 "dv/channel/lpddr5_mc_channel_memory.sv",
                 "dv/integration/lpddr5_mc_observer.sv",
                 "dv/integration/datapath_tb.sv",
@@ -692,6 +692,7 @@ class CompositionRunnerTests(unittest.TestCase):
                 path = ip / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("")
+            (ip / "rtl/files.f").write_text("integration/controller_stub.sv\n")
             config = ip / "config/contracts/profiles.json"
             config.parent.mkdir(parents=True, exist_ok=True)
             config.write_text(json.dumps({"profiles": [{"unit_test_only": True}]}))
@@ -734,6 +735,8 @@ class CompositionRunnerTests(unittest.TestCase):
                 runner.main()
             saved = json.loads(report.read_text())
             self.assertEqual(saved["status"], "passed")
+            self.assertIn("ips/lpddr5_mc/rtl/integration/controller_stub.sv", saved["source_sha256"])
+            self.assertIn(str(ip / "rtl/integration/controller_stub.sv"), saved["planned_commands"][1])
             self.assertEqual(saved["ecc_composition_observations"], {"unit_only": True})
             self.assertTrue(saved["ecc_composition"])
             self.assertIn("-GECC_COMPOSITION=1", saved["planned_commands"][1])

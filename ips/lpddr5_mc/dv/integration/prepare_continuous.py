@@ -73,7 +73,7 @@ def main():
                 "-I" + str(IP / "dv/integration"),
                 "-I" + str(IP / "dv/channel"),
                 *(["-GINLINE_LIFECYCLE=1'b1"] if top == "controller_tb" else []),
-                "-f",
+                "-F",
                 str(IP / "rtl/files.f"),
                 str(IP / "dv/channel/lpddr5_mc_channel_memory.sv"),
                 *([str(IP / "dv/integration/lpddr5_mc_observer.sv")] if top == "controller_tb" else []),
